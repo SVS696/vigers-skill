@@ -1,5 +1,10 @@
 .DS_Store
 ._*
-references/private/
 *.pdf
 *.fb2
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+*.svg
