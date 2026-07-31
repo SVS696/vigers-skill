@@ -13,13 +13,16 @@
 - разделение Acceptance Criteria и Definition of Done;
 - контрольные ворота и политику уточняющих вопросов.
 
-В `references/` лежат два дополнительных текстовых слоя:
+В `references/` лежат два дополнительных текстовых слоя из переносимого
+архива:
 
 - сконвертированная выжимка книги в `book-extract.md` — редкий fallback;
 - наш дистиллят метода — таблицы, чек-листы, текстовые диаграммы и расширенный
   шаблон постановки.
 
-Исходные PDF, FB2 и изображения в репозиторий не входят.
+Содержимое скилла соответствует переносимому архиву. README и `.gitignore` —
+только обвязка GitHub-репозитория. Исходные PDF, FB2 и изображения в комплект
+не входят.
 
 ## Установка
 
@@ -56,10 +59,10 @@ ln -s ~/.codex/skills/vigers ~/.claude/skills/vigers
 ├── agents
 │   └── openai.yaml
 └── references
-    ├── README.md
     ├── book-extract.md
     ├── native-checklists.md
     ├── native-diagrams.md
+    ├── native-image-map.md
     ├── native-tables.md
     └── task-template.md
 ```
