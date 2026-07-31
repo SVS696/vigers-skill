@@ -1,0 +1,21 @@
+name: Validate skill
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Validate routes and references
+        run: python3 scripts/vigers_context.py validate
+      - name: Run router regression tests
+        run: python3 scripts/test_vigers_context.py

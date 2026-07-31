@@ -20,9 +20,14 @@
 - наш дистиллят метода — таблицы, чек-листы, текстовые диаграммы и расширенный
   шаблон постановки.
 
-Содержимое скилла соответствует переносимому архиву. README и `.gitignore` —
-только обвязка GitHub-репозитория. Исходные PDF, FB2 и изображения в комплект
-не входят.
+`knowledge-map.md` связывает предметную область с точными разделами
+дистиллята и размеченным блоком выжимки. `scripts/vigers_context.py` извлекает
+только выбранный контекст и не позволяет случайно загрузить оглавление или
+весь `book-extract.md`.
+
+Содержимое скилла соответствует переносимому архиву. README, `.gitignore` и
+`.github/` — только обвязка GitHub-репозитория. Исходные PDF, FB2 и изображения
+в комплект не входят.
 
 ## Установка
 
@@ -50,6 +55,30 @@ ln -s ~/.codex/skills/vigers ~/.claude/skills/vigers
 Отдельно покажи допущения и блокирующие вопросы.
 ```
 
+## Детерминированная маршрутизация
+
+Обычная постановка использует только `SKILL.md`. Дополнительные материалы
+загружаются одним тематическим маршрутом:
+
+```bash
+python3 scripts/vigers_context.py list
+python3 scripts/vigers_context.py match "краткое описание области"
+python3 scripts/vigers_context.py show traceability
+```
+
+Текст выжимки подключается только явно:
+
+```bash
+python3 scripts/vigers_context.py show traceability --fallback
+```
+
+Проверка карты, 21 блока выжимки, 70 нативных D/T/C-артефактов и всех путей:
+
+```bash
+python3 scripts/vigers_context.py validate
+python3 scripts/test_vigers_context.py
+```
+
 ## Состав
 
 ```text
@@ -58,13 +87,17 @@ ln -s ~/.codex/skills/vigers ~/.claude/skills/vigers
 ├── README.md
 ├── agents
 │   └── openai.yaml
-└── references
-    ├── book-extract.md
-    ├── native-checklists.md
-    ├── native-diagrams.md
-    ├── native-image-map.md
-    ├── native-tables.md
-    └── task-template.md
+├── references
+│   ├── book-extract.md
+│   ├── knowledge-map.md
+│   ├── native-checklists.md
+│   ├── native-diagrams.md
+│   ├── native-image-map.md
+│   ├── native-tables.md
+│   └── task-template.md
+└── scripts
+    ├── test_vigers_context.py
+    └── vigers_context.py
 ```
 
 `agents/openai.yaml` добавляет метаданные интерфейса Codex и не мешает Claude
