@@ -40,6 +40,19 @@ class RouterTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(self.first_match(text), expected)
 
+    def test_every_route_matches_its_own_when(self) -> None:
+        for route in self.data["routes"]:
+            if route["id"] == "core":
+                continue
+            with self.subTest(route=route["id"]):
+                self.assertEqual(self.first_match(route["when"]), route["id"])
+
+    def test_provenance_does_not_match_performance(self) -> None:
+        self.assertEqual(
+            self.first_match("Проверить происхождение артефакта D14"),
+            "source-audit",
+        )
+
     def test_every_route_renders_distilled_context(self) -> None:
         for route in self.data["routes"]:
             with self.subTest(route=route["id"]):

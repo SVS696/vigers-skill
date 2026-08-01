@@ -59,10 +59,30 @@ def match_terms(value: str) -> set[str]:
         if token in SHORT_TERMS:
             terms.add(token)
         elif re.fullmatch(r"[а-яё]+", token) and len(token) >= 4:
-            terms.add(token[:4])
+            # Five letters preserve useful Russian inflection matching while
+            # avoiding collisions such as происхождение/производительность.
+            terms.add(token[:5] if len(token) >= 5 else token)
         elif re.fullmatch(r"[a-z0-9]+", token) and len(token) >= 4:
             terms.add(token)
     return terms
+
+
+def terms_contain(signal_terms: set[str], text_terms: set[str]) -> bool:
+    """Return whether every normalized signal term occurs in task terms."""
+    if not signal_terms:
+        return False
+    for signal_term in signal_terms:
+        if signal_term in text_terms:
+            continue
+        # Four-letter domain terms such as «тест» should match inflected
+        # forms («тестами»), without reducing every Russian word to four
+        # letters and recreating broad prefix collisions.
+        if len(signal_term) == 4 and any(
+            text_term.startswith(signal_term) for text_term in text_terms
+        ):
+            continue
+        return False
+    return True
 
 
 def safe_file(relative: str) -> Path:
@@ -440,7 +460,7 @@ def match_routes(data: dict[str, Any], text: str) -> None:
             normalized_signal = normalize(signal)
             signal_terms = match_terms(signal)
             exact = normalized_signal in normalized_text
-            term_match = bool(signal_terms) and signal_terms <= text_terms
+            term_match = terms_contain(signal_terms, text_terms)
             if not exact and not term_match:
                 continue
             hits.append(signal)
