@@ -16,6 +16,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent.parent
 MAP_PATH = ROOT / "references" / "knowledge-map.md"
 BOOK_PATH = ROOT / "references" / "book-extract.md"
+METHOD_PATH = ROOT / "references" / "requirements-method.md"
 NATIVE_FILES = (
     ROOT / "references" / "native-checklists.md",
     ROOT / "references" / "native-diagrams.md",
@@ -293,7 +294,10 @@ def validate() -> dict[str, int]:
     if default_route not in routes:
         errors.append("default_route must reference an existing route")
 
-    referenced_files: set[str] = set()
+    referenced_files: set[str] = {
+        "references/requirements-method.md",
+        "references/handoff-contract.md",
+    }
     referenced_blocks: set[str] = set()
     skill_path = ROOT / "SKILL.md"
 
@@ -314,7 +318,7 @@ def validate() -> dict[str, int]:
         else:
             for heading in route["core"]:
                 try:
-                    extract_heading(skill_path, heading)
+                    extract_heading(METHOD_PATH, heading)
                 except RouterError as exc:
                     errors.append(f"{route_id}: {exc}")
 
@@ -424,7 +428,10 @@ def validate() -> dict[str, int]:
     for link in required_links:
         if link not in skill_text:
             errors.append(f"SKILL.md missing router link: {link}")
-    if "/Users/" in skill_text or "/home/" in skill_text:
+    home_path_markers = tuple(
+        "".join(parts) for parts in (("/", "Users/"), ("/", "home/"))
+    )
+    if any(marker in skill_text for marker in home_path_markers):
         errors.append("SKILL.md contains a hardcoded home path")
     if "![" in book_text or re.search(r"<img\b", book_text, re.IGNORECASE):
         errors.append("book-extract.md still contains image embeds")
@@ -495,9 +502,14 @@ def show_route(data: dict[str, Any], route_id: str, include_fallback: bool) -> N
             + " (load one with the id command)"
         )
 
+    for heading in route["core"]:
+        content = extract_heading(METHOD_PATH, heading)
+        print(f"\n--- CORE: references/requirements-method.md :: {heading} ---\n")
+        print(content)
+
     distilled = route.get("distilled", [])
     if not distilled:
-        print("\nNo additional context required. Use SKILL.md only.")
+        print("\nNo additional distilled context required.")
     for target in distilled:
         label, content = extract_target(target)
         print(f"\n--- DISTILLED: {label} ---\n")

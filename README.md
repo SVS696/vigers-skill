@@ -1,64 +1,104 @@
 # Вигерс
 
-Скилл для Claude Code и Codex, который превращает идею, переписку или черновик
-в проверяемую постановку задачи по принципам инженерии требований Карла
-Вигерса.
+Переносимый мультиагентный workflow для подготовки и независимого ревью
+постановок, требований, Acceptance Criteria и Definition of Done.
 
-Основной `SKILL.md` самодостаточен. Он содержит:
+Общий пакет содержит четыре независимые роли:
 
-- диагностику слабых постановок;
-- типы требований и трассировку от цели до приемки;
-- десятишаговую процедуру с условными ветками;
-- правила для данных, интеграций, отчетов, миграций и атрибутов качества;
-- разделение Acceptance Criteria и Definition of Done;
-- контрольные ворота и политику уточняющих вопросов.
+- системный аналитик;
+- архитектор решения в раздельных режимах `design` и `conformance`;
+- редактор постановки;
+- независимый reviewer.
 
-В `references/` лежат два дополнительных текстовых слоя из переносимого
-архива:
+Роли получают явный case package и не наследуют рассуждения друг друга.
+Архитектор включается по гейту, а business-context остаётся условной линзой
+системного аналитика, не отдельным владельцем бизнес-решений.
 
-- сконвертированная выжимка книги в `book-extract.md` — редкий fallback;
-- наш дистиллят метода — таблицы, чек-листы, текстовые диаграммы и расширенный
-  шаблон постановки.
+## Публичное и проектное
 
-`knowledge-map.md` связывает предметную область с точными разделами
-дистиллята и размеченным блоком выжимки. `scripts/vigers_context.py` извлекает
-только выбранный контекст и не позволяет случайно загрузить оглавление или
-весь `book-extract.md`.
+Репозиторий намеренно не содержит профили конкретных проектов. Здесь лежат
+только общий метод, контракты ролей, generic fallback и шаблон overlay-профиля.
 
-Содержимое скилла соответствует переносимому архиву. README, `.gitignore` и
-`.github/` — только обвязка GitHub-репозитория. Исходные PDF, FB2 и изображения
-в комплект не входят.
+Проектная конфигурация хранится рядом с проектом:
+
+```text
+<project-root>/.vigers/profile.md
+```
+
+Ближайший профиль вверх по дереву имеет приоритет. Если его нет, используется
+`profiles/generic.md`. Такой контракт не раскрывает в публичном репозитории
+названия проектов, внутренние источники, архитектуру и правила публикации.
 
 ## Установка
 
-Каноническую копию удобно хранить в Codex, а Claude Code и общий каталог
-агентов подключить символическими ссылками:
+Клонируйте пакет в пользовательский каталог скиллов Codex:
 
 ```bash
 git clone https://github.com/SVS696/vigers-skill.git ~/.codex/skills/vigers
-mkdir -p ~/.agents/skills ~/.claude/skills
-ln -s ~/.codex/skills/vigers ~/.agents/skills/vigers
-ln -s ~/.codex/skills/vigers ~/.claude/skills/vigers
+python3 ~/.codex/skills/vigers/scripts/install.py --dry-run
+python3 ~/.codex/skills/vigers/scripts/install.py
+python3 ~/.codex/skills/vigers/scripts/install.py --check
 ```
 
-Если соответствующая ссылка уже существует, повторно создавать ее не нужно.
+Installer подключает сам скилл и четыре именованных агента:
+
+- `~/.agents/skills/vigers` и `~/.claude/skills/vigers`;
+- Codex-адаптеры в `~/.codex/agents/`;
+- Claude-адаптеры в `~/.claude/agents/`.
+
+Перед изменением файлов выполняется полный preflight. При конфликте installer
+останавливается до первой записи и не перетирает существующие файлы или ссылки.
+Повторный запуск идемпотентен.
+
+Для обновления существующего git-clone:
+
+```bash
+git -C ~/.codex/skills/vigers pull --ff-only
+python3 ~/.codex/skills/vigers/scripts/install.py
+```
+
+## Проектный профиль
+
+Скопируйте безопасный шаблон в корень приватного проекта:
+
+```bash
+mkdir -p .vigers
+cp ~/.codex/skills/vigers/profiles/project-profile-template.md .vigers/profile.md
+```
+
+Заполните `profile_id` и шесть секций:
+
+1. область;
+2. канонические источники;
+3. системный анализ;
+4. архитектурный гейт;
+5. артефакт и author gates;
+6. жизненный цикл и публикация.
+
+Проверка профиля:
+
+```bash
+python3 ~/.codex/skills/vigers/scripts/spec_pipeline.py detect --cwd "$PWD"
+python3 ~/.codex/skills/vigers/scripts/spec_pipeline.py show-profile auto --cwd "$PWD"
+python3 ~/.codex/skills/vigers/scripts/spec_pipeline.py validate --project-root "$PWD"
+```
 
 ## Использование
 
 - Codex: `$vigers` или автоматическое подключение по описанию задачи.
 - Claude Code: `/vigers` или автоматическое подключение по описанию задачи.
 
-Пример запроса:
+Пример:
 
 ```text
 Используй Вигерса и преврати этот черновик в проверяемую постановку.
-Отдельно покажи допущения и блокирующие вопросы.
+Отдельно покажи допущения, архитектурный гейт и блокирующие вопросы.
 ```
 
 ## Детерминированная маршрутизация
 
-Обычная постановка использует только `SKILL.md`. Дополнительные материалы
-загружаются одним тематическим маршрутом:
+Обычная постановка использует маршрут `core`. Для специальной области можно
+выбрать один ограниченный маршрут:
 
 ```bash
 python3 scripts/vigers_context.py list
@@ -66,39 +106,45 @@ python3 scripts/vigers_context.py match "краткое описание обл�
 python3 scripts/vigers_context.py show traceability
 ```
 
-Текст выжимки подключается только явно:
+Текстовая выжимка источника подключается только явным bounded fallback:
 
 ```bash
 python3 scripts/vigers_context.py show traceability --fallback
 ```
 
-Проверка карты, 21 блока выжимки, 70 нативных D/T/C-артефактов и всех путей:
+## Проверка пакета
 
 ```bash
 python3 scripts/vigers_context.py validate
-python3 scripts/test_vigers_context.py
+python3 scripts/spec_pipeline.py validate
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
+
+Валидатор проверяет маршруты метода, профильный контракт, роли обоих рантаймов,
+workflow, отсутствие жёстких домашних путей и маркеров приватных проектов.
 
 ## Состав
 
 ```text
 .
 ├── SKILL.md
-├── README.md
 ├── agents
+│   ├── claude
+│   ├── codex
+│   ├── contracts
 │   └── openai.yaml
+├── profiles
+│   ├── generic.md
+│   └── project-profile-template.md
 ├── references
-│   ├── book-extract.md
-│   ├── knowledge-map.md
-│   ├── native-checklists.md
-│   ├── native-diagrams.md
-│   ├── native-image-map.md
-│   ├── native-tables.md
-│   └── task-template.md
-└── scripts
-    ├── test_vigers_context.py
-    └── vigers_context.py
+├── scripts
+│   ├── install.py
+│   ├── spec_pipeline.py
+│   └── test_*.py
+└── workflows
+    └── specification-pipeline.md
 ```
 
-`agents/openai.yaml` добавляет метаданные интерфейса Codex и не мешает Claude
-Code.
+Исходные PDF, FB2 и растровые изображения в комплект не входят. Текстовые
+технические карты и reference-файлы, необходимые для детерминированной
+маршрутизации, сохраняются.

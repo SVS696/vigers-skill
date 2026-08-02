@@ -1,0 +1,134 @@
+#!/usr/bin/env python3
+"""Regression tests for Vigers package profiles and project overlays."""
+
+from __future__ import annotations
+
+import tempfile
+import unittest
+from pathlib import Path
+
+import spec_pipeline
+
+
+PROFILE_BODY = """---
+vigers_profile: 1
+profile_id: {profile_id}
+---
+
+# Project profile
+
+## Область
+Scope.
+
+## Канонические источники
+Sources.
+
+## Системный анализ
+Analysis.
+
+## Архитектурный гейт
+Gate.
+
+## Артефакт и author gates
+Artifact.
+
+## Жизненный цикл и публикация
+Lifecycle.
+"""
+
+
+def write_profile(root: Path, profile_id: str = "project-alpha") -> Path:
+    profile = root / ".vigers" / "profile.md"
+    profile.parent.mkdir(parents=True)
+    profile.write_text(PROFILE_BODY.format(profile_id=profile_id), encoding="utf-8")
+    return profile
+
+
+class PipelineTests(unittest.TestCase):
+    def test_package_validation(self) -> None:
+        counts = spec_pipeline.validate()
+        self.assertEqual(counts["builtin_profiles"], 1)
+        self.assertEqual(counts["project_profiles"], 0)
+        self.assertEqual(counts["contracts"], 4)
+        self.assertEqual(counts["runtime_adapters"], 8)
+        self.assertEqual(counts["workflows"], 1)
+
+    def test_generic_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            selection = spec_pipeline.detect_profile(Path(temp))
+            self.assertEqual(selection.profile_id, "generic")
+            self.assertEqual(selection.source, "generic")
+            self.assertIsNone(selection.project_root)
+
+    def test_project_overlay_detection_from_nested_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            nested = root / "docs" / "drafts"
+            nested.mkdir(parents=True)
+            profile = write_profile(root)
+            selection = spec_pipeline.detect_profile(nested)
+            self.assertEqual(selection.profile_id, "project-alpha")
+            self.assertEqual(selection.project_root, root.resolve())
+            self.assertEqual(selection.profile_path, profile.resolve())
+            self.assertEqual(selection.source, "project")
+
+    def test_nearest_project_overlay_wins(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            outer = Path(temp) / "outer"
+            inner = outer / "inner"
+            nested = inner / "docs"
+            nested.mkdir(parents=True)
+            write_profile(outer, "outer-project")
+            write_profile(inner, "inner-project")
+            selection = spec_pipeline.detect_profile(nested)
+            self.assertEqual(selection.profile_id, "inner-project")
+            self.assertEqual(selection.project_root, inner.resolve())
+
+    def test_named_profile_must_match_detected_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            write_profile(root, "project-alpha")
+            with self.assertRaises(spec_pipeline.PipelineError):
+                spec_pipeline.select_profile("project-beta", root)
+
+    def test_project_profile_cannot_shadow_generic(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            write_profile(root, "generic")
+            with self.assertRaises(spec_pipeline.PipelineError):
+                spec_pipeline.detect_profile(root)
+
+    def test_invalid_profile_id_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            write_profile(root, "Not Valid")
+            with self.assertRaises(spec_pipeline.PipelineError):
+                spec_pipeline.detect_profile(root)
+
+    def test_explicit_project_validation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            write_profile(root)
+            counts = spec_pipeline.validate([root])
+            self.assertEqual(counts["project_profiles"], 1)
+
+    def test_profile_symlink_cannot_escape_project_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = base / "project"
+            root.mkdir()
+            external = base / "external.md"
+            external.write_text(PROFILE_BODY.format(profile_id="external"), encoding="utf-8")
+            profile = root / ".vigers" / "profile.md"
+            profile.parent.mkdir()
+            profile.symlink_to(external)
+            with self.assertRaises(spec_pipeline.PipelineError):
+                spec_pipeline.detect_profile(root)
+
+
+if __name__ == "__main__":
+    unittest.main()

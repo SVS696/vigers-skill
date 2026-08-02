@@ -17,5 +17,7 @@ jobs:
           python-version: "3.12"
       - name: Validate routes and references
         run: python3 scripts/vigers_context.py validate
-      - name: Run router regression tests
-        run: python3 scripts/test_vigers_context.py
+      - name: Validate agents, workflow and public profile boundary
+        run: python3 scripts/spec_pipeline.py validate
+      - name: Run regression tests
+        run: PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_*.py'
