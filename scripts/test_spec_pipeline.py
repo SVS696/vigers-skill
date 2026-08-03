@@ -11,7 +11,7 @@ import spec_pipeline
 
 
 PROFILE_BODY = """---
-vigers_profile: 1
+vigers_profile: 2
 profile_id: {profile_id}
 ---
 
@@ -28,6 +28,9 @@ Analysis.
 
 ## Архитектурный гейт
 Gate.
+
+## Режимы и разбиение
+Modes.
 
 ## Артефакт и author gates
 Artifact.
@@ -51,7 +54,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["project_profiles"], 0)
         self.assertEqual(counts["contracts"], 4)
         self.assertEqual(counts["runtime_adapters"], 8)
-        self.assertEqual(counts["workflows"], 1)
+        self.assertEqual(counts["workflows"], 2)
 
     def test_generic_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

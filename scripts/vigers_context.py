@@ -297,6 +297,8 @@ def validate() -> dict[str, int]:
     referenced_files: set[str] = {
         "references/requirements-method.md",
         "references/handoff-contract.md",
+        "references/case-state.md",
+        "references/block-contract.md",
     }
     referenced_blocks: set[str] = set()
     skill_path = ROOT / "SKILL.md"

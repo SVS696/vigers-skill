@@ -1,4 +1,4 @@
 interface:
   display_name: "Вигерс"
-  short_description: "Мультиагентный pipeline постановок и решений"
-  default_prompt: "Используй $vigers: выбери профиль проекта, проведи независимые анализ, подготовку текста и ревью, а архитектурные проходы включи по условиям."
+  short_description: "Поблочный pipeline постановок и решений"
+  default_prompt: "Используй $vigers: выбери профиль и compact/block режим, проведи независимые анализ, интеграцию, global/project-conformance review, а архитектурные проходы включи по условиям."

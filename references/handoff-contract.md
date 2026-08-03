@@ -3,30 +3,40 @@
 Роли не обмениваются свободным пересказом диалога. Координатор формирует case
 package и передаёт каждой роли только перечисленные входы.
 
-## Case manifest
+## Case manifest v2
 
-```yaml
-case_id: <stable-id>
-mode: create | update | review | decompose | architecture
-profile_id: <generic-or-project-profile-id>
-project_root: <resolved-project-root-or-null>
-route_id: core
-request_summary: <one-paragraph-user-intent>
-source_refs: []
-architecture_gate:
-  required: false
-  triggers: []
-artifacts:
-  intake: null
-  requirements_model: null
-  architecture_design: null
-  draft: null
-  review: null
-  architecture_conformance: null
-decision_log: []
+```json
+{
+  "schema": 2,
+  "case_id": "stable-id",
+  "mode": "compact | block",
+  "intent": "create | update | review | decompose | architecture",
+  "profile_id": "generic-or-project-profile-id",
+  "project_root": null,
+  "route_id": "core",
+  "kernel": {"path": "kernel.md", "revision": 1, "sha256": "..."},
+  "artifacts": {},
+  "gates": {},
+  "events": []
+}
 ```
 
-Manifest не содержит пароли, токены, cookies, приватные ключи и дампы БД.
+`manifest.json` не содержит пароли, токены, cookies, приватные ключи и дампы
+БД. В block-mode `ledger.json` хранит DAG и состояния блоков; формат и переходы
+задаёт `case_pipeline.py`.
+
+## Kernel
+
+`kernel.md` — минимальный общий контекст всех ролей:
+
+- цель и границы;
+- общий словарь;
+- инварианты и глобальные ограничения;
+- уже принятые решения;
+- решения, которые ещё открыты.
+
+Kernel не содержит подробный анализ каждого блока. Изменение kernel повышает
+revision и делает затронутые результаты stale.
 
 ## Intake и evidence pack
 
@@ -69,6 +79,10 @@ Business context обязательно разделяет `подтвержде
 `неизвестно`, `владелец ответа`. Аналитик не утверждает решение за владельца
 бизнес-процесса.
 
+В block-mode аналитик возвращает только модель целевого блока и отдельный
+semantic index по `{baseDir}/references/block-contract.md`. Общие факты
+предлагаются как изменение kernel, но не меняются ролью самостоятельно.
+
 ## Архитектурное решение
 
 Архитектор в режиме `design` возвращает:
@@ -96,6 +110,10 @@ findings по той же классификации.
 - места, где проектный шаблон не применён, и причина;
 - подтверждение, что новые требования и решения не добавлялись.
 
+В режиме `block-render` результат ограничен одним block artifact. В режиме
+`integrate` редактор возвращает полный draft и матрицу `block_id → место в
+документе`; semantic IDs не создаются и не исчезают.
+
 ## Review findings
 
 Каждое замечание имеет форму:
@@ -114,8 +132,30 @@ confidence: high | medium | low
 
 Вкусовые пожелания без последствия и доказательства не являются finding.
 
+Режимы reviewer:
+
+- `block` — локальная логика и полнота одного блока;
+- `integration` — конфликты и разрывы между блоками после сборки;
+- `global` — итоговая цель, scope, трассировка, тестируемость и проектные правила.
+
 ## Decision log
 
 Координатор для каждого finding фиксирует `accepted | rejected | user-decision`
 и основание. Отклонённое замечание не записывается в историю изменений
 постановки, если проектный профиль прямо не требует обратного.
+
+## Handoff во внешнюю поставку
+
+Vigers не реализует и не принимает поставку. Для отдельного delivery-процесса
+координатор может сформировать read-only handoff:
+
+- `case_id`, profile и точный kernel revision/hash;
+- hash утверждённого draft;
+- выбранные `REQ/AC` и их semantic indexes;
+- impact map по компонентам без назначения реализации по догадке;
+- architecture/project-conformance constraints;
+- матрицу `REQ → AC → required evidence`;
+- открытые решения, gaps и остаточный риск.
+
+Этот handoff не разрешает правки кода, тестов, merge, deploy или изменение
+внешних статусов. Полномочия задаёт отдельный delivery-skill и проектный профиль.

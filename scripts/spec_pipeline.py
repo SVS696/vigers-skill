@@ -22,6 +22,7 @@ REQUIRED_PROFILE_HEADINGS = (
     "## Канонические источники",
     "## Системный анализ",
     "## Архитектурный гейт",
+    "## Режимы и разбиение",
     "## Артефакт и author gates",
     "## Жизненный цикл и публикация",
 )
@@ -31,7 +32,10 @@ REQUIRED_CONTRACTS = (
     "spec-editor",
     "spec-reviewer",
 )
-REQUIRED_WORKFLOWS = ("specification-pipeline.md",)
+REQUIRED_WORKFLOWS = {
+    "specification-pipeline.md": 10,
+    "block-pipeline.md": 13,
+}
 PUBLIC_FORBIDDEN_MARKERS = tuple(
     "".join(parts) for parts in (("R", "TL"), ("H", "ÆZE"), ("HA", "EZE"))
 )
@@ -102,8 +106,8 @@ def validate_profile_text(
 ) -> str:
     """Validate one built-in or project-owned profile and return its id."""
     metadata = parse_frontmatter(text, source)
-    if metadata.get("vigers_profile") != "1":
-        raise PipelineError(f"{source}: vigers_profile must be 1")
+    if metadata.get("vigers_profile") != "2":
+        raise PipelineError(f"{source}: vigers_profile must be 2")
     profile_id = metadata.get("profile_id", "")
     if not PROFILE_ID_RE.fullmatch(profile_id):
         raise PipelineError(f"{source}: invalid profile_id: {profile_id!r}")
@@ -229,10 +233,10 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
         except PipelineError as exc:
             errors.append(str(exc))
 
-    for workflow in REQUIRED_WORKFLOWS:
+    for workflow, phase_count in REQUIRED_WORKFLOWS.items():
         try:
             text = safe_file(f"workflows/{workflow}").read_text(encoding="utf-8")
-            for phase in range(1, 11):
+            for phase in range(1, phase_count + 1):
                 if f"## Фаза {phase}." not in text:
                     errors.append(f"{workflow}: missing phase {phase}")
         except PipelineError as exc:
@@ -241,7 +245,10 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
     required_files = (
         "SKILL.md",
         "references/handoff-contract.md",
+        "references/case-state.md",
+        "references/block-contract.md",
         "references/requirements-method.md",
+        "scripts/case_pipeline.py",
         "scripts/install.py",
     )
     for relative in required_files:
@@ -256,8 +263,12 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             errors.append("SKILL.md exceeds 500 lines")
         for link in (
             "{baseDir}/workflows/specification-pipeline.md",
+            "{baseDir}/workflows/block-pipeline.md",
             "{baseDir}/references/handoff-contract.md",
+            "{baseDir}/references/case-state.md",
+            "{baseDir}/references/block-contract.md",
             "{baseDir}/scripts/spec_pipeline.py",
+            "{baseDir}/scripts/case_pipeline.py",
         ):
             if link not in skill_text:
                 errors.append(f"SKILL.md missing link: {link}")

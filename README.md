@@ -1,37 +1,50 @@
 # Вигерс
 
-Переносимый мультиагентный workflow для подготовки и независимого ревью
-постановок, требований, Acceptance Criteria и Definition of Done.
+Переносимый мультиагентный workflow для подготовки, поблочной сборки и
+независимого ревью постановок, требований, Acceptance Criteria и Definition of
+Done.
 
 Общий пакет содержит четыре независимые роли:
 
-- системный аналитик;
+- системный аналитик с условной business-context линзой;
 - архитектор решения в раздельных режимах `design` и `conformance`;
-- редактор постановки;
-- независимый reviewer.
+- редактор постановки в режимах document/block-render/integrate;
+- reviewer в режимах block/integration/global/project-conformance.
 
-Роли получают явный case package и не наследуют рассуждения друг друга.
-Архитектор включается по гейту, а business-context остаётся условной линзой
-системного аналитика, не отдельным владельцем бизнес-решений.
+Роли обмениваются только case artifacts и не наследуют рассуждения друг друга.
+
+## Compact и block
+
+`compact` обслуживает один связный смысловой контур. `block` делит крупную
+постановку на 3–8 семантических contracts с явным DAG, стабильными IDs и
+сохраняемым состоянием:
+
+```text
+manifest.json + ledger.json + kernel.md
+  -> blocks/Bxx.md + Bxx.index.json
+  -> local reviews
+  -> integration
+  -> global/project/architecture gates
+```
+
+Изменение kernel инвалидирует затронутые downstream blocks. Финальный PASS
+требует разрешённой трассировки, свежих fingerprints и независимых
+integration/global/project-conformance gates.
 
 ## Публичное и проектное
 
-Репозиторий намеренно не содержит профили конкретных проектов. Здесь лежат
-только общий метод, контракты ролей, generic fallback и шаблон overlay-профиля.
-
-Проектная конфигурация хранится рядом с проектом:
+Репозиторий не содержит профили конкретных проектов. Приватный overlay хранится
+рядом с проектом:
 
 ```text
 <project-root>/.vigers/profile.md
 ```
 
-Ближайший профиль вверх по дереву имеет приоритет. Если его нет, используется
-`profiles/generic.md`. Такой контракт не раскрывает в публичном репозитории
-названия проектов, внутренние источники, архитектуру и правила публикации.
+Ближайший профиль вверх по дереву имеет приоритет; без него используется
+`profiles/generic.md`. Профиль задаёт sources, architecture gate, compact/block
+правила, author/project gates и publication lifecycle.
 
 ## Установка
-
-Клонируйте пакет в пользовательский каталог скиллов Codex:
 
 ```bash
 git clone https://github.com/SVS696/vigers-skill.git ~/.codex/skills/vigers
@@ -40,65 +53,30 @@ python3 ~/.codex/skills/vigers/scripts/install.py
 python3 ~/.codex/skills/vigers/scripts/install.py --check
 ```
 
-Installer подключает сам скилл и четыре именованных агента:
-
-- `~/.agents/skills/vigers` и `~/.claude/skills/vigers`;
-- Codex-адаптеры в `~/.codex/agents/`;
-- Claude-адаптеры в `~/.claude/agents/`.
-
-Перед изменением файлов выполняется полный preflight. При конфликте installer
-останавливается до первой записи и не перетирает существующие файлы или ссылки.
-Повторный запуск идемпотентен.
-
-Для обновления существующего git-clone:
-
-```bash
-git -C ~/.codex/skills/vigers pull --ff-only
-python3 ~/.codex/skills/vigers/scripts/install.py
-```
+Installer подключает skill и четыре именованных агента к Codex и Claude,
+выполняет preflight и не перетирает существующие targets.
 
 ## Проектный профиль
-
-Скопируйте безопасный шаблон в корень приватного проекта:
 
 ```bash
 mkdir -p .vigers
 cp ~/.codex/skills/vigers/profiles/project-profile-template.md .vigers/profile.md
+python3 ~/.codex/skills/vigers/scripts/spec_pipeline.py validate \
+  --project-root "$PWD"
 ```
 
-Заполните `profile_id` и шесть секций:
-
-1. область;
-2. канонические источники;
-3. системный анализ;
-4. архитектурный гейт;
-5. артефакт и author gates;
-6. жизненный цикл и публикация.
-
-Проверка профиля:
-
-```bash
-python3 ~/.codex/skills/vigers/scripts/spec_pipeline.py detect --cwd "$PWD"
-python3 ~/.codex/skills/vigers/scripts/spec_pipeline.py show-profile auto --cwd "$PWD"
-python3 ~/.codex/skills/vigers/scripts/spec_pipeline.py validate --project-root "$PWD"
-```
+Runtime cases рекомендуется хранить в `.vigers/cases/<case-id>/` и исключать из
+git, если проект явно не требует иного.
 
 ## Использование
 
-- Codex: `$vigers` или автоматическое подключение по описанию задачи.
-- Claude Code: `/vigers` или автоматическое подключение по описанию задачи.
-
-Пример:
-
 ```text
-Используй Вигерса и преврати этот черновик в проверяемую постановку.
-Отдельно покажи допущения, архитектурный гейт и блокирующие вопросы.
+Используй Вигерса. Разбей эту многосервисную постановку на смысловые блоки,
+сохрани сквозные инварианты и пройди независимые integration, project-style и
+architecture checks.
 ```
 
-## Детерминированная маршрутизация
-
-Обычная постановка использует маршрут `core`. Для специальной области можно
-выбрать один ограниченный маршрут:
+## Детерминированная методическая маршрутизация
 
 ```bash
 python3 scripts/vigers_context.py list
@@ -106,13 +84,10 @@ python3 scripts/vigers_context.py match "краткое описание обл�
 python3 scripts/vigers_context.py show traceability
 ```
 
-Текстовая выжимка источника подключается только явным bounded fallback:
+Книжный fallback подключается только для точной детали, которой нет в
+дистилляте; весь reference corpus не грузится в один контекст.
 
-```bash
-python3 scripts/vigers_context.py show traceability --fallback
-```
-
-## Проверка пакета
+## Проверка
 
 ```bash
 python3 scripts/vigers_context.py validate
@@ -120,31 +95,20 @@ python3 scripts/spec_pipeline.py validate
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
-Валидатор проверяет маршруты метода, профильный контракт, роли обоих рантаймов,
-workflow, отсутствие жёстких домашних путей и маркеров приватных проектов.
+Validator проверяет routes, block/case contracts, оба runtime adapters,
+workflows, проектные overlays и отсутствие приватных markers/домашних путей.
 
 ## Состав
 
 ```text
 .
 ├── SKILL.md
-├── agents
-│   ├── claude
-│   ├── codex
-│   ├── contracts
-│   └── openai.yaml
+├── agents/{contracts,codex,claude}
 ├── profiles
-│   ├── generic.md
-│   └── project-profile-template.md
 ├── references
-├── scripts
-│   ├── install.py
-│   ├── spec_pipeline.py
-│   └── test_*.py
-└── workflows
-    └── specification-pipeline.md
+├── scripts/{vigers_context,spec_pipeline,case_pipeline}.py
+└── workflows/{specification-pipeline,block-pipeline}.md
 ```
 
-Исходные PDF, FB2 и растровые изображения в комплект не входят. Текстовые
-технические карты и reference-файлы, необходимые для детерминированной
-маршрутизации, сохраняются.
+Исходные PDF/FB2/изображения в комплект не входят. Пакет содержит только
+текстовые выжимки и маршруты, необходимые для детерминированной работы.
