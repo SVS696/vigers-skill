@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import mode_decision
 import spec_pipeline
 
 
@@ -48,6 +49,25 @@ def write_profile(root: Path, profile_id: str = "project-alpha") -> Path:
 
 
 class PipelineTests(unittest.TestCase):
+    def decision(self, **overrides: object) -> dict[str, object]:
+        values: dict[str, object] = {
+            "task": "Describe one behavior change",
+            "profile_id": "generic",
+            "profile_file": "profiles/generic.md",
+            "profile_source": "generic",
+            "project_root": None,
+            "estimated_blocks": 1,
+            "surfaces": ["scenarios"],
+            "components": ["service-a"],
+            "owners": ["team-a"],
+            "dependent_parts": False,
+            "unsafe_single_pass": False,
+            "project_triggers": [],
+            "requested_mode": None,
+        }
+        values.update(overrides)
+        return mode_decision.build_mode_decision(**values)  # type: ignore[arg-type]
+
     def test_package_validation(self) -> None:
         counts = spec_pipeline.validate()
         self.assertEqual(counts["builtin_profiles"], 1)
@@ -131,6 +151,58 @@ class PipelineTests(unittest.TestCase):
             profile.symlink_to(external)
             with self.assertRaises(spec_pipeline.PipelineError):
                 spec_pipeline.detect_profile(root)
+
+    def test_mode_without_block_triggers_is_compact(self) -> None:
+        decision = self.decision()
+        self.assertEqual(decision["recommended_mode"], "compact")
+        self.assertEqual(decision["selected_mode"], "compact")
+        self.assertEqual(decision["triggered_rules"], [])
+
+    def test_each_structural_trigger_can_select_block(self) -> None:
+        variants = (
+            {"estimated_blocks": 3},
+            {"surfaces": ["data", "interfaces"]},
+            {"components": ["api", "worker"]},
+            {"owners": ["team-a", "team-b"]},
+            {"dependent_parts": True},
+            {"unsafe_single_pass": True},
+            {"project_triggers": ["cross-cutting-change"]},
+        )
+        for variant in variants:
+            with self.subTest(variant=variant):
+                self.assertEqual(self.decision(**variant)["selected_mode"], "block")
+
+    def test_explicit_mode_wins_and_keeps_rule_warning(self) -> None:
+        decision = self.decision(estimated_blocks=4, requested_mode="compact")
+        self.assertEqual(decision["recommended_mode"], "block")
+        self.assertEqual(decision["selected_mode"], "compact")
+        self.assertEqual(decision["selection_source"], "explicit")
+        self.assertTrue(decision["warnings"])
+
+    def test_mode_decision_is_deterministic_across_fact_order(self) -> None:
+        first = self.decision(
+            surfaces=["interfaces", "data"],
+            components=["worker", "api"],
+        )
+        second = self.decision(
+            surfaces=["data", "interfaces"],
+            components=["api", "worker"],
+        )
+        self.assertEqual(first, second)
+
+    def test_validation_recomputes_rules_instead_of_trusting_fingerprint(self) -> None:
+        decision = self.decision()
+        decision["selected_mode"] = "block"
+        decision["fingerprint"] = mode_decision.fingerprint(decision)
+        with self.assertRaises(mode_decision.ModeDecisionError):
+            mode_decision.validate_mode_decision(decision)
+
+    def test_mode_decision_writer_refuses_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            target = Path(temp) / mode_decision.MODE_DECISION_FILENAME
+            spec_pipeline.write_mode_decision(target, self.decision())
+            with self.assertRaises(spec_pipeline.PipelineError):
+                spec_pipeline.write_mode_decision(target, self.decision())
 
 
 if __name__ == "__main__":

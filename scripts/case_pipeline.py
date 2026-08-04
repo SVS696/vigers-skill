@@ -12,6 +12,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from mode_decision import (
+    MODE_DECISION_FILENAME,
+    ModeDecisionError,
+    validate_mode_decision,
+)
+
 
 SCHEMA_VERSION = 2
 TODO_MARKER = "VIGERS_TODO"
@@ -177,6 +183,7 @@ def init_case(
     profile_id: str,
     route_id: str,
     project_root: str | None,
+    allow_unrecorded_mode: bool = False,
 ) -> None:
     """Create a new case package."""
     if not CASE_ID_RE.fullmatch(case_id):
@@ -188,8 +195,36 @@ def init_case(
     manifest_path = root / "manifest.json"
     if manifest_path.exists():
         raise CaseError(f"Case already exists: {manifest_path}")
-    if root.exists() and any(root.iterdir()):
+    existing_entries = list(root.iterdir()) if root.exists() else []
+    unexpected_entries = [
+        entry for entry in existing_entries if entry.name != MODE_DECISION_FILENAME
+    ]
+    if unexpected_entries:
         raise CaseError(f"Refusing to initialize a non-empty directory: {root}")
+
+    decision_binding: dict[str, str] | None = None
+    decision_path = root / MODE_DECISION_FILENAME
+    if decision_path.exists() or decision_path.is_symlink():
+        resolved_decision_path = case_file(root, MODE_DECISION_FILENAME)
+        if not resolved_decision_path.is_file():
+            raise CaseError(f"Mode decision is not a readable file: {decision_path}")
+        decision_payload = read_json(resolved_decision_path)
+        try:
+            validate_mode_decision(
+                decision_payload,
+                expected_mode=mode,
+                expected_profile_id=profile_id,
+            )
+        except ModeDecisionError as exc:
+            raise CaseError(f"Invalid mode decision: {exc}") from exc
+        decision_binding = {
+            "path": MODE_DECISION_FILENAME,
+            "fingerprint": decision_payload["fingerprint"],
+        }
+    elif not allow_unrecorded_mode:
+        raise CaseError(
+            f"Missing {MODE_DECISION_FILENAME}; run spec_pipeline.py suggest-mode first"
+        )
 
     (root / "blocks").mkdir(parents=True, exist_ok=True)
     (root / "reviews").mkdir(parents=True, exist_ok=True)
@@ -225,6 +260,7 @@ def init_case(
         "profile_id": profile_id,
         "route_id": route_id,
         "project_root": project_root,
+        "mode_decision": decision_binding,
         "created_at": now_utc(),
         "updated_at": now_utc(),
         "kernel": {
@@ -243,7 +279,16 @@ def init_case(
             "consistency_report": "consistency.json",
         },
         "gates": initial_gates(mode),
-        "events": [event("case_initialized", mode=mode, intent=intent)],
+        "events": [
+            event(
+                "case_initialized",
+                mode=mode,
+                intent=intent,
+                mode_decision=(
+                    decision_binding["fingerprint"] if decision_binding is not None else None
+                ),
+            )
+        ],
     }
     ledger = {"schema": SCHEMA_VERSION, "blocks": []}
     atomic_json(manifest_path, manifest)
@@ -695,6 +740,26 @@ def validate_case(
 ) -> list[str]:
     """Return structural, freshness, traceability, and optional final errors."""
     errors: list[str] = []
+    decision_binding = manifest.get("mode_decision")
+    if decision_binding is not None:
+        if not isinstance(decision_binding, dict):
+            errors.append("manifest mode_decision binding must be an object or null")
+        else:
+            decision_relative = decision_binding.get("path")
+            if decision_relative != MODE_DECISION_FILENAME:
+                errors.append("manifest mode_decision path is invalid")
+            else:
+                try:
+                    decision_payload = read_json(case_file(root, decision_relative))
+                    validate_mode_decision(
+                        decision_payload,
+                        expected_mode=manifest.get("mode"),
+                        expected_profile_id=manifest.get("profile_id"),
+                    )
+                    if decision_binding.get("fingerprint") != decision_payload["fingerprint"]:
+                        errors.append("manifest mode_decision fingerprint mismatch")
+                except (CaseError, ModeDecisionError) as exc:
+                    errors.append(f"Invalid mode decision: {exc}")
     try:
         ensure_acyclic(ledger)
     except CaseError as exc:
@@ -877,6 +942,8 @@ def context_bundle(
     block = blocks[block_id]
     dependencies = [blocks[item] for item in block["depends_on"]]
     common = ["manifest.json", "kernel.md", "evidence.md", "decisions.md"]
+    if manifest.get("mode_decision") is not None:
+        common.insert(1, MODE_DECISION_FILENAME)
     dependency_files = [
         value
         for dependency in dependencies
@@ -901,6 +968,7 @@ def context_bundle(
         "external_inputs": [
             "resolved project profile",
             "role contract",
+            "Vigers prompt and handoff contracts",
             "selected Vigers method route",
         ],
         "exclude": excluded,
@@ -916,6 +984,7 @@ def render_status(root: Path, manifest: dict[str, Any], ledger: dict[str, Any]) 
         f"- intent: `{manifest['intent']}`",
         f"- profile: `{manifest['profile_id']}`",
         f"- route: `{manifest['route_id']}`",
+        f"- mode decision: `{'recorded' if manifest.get('mode_decision') else 'legacy-unrecorded'}`",
         f"- kernel revision: `{manifest['kernel']['revision']}`",
         f"- updated: `{manifest['updated_at']}`",
         "",
@@ -970,6 +1039,11 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--profile-id", default="generic")
     init_parser.add_argument("--route-id", default="core")
     init_parser.add_argument("--project-root")
+    init_parser.add_argument(
+        "--allow-unrecorded-mode",
+        action="store_true",
+        help="Migration escape hatch for a case without mode-decision.json",
+    )
 
     add_parser = subparsers.add_parser("add-block", help="Add a semantic block")
     add_parser.add_argument("--case-root", required=True)
@@ -1032,6 +1106,7 @@ def main() -> int:
                 profile_id=args.profile_id,
                 route_id=args.route_id,
                 project_root=args.project_root,
+                allow_unrecorded_mode=args.allow_unrecorded_mode,
             )
             print(f"PASS case={args.case_id} mode={args.mode}")
             return 0

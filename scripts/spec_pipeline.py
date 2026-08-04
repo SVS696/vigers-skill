@@ -11,6 +11,13 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from mode_decision import (
+    MODE_DECISION_FILENAME,
+    SURFACES,
+    ModeDecisionError,
+    build_mode_decision,
+)
+
 
 ROOT = Path(__file__).resolve().parent.parent
 GENERIC_PROFILE_PATH = ROOT / "profiles" / "generic.md"
@@ -31,6 +38,10 @@ REQUIRED_CONTRACTS = (
     "solution-architect",
     "spec-editor",
     "spec-reviewer",
+)
+REQUIRED_AGENT_REFERENCES = (
+    "references/prompt-contract.md",
+    "references/handoff-contract.md",
 )
 REQUIRED_WORKFLOWS = {
     "specification-pipeline.md": 10,
@@ -175,6 +186,21 @@ def display_profile_file(selection: ProfileSelection) -> str:
     return PROJECT_PROFILE_RELATIVE.as_posix()
 
 
+def write_mode_decision(path: Path, payload: dict[str, object]) -> Path:
+    """Create one case-owned decision artifact without overwriting prior state."""
+    target = path.expanduser().resolve()
+    if target.name != MODE_DECISION_FILENAME:
+        raise PipelineError(f"Mode decision file must be named {MODE_DECISION_FILENAME}")
+    if target.exists() or target.is_symlink():
+        raise PipelineError(f"Refusing to overwrite mode decision: {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return target
+
+
 def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
     """Validate the public package and any explicitly supplied private overlays."""
     errors: list[str] = []
@@ -219,6 +245,10 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             for field in ("name", "description", "developer_instructions"):
                 if not isinstance(parsed.get(field), str) or not parsed[field].strip():
                     errors.append(f"{codex_relative}: missing string field {field}")
+            instructions = parsed.get("developer_instructions", "")
+            for reference in REQUIRED_AGENT_REFERENCES:
+                if reference not in instructions:
+                    errors.append(f"{codex_relative}: missing agent reference {reference}")
         except (PipelineError, tomllib.TOMLDecodeError) as exc:
             errors.append(f"{codex_relative}: {exc}")
 
@@ -230,6 +260,9 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             for field in ("name:", "description:", "tools:"):
                 if field not in claude_text:
                     errors.append(f"{claude_relative}: missing frontmatter field {field}")
+            for reference in REQUIRED_AGENT_REFERENCES:
+                if reference not in claude_text:
+                    errors.append(f"{claude_relative}: missing agent reference {reference}")
         except PipelineError as exc:
             errors.append(str(exc))
 
@@ -245,9 +278,11 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
     required_files = (
         "SKILL.md",
         "references/handoff-contract.md",
+        "references/prompt-contract.md",
         "references/case-state.md",
         "references/block-contract.md",
         "references/requirements-method.md",
+        "scripts/mode_decision.py",
         "scripts/case_pipeline.py",
         "scripts/install.py",
     )
@@ -265,6 +300,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/workflows/specification-pipeline.md",
             "{baseDir}/workflows/block-pipeline.md",
             "{baseDir}/references/handoff-contract.md",
+            "{baseDir}/references/prompt-contract.md",
             "{baseDir}/references/case-state.md",
             "{baseDir}/references/block-contract.md",
             "{baseDir}/scripts/spec_pipeline.py",
@@ -315,6 +351,26 @@ def build_parser() -> argparse.ArgumentParser:
 
     validate_parser = subparsers.add_parser("validate", help="Validate package and overlays")
     validate_parser.add_argument("--project-root", action="append", default=[])
+
+    suggest_parser = subparsers.add_parser(
+        "suggest-mode",
+        help="Select compact or block from explicit observable facts",
+    )
+    suggest_parser.add_argument("--cwd", default=".")
+    suggest_parser.add_argument("--profile-id", default="auto")
+    suggest_parser.add_argument("--task", required=True)
+    suggest_parser.add_argument("--blocks", type=int, default=1)
+    suggest_parser.add_argument("--surface", action="append", choices=sorted(SURFACES), default=[])
+    suggest_parser.add_argument("--component", action="append", default=[])
+    suggest_parser.add_argument("--owner", action="append", default=[])
+    suggest_parser.add_argument("--dependent-parts", action="store_true")
+    suggest_parser.add_argument("--unsafe-single-pass", action="store_true")
+    suggest_parser.add_argument("--project-trigger", action="append", default=[])
+    suggest_parser.add_argument("--requested-mode", choices=("compact", "block"))
+    suggest_parser.add_argument(
+        "--write",
+        help=f"Create <case-root>/{MODE_DECISION_FILENAME} without overwriting it",
+    )
     return parser
 
 
@@ -349,8 +405,32 @@ def main() -> int:
             print(selection.profile_path.read_text(encoding="utf-8"))
             return 0
 
+        if args.command == "suggest-mode":
+            selection = select_profile(args.profile_id, Path(args.cwd))
+            payload = build_mode_decision(
+                task=args.task,
+                profile_id=selection.profile_id,
+                profile_file=display_profile_file(selection),
+                profile_source=selection.source,
+                project_root=(
+                    str(selection.project_root) if selection.project_root is not None else None
+                ),
+                estimated_blocks=args.blocks,
+                surfaces=args.surface,
+                components=args.component,
+                owners=args.owner,
+                dependent_parts=args.dependent_parts,
+                unsafe_single_pass=args.unsafe_single_pass,
+                project_triggers=args.project_trigger,
+                requested_mode=args.requested_mode,
+            )
+            if args.write:
+                write_mode_decision(Path(args.write), payload)
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+            return 0
+
         raise AssertionError(args.command)
-    except (OSError, PipelineError) as exc:
+    except (OSError, PipelineError, ModeDecisionError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 

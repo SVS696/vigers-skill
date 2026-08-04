@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 import case_pipeline
+import mode_decision
 
 
 def replace_todo(path: Path, text: str) -> None:
@@ -30,8 +31,39 @@ def add_definition(root: Path, block_id: str, semantic_id: str, kind: str) -> No
 
 
 class CasePipelineTests(unittest.TestCase):
+    def write_mode_decision(
+        self,
+        root: Path,
+        *,
+        selected_mode: str = "block",
+        profile_id: str = "generic",
+    ) -> dict[str, object]:
+        is_block = selected_mode == "block"
+        payload = mode_decision.build_mode_decision(
+            task="Prepare a specification",
+            profile_id=profile_id,
+            profile_file="profiles/generic.md",
+            profile_source="generic",
+            project_root=None,
+            estimated_blocks=3 if is_block else 1,
+            surfaces=["scenarios", "interfaces"] if is_block else ["scenarios"],
+            components=[],
+            owners=[],
+            dependent_parts=False,
+            unsafe_single_pass=False,
+            project_triggers=[],
+            requested_mode=None,
+        )
+        root.mkdir(parents=True)
+        (root / mode_decision.MODE_DECISION_FILENAME).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return payload
+
     def init(self, base: Path, mode: str = "block") -> Path:
         root = base / "case"
+        self.write_mode_decision(root, selected_mode=mode)
         case_pipeline.init_case(
             root,
             case_id="demo-1",
@@ -87,6 +119,92 @@ class CasePipelineTests(unittest.TestCase):
             _, manifest, ledger = case_pipeline.load_case(root)
             self.assertEqual(manifest["schema"], 2)
             self.assertEqual(ledger["blocks"], [])
+
+    def test_init_binds_precomputed_mode_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            decision = self.write_mode_decision(root)
+            case_pipeline.init_case(
+                root,
+                case_id="mode-bound",
+                mode="block",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(
+                manifest["mode_decision"]["fingerprint"],
+                decision["fingerprint"],
+            )
+            self.assertEqual(case_pipeline.validate_case(loaded_root, manifest, ledger, final=False), [])
+
+    def test_init_rejects_mode_decision_binding_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_mode_decision(root, selected_mode="block")
+            with self.assertRaises(case_pipeline.CaseError):
+                case_pipeline.init_case(
+                    root,
+                    case_id="mode-mismatch",
+                    mode="compact",
+                    intent="create",
+                    profile_id="generic",
+                    route_id="core",
+                    project_root=None,
+                )
+
+    def test_init_requires_mode_decision_without_migration_escape_hatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            with self.assertRaises(case_pipeline.CaseError):
+                case_pipeline.init_case(
+                    root,
+                    case_id="mode-required",
+                    mode="compact",
+                    intent="create",
+                    profile_id="generic",
+                    route_id="core",
+                    project_root=None,
+                )
+
+    def test_init_allows_explicit_unrecorded_migration_case(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            case_pipeline.init_case(
+                root,
+                case_id="legacy-mode",
+                mode="compact",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+                allow_unrecorded_mode=True,
+            )
+            _, manifest, _ = case_pipeline.load_case(root)
+            self.assertIsNone(manifest["mode_decision"])
+
+    def test_validation_detects_tampered_mode_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_mode_decision(root)
+            case_pipeline.init_case(
+                root,
+                case_id="mode-tamper",
+                mode="block",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+            )
+            path = root / mode_decision.MODE_DECISION_FILENAME
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["task"] = "Tampered"
+            path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            errors = case_pipeline.validate_case(loaded_root, manifest, ledger, final=False)
+            self.assertTrue(any("fingerprint mismatch" in error for error in errors))
 
     def test_dependency_must_be_reviewed_before_ready(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

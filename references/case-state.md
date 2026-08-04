@@ -8,6 +8,7 @@
 
 ```text
 <case-root>/
+├── mode-decision.json         # факты, правила, выбранный режим, fingerprint
 ├── manifest.json              # режим, kernel revision, gates, event log
 ├── ledger.json                # блоки, DAG, состояния, пути артефактов
 ├── status.md                  # генерируемый человекочитаемый DoD
@@ -26,8 +27,35 @@
 └── draft.md                   # интегрированный документ
 ```
 
-Machine truth — `manifest.json` и `ledger.json`. Не редактируй их вручную.
-`status.md` можно в любой момент пересобрать командой `status`.
+Machine truth — связка `mode-decision.json`, `manifest.json` и `ledger.json`.
+Не редактируй их вручную. `status.md` можно в любой момент пересобрать командой
+`status`.
+
+## Решение о режиме
+
+`spec_pipeline.py suggest-mode` принимает извлечённые оркестратором факты, а не
+пытается угадать структуру задачи по сырому тексту. Результат содержит:
+
+- задачу и разрешённый профиль;
+- нормализованные facts;
+- сработавшие rules;
+- `recommended_mode`, `selected_mode` и `selection_source`;
+- warnings для явного override;
+- fingerprint всего решения.
+
+Обычный новый case начинается с записи решения по стандартному имени:
+
+```text
+python3 {baseDir}/scripts/spec_pipeline.py suggest-mode --cwd "<cwd>" \
+  --task "<область>" --blocks 3 --surface scenarios --surface interfaces \
+  --write "<case-root>/mode-decision.json"
+```
+
+До `init` case-root может содержать только этот файл. `init` проверяет связь с
+`--mode` и `--profile-id`, затем сохраняет fingerprint в manifest. Все проверки
+case повторно валидируют решение и обнаруживают ручное изменение. Старые cases
+без decision читаются как `legacy-unrecorded`. Для их миграции есть явный
+`init --allow-unrecorded-mode`; новый workflow этот escape hatch не использует.
 
 ## Состояния блока
 

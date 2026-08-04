@@ -12,6 +12,8 @@ Done.
 - reviewer в режимах block/integration/global/project-conformance.
 
 Роли обмениваются только case artifacts и не наследуют рассуждения друг друга.
+Общий prompt-contract задаёт ограниченный assignment envelope, отделяет
+инструкции от source documents и требует явный handoff-формат.
 
 ## Compact и block
 
@@ -30,6 +32,20 @@ manifest.json + ledger.json + kernel.md
 Изменение kernel инвалидирует затронутые downstream blocks. Финальный PASS
 требует разрешённой трассировки, свежих fingerprints и независимых
 integration/global/project-conformance gates.
+
+Режим выбирается детерминированно из явно зафиксированных фактов задачи:
+
+```bash
+python3 scripts/spec_pipeline.py suggest-mode --cwd "$PWD" \
+  --task "Изменение сценария и публичного интерфейса" --blocks 3 \
+  --surface scenarios --surface interfaces \
+  --write .vigers/cases/example/mode-decision.json
+```
+
+Команда возвращает рекомендацию, сработавшие правила и fingerprint. Явный
+`--requested-mode` имеет приоритет, но расхождение остаётся в warnings. Затем
+`case_pipeline.py init` связывает decision с manifest и отклоняет несовпадение
+режима или профиля.
 
 ## Публичное и проектное
 
@@ -95,7 +111,7 @@ python3 scripts/spec_pipeline.py validate
 PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
-Validator проверяет routes, block/case contracts, оба runtime adapters,
+Validator проверяет routes, mode decision, block/case contracts, оба runtime adapters,
 workflows, проектные overlays и отсутствие приватных markers/домашних путей.
 
 ## Состав
@@ -106,7 +122,7 @@ workflows, проектные overlays и отсутствие приватны�
 ├── agents/{contracts,codex,claude}
 ├── profiles
 ├── references
-├── scripts/{vigers_context,spec_pipeline,case_pipeline}.py
+├── scripts/{vigers_context,spec_pipeline,mode_decision,case_pipeline}.py
 └── workflows/{specification-pipeline,block-pipeline}.md
 ```
 

@@ -92,14 +92,16 @@ allowed-tools: Read Glob Grep Write Edit Bash AskUserQuestion Task TaskCreate Ta
 
 **Вход:** известны профиль, маршрут и объём смысловых связей.
 
-Выбери один режим:
+Сначала оркестратор извлекает только наблюдаемые признаки задачи, затем
+детерминированная команда выбирает режим. Не проси команду интерпретировать
+сырой текст постановки и не выдумывай признаки ради желаемого результата.
 
 | Режим | Когда | Workflow |
 |---|---|---|
 | `compact` | Один связный смысловой контур помещается в один независимый проход | `{baseDir}/workflows/specification-pipeline.md` |
 | `block` | Несколько сценарных/контрактных контуров, большой корпус источников или риск потери сквозной связности | `{baseDir}/workflows/block-pipeline.md` |
 
-Используй `block`, если выполняется хотя бы одно:
+Команда рекомендует `block`, если выполняется хотя бы одно:
 
 - есть три и более независимо проверяемых смысловых блока;
 - одновременно меняются несколько из: сценарии, правила, данные, интерфейсы,
@@ -112,14 +114,37 @@ allowed-tools: Read Glob Grep Write Edit Bash AskUserQuestion Task TaskCreate Ta
 семантический контракт с собственными входами, результатом и трассировкой.
 Обычно достаточно 3–8 блоков; большее число сначала сгруппируй.
 
-Для сохраняемого состояния используй:
+Передай только подтверждённые флаги: оценку числа независимых блоков; затронутые
+семантические поверхности; компоненты и владельцев; зависимый порядок;
+небезопасность одного прохода; сработавшие триггеры из проектного профиля.
+Повторяй `--surface`, `--component`, `--owner` и `--project-trigger` по одному
+разу на значение. Допустимые surfaces: `scenarios`, `rules`, `data`,
+`interfaces`, `permissions`, `states`, `errors`, `qualities`.
+
+```text
+python3 {baseDir}/scripts/spec_pipeline.py suggest-mode --cwd "<cwd>" \
+  --task "<краткая область>" --blocks <N> \
+  --surface scenarios --surface interfaces --component "<component>" \
+  --dependent-parts --project-trigger "<profile-trigger>" \
+  --write "<case-root>/mode-decision.json"
+```
+
+Передавай только применимые повторяемые аргументы и флаги. Если пользователь
+явно выбрал режим, добавь `--requested-mode compact|block`: явное решение имеет
+приоритет, а расхождение с рекомендацией сохраняется в `warnings`.
+
+Прочитай `selected_mode` из JSON и инициализируй case тем же значением:
 
 ```text
 python3 {baseDir}/scripts/case_pipeline.py init --case-root "<case-root>" \
-  --case-id "<stable-id>" --mode compact|block --profile-id "<profile-id>"
+  --case-id "<stable-id>" --mode "<selected_mode>" --profile-id "<profile-id>"
 ```
 
-**Выход:** выбран `compact` или `block`, case package инициализирован.
+`init` допускает заранее созданный `mode-decision.json`, связывает его
+fingerprint с manifest и отклоняет несовпадение режима или профиля.
+
+**Выход:** выбран и обоснован `compact` или `block`, decision и case package
+согласованы.
 
 ## Общие роли
 
@@ -220,6 +245,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 |---|---|
 | `{baseDir}/references/requirements-method.md` | Канонический метод Вигерса |
 | `{baseDir}/references/handoff-contract.md` | Контракт case package и результатов ролей |
+| `{baseDir}/references/prompt-contract.md` | Сборка ограниченного prompt для независимой роли |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/block-contract.md` | Контракт семантического блока и sidecar index |
 | `{baseDir}/references/knowledge-map.md` | Детерминированная карта методических маршрутов |

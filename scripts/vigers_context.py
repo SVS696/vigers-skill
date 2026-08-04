@@ -297,6 +297,7 @@ def validate() -> dict[str, int]:
     referenced_files: set[str] = {
         "references/requirements-method.md",
         "references/handoff-contract.md",
+        "references/prompt-contract.md",
         "references/case-state.md",
         "references/block-contract.md",
     }

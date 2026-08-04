@@ -14,6 +14,7 @@ package и передаёт каждой роли только перечисл�
   "profile_id": "generic-or-project-profile-id",
   "project_root": null,
   "route_id": "core",
+  "mode_decision": {"path": "mode-decision.json", "fingerprint": "..."},
   "kernel": {"path": "kernel.md", "revision": 1, "sha256": "..."},
   "artifacts": {},
   "gates": {},
@@ -21,9 +22,10 @@ package и передаёт каждой роли только перечисл�
 }
 ```
 
-`manifest.json` не содержит пароли, токены, cookies, приватные ключи и дампы
-БД. В block-mode `ledger.json` хранит DAG и состояния блоков; формат и переходы
-задаёт `case_pipeline.py`.
+`mode_decision` может быть `null` только у старого case. `manifest.json` не
+содержит пароли, токены, cookies, приватные ключи и дампы БД. В block-mode
+`ledger.json` хранит DAG и состояния блоков; формат и переходы задаёт
+`case_pipeline.py`.
 
 ## Kernel
 
