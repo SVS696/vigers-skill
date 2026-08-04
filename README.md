@@ -22,7 +22,8 @@ Done.
 сохраняемым состоянием:
 
 ```text
-manifest.json + ledger.json + kernel.md
+mode-decision.json + method-context.json/md
+  -> manifest.json + ledger.json + kernel.md
   -> blocks/Bxx.md + Bxx.index.json
   -> local reviews
   -> integration
@@ -97,11 +98,15 @@ architecture checks.
 ```bash
 python3 scripts/vigers_context.py list
 python3 scripts/vigers_context.py match "краткое описание области"
-python3 scripts/vigers_context.py show traceability
+python3 scripts/vigers_context.py materialize traceability \
+  --write .vigers/cases/example
 ```
 
-Книжный fallback подключается только для точной детали, которой нет в
-дистилляте; весь reference corpus не грузится в один контекст.
+Команда закрепляет ограниченную книжную выжимку в
+`method-context.json/md`. `case_pipeline.py init` связывает её fingerprint с
+manifest, а role-context автоматически выдаёт её аналитику и reviewer, но не
+редактору. Книжный fallback подключается только через явный `--fallback` для
+точной нехватки; весь reference corpus не грузится в один контекст.
 
 ## Проверка
 

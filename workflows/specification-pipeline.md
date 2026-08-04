@@ -6,8 +6,8 @@
 
 ## Фаза 1. Инициализация или возобновление
 
-**Вход:** запрос пользователя, выбранные `profile_id`, `route_id` и
-`mode-decision.json` с `selected_mode=compact`.
+**Вход:** запрос пользователя, выбранные `profile_id`, `route_id`, закреплённые
+`method-context.json/md` и `mode-decision.json` с `selected_mode=compact`.
 
 1. Найди существующий case package текущего результата.
 2. Если его нет, проверь decision через `case_pipeline.py init` в режиме
@@ -17,8 +17,8 @@
    незавершённой фазы. Не запускай готовые роли повторно без причины.
 4. Определи режим: `create`, `update`, `review`, `decompose` или `architecture`.
 
-**Выход:** decision связан с manifest; `ledger.json`, `kernel.md` и следующая
-фаза определены.
+**Выход:** decision и method context связаны с manifest; `ledger.json`,
+`kernel.md` и следующая фаза определены.
 
 ## Фаза 2. Сбор evidence pack
 
@@ -36,10 +36,14 @@
 
 ## Фаза 3. Системный анализ
 
-**Вход:** manifest, профиль, маршрут метода и evidence pack.
+**Вход:** manifest, профиль, закреплённые `method-context.json/md` и evidence
+pack.
 
-1. Запусти `vigers-system-analyst` в свежем контексте.
-2. Передай только контракт роли и входные артефакты.
+1. Получи bounded package командой `case_pipeline.py context --role
+   system-analyst` без `--block` и запусти `vigers-system-analyst` в свежем
+   контексте.
+2. Передай контракт роли, закреплённую методическую выжимку и входные
+   артефакты; не заменяй выжимку пересказом маршрута.
 3. Включи `business-context`, если неизвестна потребность, участники, процесс,
    эффект или владелец решения.
 4. Проверь, что аналитик не выдал предположение за факт и не принял решение за
@@ -92,9 +96,11 @@ architecture design note с ограничениями для редактора
 ## Фаза 7. Независимое ревью
 
 **Вход:** финальный черновик author-pass, evidence pack, модель требований,
-профиль и architecture design note.
+закреплённый method context, профиль и architecture design note.
 
-1. Запусти `vigers-spec-reviewer` в новом контексте.
+1. Получи новый bounded package командой `case_pipeline.py context --role
+   spec-reviewer` без `--block`, запусти `vigers-spec-reviewer` в новом
+   контексте и передай закреплённые `method-context.json/md`.
 2. Не передавай рассуждения редактора, самооценку и предыдущие review findings.
 3. Требуй findings по handoff-контракту: место, доказательство, последствие и
    минимальное исправление.

@@ -17,6 +17,12 @@ from mode_decision import (
     ModeDecisionError,
     validate_mode_decision,
 )
+from vigers_context import (
+    METHOD_CONTEXT_JSON,
+    METHOD_CONTEXT_MARKDOWN,
+    RouterError,
+    validate_method_context,
+)
 
 
 SCHEMA_VERSION = 2
@@ -184,6 +190,7 @@ def init_case(
     route_id: str,
     project_root: str | None,
     allow_unrecorded_mode: bool = False,
+    allow_unrecorded_method: bool = False,
 ) -> None:
     """Create a new case package."""
     if not CASE_ID_RE.fullmatch(case_id):
@@ -196,8 +203,13 @@ def init_case(
     if manifest_path.exists():
         raise CaseError(f"Case already exists: {manifest_path}")
     existing_entries = list(root.iterdir()) if root.exists() else []
+    allowed_preinit_entries = {
+        MODE_DECISION_FILENAME,
+        METHOD_CONTEXT_JSON,
+        METHOD_CONTEXT_MARKDOWN,
+    }
     unexpected_entries = [
-        entry for entry in existing_entries if entry.name != MODE_DECISION_FILENAME
+        entry for entry in existing_entries if entry.name not in allowed_preinit_entries
     ]
     if unexpected_entries:
         raise CaseError(f"Refusing to initialize a non-empty directory: {root}")
@@ -224,6 +236,43 @@ def init_case(
     elif not allow_unrecorded_mode:
         raise CaseError(
             f"Missing {MODE_DECISION_FILENAME}; run spec_pipeline.py suggest-mode first"
+        )
+
+    method_binding: dict[str, str] | None = None
+    method_metadata_path = root / METHOD_CONTEXT_JSON
+    method_content_path = root / METHOD_CONTEXT_MARKDOWN
+    method_entries_exist = (
+        method_metadata_path.exists() or method_metadata_path.is_symlink(),
+        method_content_path.exists() or method_content_path.is_symlink(),
+    )
+    if any(method_entries_exist) and not all(method_entries_exist):
+        raise CaseError("Method context requires both Markdown and JSON artifacts")
+    if all(method_entries_exist):
+        resolved_metadata_path = case_file(root, METHOD_CONTEXT_JSON)
+        resolved_content_path = case_file(root, METHOD_CONTEXT_MARKDOWN)
+        if not resolved_metadata_path.is_file() or not resolved_content_path.is_file():
+            raise CaseError("Method context artifacts must be readable files")
+        method_payload = read_json(resolved_metadata_path)
+        method_markdown = resolved_content_path.read_text(encoding="utf-8")
+        try:
+            validate_method_context(
+                method_payload,
+                method_markdown,
+                expected_route_id=route_id,
+                verify_sources=True,
+            )
+        except RouterError as exc:
+            raise CaseError(f"Invalid method context: {exc}") from exc
+        method_binding = {
+            "metadata_path": METHOD_CONTEXT_JSON,
+            "content_path": METHOD_CONTEXT_MARKDOWN,
+            "fingerprint": method_payload["fingerprint"],
+            "content_sha256": method_payload["content_sha256"],
+        }
+    elif not allow_unrecorded_method:
+        raise CaseError(
+            f"Missing {METHOD_CONTEXT_JSON} and {METHOD_CONTEXT_MARKDOWN}; "
+            "run vigers_context.py materialize first"
         )
 
     (root / "blocks").mkdir(parents=True, exist_ok=True)
@@ -261,6 +310,7 @@ def init_case(
         "route_id": route_id,
         "project_root": project_root,
         "mode_decision": decision_binding,
+        "method_context": method_binding,
         "created_at": now_utc(),
         "updated_at": now_utc(),
         "kernel": {
@@ -286,6 +336,9 @@ def init_case(
                 intent=intent,
                 mode_decision=(
                     decision_binding["fingerprint"] if decision_binding is not None else None
+                ),
+                method_context=(
+                    method_binding["fingerprint"] if method_binding is not None else None
                 ),
             )
         ],
@@ -760,6 +813,33 @@ def validate_case(
                         errors.append("manifest mode_decision fingerprint mismatch")
                 except (CaseError, ModeDecisionError) as exc:
                     errors.append(f"Invalid mode decision: {exc}")
+    method_binding = manifest.get("method_context")
+    if method_binding is not None:
+        if not isinstance(method_binding, dict):
+            errors.append("manifest method_context binding must be an object or null")
+        elif (
+            method_binding.get("metadata_path") != METHOD_CONTEXT_JSON
+            or method_binding.get("content_path") != METHOD_CONTEXT_MARKDOWN
+        ):
+            errors.append("manifest method_context paths are invalid")
+        else:
+            try:
+                method_payload = read_json(case_file(root, METHOD_CONTEXT_JSON))
+                method_markdown = case_file(root, METHOD_CONTEXT_MARKDOWN).read_text(
+                    encoding="utf-8"
+                )
+                validate_method_context(
+                    method_payload,
+                    method_markdown,
+                    expected_route_id=manifest.get("route_id"),
+                    verify_sources=False,
+                )
+                if method_binding.get("fingerprint") != method_payload["fingerprint"]:
+                    errors.append("manifest method_context fingerprint mismatch")
+                if method_binding.get("content_sha256") != method_payload["content_sha256"]:
+                    errors.append("manifest method_context content hash mismatch")
+            except (OSError, CaseError, RouterError) as exc:
+                errors.append(f"Invalid method context: {exc}")
     try:
         ensure_acyclic(ledger)
     except CaseError as exc:
@@ -932,31 +1012,66 @@ def context_bundle(
     manifest: dict[str, Any],
     ledger: dict[str, Any],
     *,
-    block_id: str,
+    block_id: str | None,
     role: str,
 ) -> dict[str, Any]:
     """Build a bounded, role-specific list of case inputs."""
+    common = ["manifest.json", "kernel.md", "evidence.md", "decisions.md"]
+    if manifest.get("mode_decision") is not None:
+        common.insert(1, MODE_DECISION_FILENAME)
+    method_inputs: list[str] = []
+    if manifest.get("method_context") is not None:
+        method_inputs = [METHOD_CONTEXT_JSON, METHOD_CONTEXT_MARKDOWN]
+    if block_id is None:
+        if manifest.get("mode") != "compact":
+            raise CaseError("Block mode context requires --block")
+        if role == "system-analyst":
+            inputs = common + method_inputs
+            excluded = ["draft.md", "reviews/global.md", "author reasoning"]
+        elif role == "spec-editor":
+            inputs = common + ["draft.md"]
+            excluded = [*method_inputs, "reviews/global.md", "author reasoning"]
+        elif role == "spec-reviewer":
+            inputs = common + method_inputs + ["draft.md"]
+            excluded = ["reviews/global.md", "author reasoning", "previous findings"]
+        else:
+            raise CaseError(f"Unsupported compact role: {role}")
+        return {
+            "case_id": manifest["case_id"],
+            "target": "whole-case",
+            "role": role,
+            "case_inputs": list(dict.fromkeys(inputs)),
+            "external_inputs": [
+                "resolved project profile",
+                "role contract",
+                "Vigers prompt and handoff contracts",
+                "explicitly named requirement/design artifact when required by the role",
+            ],
+            "exclude": excluded,
+        }
     blocks = blocks_by_id(ledger)
     if block_id not in blocks:
         raise CaseError(f"Unknown block: {block_id}")
     block = blocks[block_id]
     dependencies = [blocks[item] for item in block["depends_on"]]
-    common = ["manifest.json", "kernel.md", "evidence.md", "decisions.md"]
-    if manifest.get("mode_decision") is not None:
-        common.insert(1, MODE_DECISION_FILENAME)
     dependency_files = [
         value
         for dependency in dependencies
         for value in (dependency["artifact"], dependency["semantic_index"])
     ]
     if role == "system-analyst":
-        inputs = common + dependency_files
+        inputs = common + method_inputs + dependency_files
         excluded = [block["review"], "draft.md", "reviews/global.md"]
     elif role == "spec-editor":
         inputs = common + dependency_files + [block["artifact"], block["semantic_index"]]
         excluded = [block["review"], "reviews/global.md"]
     elif role == "spec-reviewer":
-        inputs = common + dependency_files + [block["artifact"], block["semantic_index"]]
+        inputs = (
+            common
+            + method_inputs
+            + dependency_files
+            + [block["artifact"], block["semantic_index"]]
+        )
         excluded = [block["review"], "reviews/global.md", "author reasoning"]
     else:
         raise CaseError(f"Unsupported block role: {role}")
@@ -969,7 +1084,6 @@ def context_bundle(
             "resolved project profile",
             "role contract",
             "Vigers prompt and handoff contracts",
-            "selected Vigers method route",
         ],
         "exclude": excluded,
     }
@@ -985,6 +1099,7 @@ def render_status(root: Path, manifest: dict[str, Any], ledger: dict[str, Any]) 
         f"- profile: `{manifest['profile_id']}`",
         f"- route: `{manifest['route_id']}`",
         f"- mode decision: `{'recorded' if manifest.get('mode_decision') else 'legacy-unrecorded'}`",
+        f"- method context: `{'recorded' if manifest.get('method_context') else 'legacy-unrecorded'}`",
         f"- kernel revision: `{manifest['kernel']['revision']}`",
         f"- updated: `{manifest['updated_at']}`",
         "",
@@ -1044,6 +1159,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Migration escape hatch for a case without mode-decision.json",
     )
+    init_parser.add_argument(
+        "--allow-unrecorded-method",
+        action="store_true",
+        help="Migration escape hatch for a case without pinned method context",
+    )
 
     add_parser = subparsers.add_parser("add-block", help="Add a semantic block")
     add_parser.add_argument("--case-root", required=True)
@@ -1069,9 +1189,9 @@ def build_parser() -> argparse.ArgumentParser:
     gate_parser.add_argument("--evidence")
     gate_parser.add_argument("--note")
 
-    context_parser = subparsers.add_parser("context", help="Print a bounded block context")
+    context_parser = subparsers.add_parser("context", help="Print a bounded role context")
     context_parser.add_argument("--case-root", required=True)
-    context_parser.add_argument("--block", required=True)
+    context_parser.add_argument("--block", help="Required in block mode; omit in compact mode")
     context_parser.add_argument(
         "--role",
         choices=("system-analyst", "spec-editor", "spec-reviewer"),
@@ -1107,6 +1227,7 @@ def main() -> int:
                 route_id=args.route_id,
                 project_root=args.project_root,
                 allow_unrecorded_mode=args.allow_unrecorded_mode,
+                allow_unrecorded_method=args.allow_unrecorded_method,
             )
             print(f"PASS case={args.case_id} mode={args.mode}")
             return 0

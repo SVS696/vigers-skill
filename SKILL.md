@@ -18,7 +18,8 @@ allowed-tools: Read Glob Grep Write Edit Bash AskUserQuestion Task TaskCreate Ta
    профили не входят в общий распространяемый пакет.
 2. **Артефакты вместо пересказа чата.** Роли обмениваются через case package по
    `{baseDir}/references/handoff-contract.md`. `kernel.md` удерживает общие
-   инварианты, а `manifest.json` и `ledger.json` — состояние и зависимости.
+   инварианты, `method-context.md/json` фиксируют выбранную выжимку метода, а
+   `manifest.json` и `ledger.json` — состояние и зависимости.
 3. **Свежий контекст на роль или блок.** Каждый вызов агента получает только
    контракт роли, профиль, kernel и нужные входные артефакты. Не передавай
    историю рассуждений автора, нерелевантные блоки и прошлые findings.
@@ -80,13 +81,19 @@ allowed-tools: Read Glob Grep Write Edit Bash AskUserQuestion Task TaskCreate Ta
 
    ```text
    python3 {baseDir}/scripts/vigers_context.py match "<область задачи>"
-   python3 {baseDir}/scripts/vigers_context.py show <route_id>
+   python3 {baseDir}/scripts/vigers_context.py materialize <route_id> \
+     --write "<case-root>"
    ```
 
-3. Один точный C/D/T-артефакт загружай командой `id`. Ограниченный книжный
-   fallback подключай только если после дистиллята осталась названная нехватка.
+3. Один точный C/D/T-артефакт добавляй через `--id <Cxx|Dxx|Txx>`, только если
+   он разрешён маршрутом. Ограниченный книжный fallback добавляй через
+   `--fallback`, только если после дистиллята осталась названная нехватка.
+4. Не пересказывай результат в prompt вручную. `materialize` создаёт
+   `method-context.md` и `method-context.json`; `case_pipeline.py init`
+   проверяет их по текущим источникам метода и связывает fingerprint с case.
 
-**Выход:** один `route_id` и ограниченный методический контекст.
+**Выход:** один `route_id` и неизменяемый ограниченный методический контекст в
+case-root.
 
 ## Фаза 2. Выбери масштаб выполнения
 
@@ -140,8 +147,9 @@ python3 {baseDir}/scripts/case_pipeline.py init --case-root "<case-root>" \
   --case-id "<stable-id>" --mode "<selected_mode>" --profile-id "<profile-id>"
 ```
 
-`init` допускает заранее созданный `mode-decision.json`, связывает его
-fingerprint с manifest и отклоняет несовпадение режима или профиля.
+`init` допускает заранее созданные decision и method context, связывает оба
+fingerprint с manifest и отклоняет несовпадение режима, профиля, маршрута или
+книжной выжимки.
 
 **Выход:** выбран и обоснован `compact` или `block`, decision и case package
 согласованы.
@@ -227,6 +235,8 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 ## Критерии успеха
 
 - Выбран ровно один ближайший project overlay либо generic и один маршрут метода.
+- Методический маршрут материализован и привязан к case; аналитик и reviewer
+  получают его автоматически, а редактор не получает книжный корпус.
 - Аналитик отделил факты, решения, предположения и открытые вопросы.
 - В block-mode каждый блок свеж относительно kernel и прошёл локальное ревью.
 - Семантические ID уникальны, ссылки разрешаются, REQ трассируются к AC.

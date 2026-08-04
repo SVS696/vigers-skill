@@ -19,7 +19,7 @@
 <assignment>
 mode: block
 target: B03
-allowed_inputs: manifest.json, mode-decision.json, kernel.md, evidence.md, ...
+allowed_inputs: manifest.json, method-context.json, method-context.md, kernel.md, evidence.md, ...
 excluded: author reasoning, previous findings, unrelated blocks
 required_output: block artifact + semantic index
 </assignment>
@@ -57,8 +57,10 @@ Process only target B03 and return the required output without editing files.
 1. Передан ровно один допустимый mode и один target.
 2. Все обязательные входы перечислены и доступны.
 3. Kernel revision/fingerprint соответствует manifest, если это применимо.
-4. Исключённые артефакты не используются как скрытый контекст.
-5. Output contract однозначно выбран.
+4. Для analyst/reviewer fingerprint и content hash `method-context` совпадают с
+   manifest; отсутствие пары файлов — `input-error`.
+5. Исключённые артефакты не используются как скрытый контекст.
+6. Output contract однозначно выбран.
 
 При нарушении верни `input-error` или `gap` координатору. Не меняй case-state.
 

@@ -4,8 +4,11 @@
 from __future__ import annotations
 
 import io
+import json
+import tempfile
 import unittest
 from contextlib import redirect_stdout
+from pathlib import Path
 
 import vigers_context
 
@@ -81,6 +84,67 @@ class RouterTests(unittest.TestCase):
         rendered = output.getvalue()
         self.assertIn("C09. Информационная безопасность", rendered)
         self.assertNotIn("C10. Измерение удобства", rendered)
+
+    def test_materialized_context_is_deterministic_and_valid(self) -> None:
+        first_payload, first_markdown = vigers_context.build_method_context(
+            self.data,
+            "traceability",
+        )
+        second_payload, second_markdown = vigers_context.build_method_context(
+            self.data,
+            "traceability",
+        )
+        self.assertEqual(first_payload, second_payload)
+        self.assertEqual(first_markdown, second_markdown)
+        vigers_context.validate_method_context(
+            first_payload,
+            first_markdown,
+            expected_route_id="traceability",
+            verify_sources=True,
+        )
+        self.assertNotIn("book-traceability", first_markdown)
+
+    def test_materialized_context_includes_only_requested_fallback(self) -> None:
+        payload, markdown = vigers_context.build_method_context(
+            self.data,
+            "traceability",
+            include_fallback=True,
+        )
+        self.assertTrue(payload["include_fallback"])
+        self.assertIn("book-traceability", markdown)
+        self.assertNotIn("ОГЛАВЛЕНИЕ", markdown)
+
+    def test_materialized_context_accepts_one_route_owned_exact_id(self) -> None:
+        payload, markdown = vigers_context.build_method_context(
+            self.data,
+            "quality",
+            exact_ids=["C09"],
+        )
+        self.assertEqual(payload["exact_ids"], ["C09"])
+        self.assertIn("C09. Информационная безопасность", markdown)
+        with self.assertRaises(vigers_context.RouterError):
+            vigers_context.build_method_context(
+                self.data,
+                "traceability",
+                exact_ids=["C09"],
+            )
+
+    def test_method_context_detects_tampered_markdown(self) -> None:
+        payload, markdown = vigers_context.build_method_context(self.data, "core")
+        with self.assertRaises(vigers_context.RouterError):
+            vigers_context.validate_method_context(payload, markdown + "tampered")
+
+    def test_method_context_writer_refuses_overwrite(self) -> None:
+        payload, markdown = vigers_context.build_method_context(self.data, "core")
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            vigers_context.write_method_context(root, payload, markdown)
+            saved = json.loads(
+                (root / vigers_context.METHOD_CONTEXT_JSON).read_text(encoding="utf-8")
+            )
+            self.assertEqual(saved["fingerprint"], payload["fingerprint"])
+            with self.assertRaises(vigers_context.RouterError):
+                vigers_context.write_method_context(root, payload, markdown)
 
 
 if __name__ == "__main__":

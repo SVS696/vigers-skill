@@ -15,6 +15,12 @@ package и передаёт каждой роли только перечисл�
   "project_root": null,
   "route_id": "core",
   "mode_decision": {"path": "mode-decision.json", "fingerprint": "..."},
+  "method_context": {
+    "metadata_path": "method-context.json",
+    "content_path": "method-context.md",
+    "fingerprint": "...",
+    "content_sha256": "..."
+  },
   "kernel": {"path": "kernel.md", "revision": 1, "sha256": "..."},
   "artifacts": {},
   "gates": {},
@@ -22,10 +28,12 @@ package и передаёт каждой роли только перечисл�
 }
 ```
 
-`mode_decision` может быть `null` только у старого case. `manifest.json` не
-содержит пароли, токены, cookies, приватные ключи и дампы БД. В block-mode
-`ledger.json` хранит DAG и состояния блоков; формат и переходы задаёт
-`case_pipeline.py`.
+`mode_decision` и `method_context` могут быть `null` только у старого case.
+Методический context материализуется до `init`, проверяется по канонической
+выжимке и затем используется как закреплённый snapshot: изменение любого из
+двух файлов ломает валидацию. `manifest.json` не содержит пароли, токены,
+cookies, приватные ключи и дампы БД. В block-mode `ledger.json` хранит DAG и
+состояния блоков; формат и переходы задаёт `case_pipeline.py`.
 
 ## Kernel
 
@@ -50,6 +58,11 @@ revision и делает затронутые результаты stale.
 - факты отдельно от сообщений, предположений и выводов;
 - недоступные источники и пробелы покрытия;
 - существующие решения пользователя, которые нельзя переоткрывать молча.
+
+`method-context.md/json` входят в обязательный вход системного аналитика и
+логического reviewer. Они не являются evidence задачи и не передаются
+редактору как источник нового смысла. Координатор получает точный список файлов
+для block-role через `case_pipeline.py context`, а не собирает его по памяти.
 
 ## Модель требований
 

@@ -9,13 +9,15 @@
 ## Вход
 
 - case manifest;
+- закреплённые `method-context.json` и `method-context.md` с fingerprint из
+  manifest;
 - kernel и, в block-mode, карточка целевого блока;
 - проектный профиль;
-- выбранный маршрут метода Вигерса;
 - intake/evidence pack;
 - существующая постановка при режиме `update` или `review`.
 
-Если одного входа нет, обозначь gap. Не восстанавливай факт по памяти.
+Если одного входа нет или method context не связан с manifest, верни
+`input-error`. Не восстанавливай метод или факт по памяти.
 
 ## Business-context lens
 

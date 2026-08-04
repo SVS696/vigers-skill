@@ -10,6 +10,7 @@ from pathlib import Path
 
 import case_pipeline
 import mode_decision
+import vigers_context
 
 
 def replace_todo(path: Path, text: str) -> None:
@@ -54,15 +55,29 @@ class CasePipelineTests(unittest.TestCase):
             project_triggers=[],
             requested_mode=None,
         )
-        root.mkdir(parents=True)
+        root.mkdir(parents=True, exist_ok=True)
         (root / mode_decision.MODE_DECISION_FILENAME).write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
             encoding="utf-8",
         )
         return payload
 
+    def write_method_context(
+        self,
+        root: Path,
+        *,
+        route_id: str = "core",
+    ) -> dict[str, object]:
+        payload, markdown = vigers_context.build_method_context(
+            vigers_context.load_map(),
+            route_id,
+        )
+        vigers_context.write_method_context(root, payload, markdown)
+        return payload
+
     def init(self, base: Path, mode: str = "block") -> Path:
         root = base / "case"
+        self.write_method_context(root)
         self.write_mode_decision(root, selected_mode=mode)
         case_pipeline.init_case(
             root,
@@ -123,6 +138,7 @@ class CasePipelineTests(unittest.TestCase):
     def test_init_binds_precomputed_mode_decision(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "case"
+            self.write_method_context(root)
             decision = self.write_mode_decision(root)
             case_pipeline.init_case(
                 root,
@@ -140,9 +156,34 @@ class CasePipelineTests(unittest.TestCase):
             )
             self.assertEqual(case_pipeline.validate_case(loaded_root, manifest, ledger, final=False), [])
 
+    def test_init_binds_pinned_method_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            method = self.write_method_context(root, route_id="traceability")
+            self.write_mode_decision(root)
+            case_pipeline.init_case(
+                root,
+                case_id="method-bound",
+                mode="block",
+                intent="create",
+                profile_id="generic",
+                route_id="traceability",
+                project_root=None,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(
+                manifest["method_context"]["fingerprint"],
+                method["fingerprint"],
+            )
+            self.assertEqual(
+                case_pipeline.validate_case(loaded_root, manifest, ledger, final=False),
+                [],
+            )
+
     def test_init_rejects_mode_decision_binding_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "case"
+            self.write_method_context(root)
             self.write_mode_decision(root, selected_mode="block")
             with self.assertRaises(case_pipeline.CaseError):
                 case_pipeline.init_case(
@@ -169,6 +210,37 @@ class CasePipelineTests(unittest.TestCase):
                     project_root=None,
                 )
 
+    def test_init_requires_method_context_without_migration_escape_hatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_mode_decision(root, selected_mode="compact")
+            with self.assertRaises(case_pipeline.CaseError):
+                case_pipeline.init_case(
+                    root,
+                    case_id="method-required",
+                    mode="compact",
+                    intent="create",
+                    profile_id="generic",
+                    route_id="core",
+                    project_root=None,
+                )
+
+    def test_init_rejects_method_route_mismatch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_method_context(root, route_id="traceability")
+            self.write_mode_decision(root)
+            with self.assertRaises(case_pipeline.CaseError):
+                case_pipeline.init_case(
+                    root,
+                    case_id="method-mismatch",
+                    mode="block",
+                    intent="create",
+                    profile_id="generic",
+                    route_id="core",
+                    project_root=None,
+                )
+
     def test_init_allows_explicit_unrecorded_migration_case(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "case"
@@ -181,6 +253,7 @@ class CasePipelineTests(unittest.TestCase):
                 route_id="core",
                 project_root=None,
                 allow_unrecorded_mode=True,
+                allow_unrecorded_method=True,
             )
             _, manifest, _ = case_pipeline.load_case(root)
             self.assertIsNone(manifest["mode_decision"])
@@ -188,6 +261,7 @@ class CasePipelineTests(unittest.TestCase):
     def test_validation_detects_tampered_mode_decision(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "case"
+            self.write_method_context(root)
             self.write_mode_decision(root)
             case_pipeline.init_case(
                 root,
@@ -205,6 +279,15 @@ class CasePipelineTests(unittest.TestCase):
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             errors = case_pipeline.validate_case(loaded_root, manifest, ledger, final=False)
             self.assertTrue(any("fingerprint mismatch" in error for error in errors))
+
+    def test_validation_detects_tampered_method_context(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            path = root / vigers_context.METHOD_CONTEXT_MARKDOWN
+            path.write_text(path.read_text(encoding="utf-8") + "tampered\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            errors = case_pipeline.validate_case(loaded_root, manifest, ledger, final=False)
+            self.assertTrue(any("Markdown hash mismatch" in error for error in errors))
 
     def test_dependency_must_be_reviewed_before_ready(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -316,7 +399,18 @@ class CasePipelineTests(unittest.TestCase):
                 role="spec-reviewer",
             )
             self.assertIn("blocks/B01.md", bundle["case_inputs"])
+            self.assertIn(vigers_context.METHOD_CONTEXT_MARKDOWN, bundle["case_inputs"])
             self.assertIn("reviews/B01.md", bundle["exclude"])
+            editor_bundle = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                block_id="B01",
+                role="spec-editor",
+            )
+            self.assertNotIn(
+                vigers_context.METHOD_CONTEXT_MARKDOWN,
+                editor_bundle["case_inputs"],
+            )
 
     def test_compact_mode_marks_block_only_gates_not_required(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -324,6 +418,24 @@ class CasePipelineTests(unittest.TestCase):
             _, manifest, _ = case_pipeline.load_case(root)
             self.assertEqual(manifest["gates"]["semantic_integration"]["status"], "not_required")
             self.assertEqual(manifest["gates"]["integration_review"]["status"], "not_required")
+
+    def test_compact_context_routes_method_only_to_semantic_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp), mode="compact")
+            _, manifest, ledger = case_pipeline.load_case(root)
+            analyst = case_pipeline.context_bundle(
+                manifest, ledger, block_id=None, role="system-analyst"
+            )
+            editor = case_pipeline.context_bundle(
+                manifest, ledger, block_id=None, role="spec-editor"
+            )
+            reviewer = case_pipeline.context_bundle(
+                manifest, ledger, block_id=None, role="spec-reviewer"
+            )
+            self.assertIn(vigers_context.METHOD_CONTEXT_MARKDOWN, analyst["case_inputs"])
+            self.assertIn(vigers_context.METHOD_CONTEXT_MARKDOWN, reviewer["case_inputs"])
+            self.assertNotIn(vigers_context.METHOD_CONTEXT_MARKDOWN, editor["case_inputs"])
+            self.assertEqual(analyst["target"], "whole-case")
 
     def test_passed_gate_requires_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -31,6 +32,10 @@ NATIVE_ID_RE = re.compile(r"^([CDT]\d{2})\.\s")
 WORD_RE = re.compile(r"[0-9a-zа-яё]+", re.IGNORECASE)
 MAX_TARGET_CHARS = 50_000
 MAX_DISTILLED_TARGETS = 5
+MAX_METHOD_CONTEXT_CHARS = 120_000
+METHOD_CONTEXT_SCHEMA = 1
+METHOD_CONTEXT_JSON = "method-context.json"
+METHOD_CONTEXT_MARKDOWN = "method-context.md"
 SHORT_TERMS = {
     "api",
     "crud",
@@ -238,6 +243,223 @@ def extract_target(target: dict[str, Any]) -> tuple[str, str]:
             f"Target {label} is {len(content)} characters; split the block"
         )
     return label, content
+
+
+def text_sha256(content: str) -> str:
+    """Hash UTF-8 text deterministically."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def payload_fingerprint(payload: dict[str, Any]) -> str:
+    """Hash canonical JSON without trusting its stored fingerprint."""
+    canonical = {key: value for key, value in payload.items() if key != "fingerprint"}
+    encoded = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def method_section(
+    *,
+    kind: str,
+    source: str,
+    selector_type: str,
+    selector: str,
+    label: str,
+    content: str,
+) -> tuple[dict[str, Any], str]:
+    """Build one provenance row and its Markdown section."""
+    metadata = {
+        "kind": kind,
+        "source": source,
+        "selector": {"type": selector_type, "value": selector},
+        "label": label,
+        "content_sha256": text_sha256(content),
+        "characters": len(content),
+    }
+    heading = f"## {kind.upper()}: {label}"
+    return metadata, f"{heading}\n\n{content}"
+
+
+def build_method_context(
+    data: dict[str, Any],
+    route_id: str,
+    *,
+    include_fallback: bool = False,
+    exact_ids: list[str] | None = None,
+) -> tuple[dict[str, Any], str]:
+    """Materialize one bounded method route as Markdown plus a JSON sidecar."""
+    routes = route_index(data)
+    route = routes.get(route_id)
+    if route is None:
+        raise RouterError(f"Unknown route {route_id!r}. Run the list command first.")
+
+    normalized_ids = [native_id.upper() for native_id in (exact_ids or [])]
+    if len(normalized_ids) > 1:
+        raise RouterError("Method context accepts at most one exact C/D/T section")
+    if len(set(normalized_ids)) != len(normalized_ids):
+        raise RouterError("Method context exact IDs must be unique")
+    allowed_ids = set(route.get("optional_ids", []))
+    disallowed_ids = sorted(set(normalized_ids) - allowed_ids)
+    if disallowed_ids:
+        raise RouterError(
+            f"Route {route_id!r} does not allow exact IDs: {', '.join(disallowed_ids)}"
+        )
+
+    section_rows: list[dict[str, Any]] = []
+    rendered_sections: list[str] = []
+    for heading in route["core"]:
+        content = extract_heading(METHOD_PATH, heading)
+        row, rendered = method_section(
+            kind="core",
+            source=str(METHOD_PATH.relative_to(ROOT)),
+            selector_type="heading",
+            selector=heading,
+            label=f"references/requirements-method.md :: {heading}",
+            content=content,
+        )
+        section_rows.append(row)
+        rendered_sections.append(rendered)
+
+    for target in route.get("distilled", []):
+        label, content = extract_target(target)
+        selector_type = "heading" if "heading" in target else "block"
+        row, rendered = method_section(
+            kind="distilled",
+            source=target["file"],
+            selector_type=selector_type,
+            selector=target[selector_type],
+            label=label,
+            content=content,
+        )
+        section_rows.append(row)
+        rendered_sections.append(rendered)
+
+    if include_fallback:
+        for target in route.get("fallback", []):
+            label, content = extract_target(target)
+            selector_type = "heading" if "heading" in target else "block"
+            row, rendered = method_section(
+                kind="fallback",
+                source=target["file"],
+                selector_type=selector_type,
+                selector=target[selector_type],
+                label=label,
+                content=content,
+            )
+            section_rows.append(row)
+            rendered_sections.append(rendered)
+
+    native = native_sections()
+    for native_id in normalized_ids:
+        path, heading = native[native_id]
+        content = extract_heading(path, heading)
+        row, rendered = method_section(
+            kind="exact",
+            source=str(path.relative_to(ROOT)),
+            selector_type="native_id",
+            selector=native_id,
+            label=f"{path.relative_to(ROOT)} :: {heading}",
+            content=content,
+        )
+        section_rows.append(row)
+        rendered_sections.append(rendered)
+
+    header = (
+        f"# Vigers method context: {route_id}\n\n"
+        f"- route_id: `{route_id}`\n"
+        f"- when: {route['when']}\n"
+        f"- expected result: {route['result']}\n"
+        f"- fallback included: `{'yes' if include_fallback else 'no'}`\n"
+        f"- exact IDs: `{', '.join(normalized_ids) if normalized_ids else 'none'}`"
+    )
+    markdown = header + "\n\n" + "\n\n".join(rendered_sections) + "\n"
+    if len(markdown) > MAX_METHOD_CONTEXT_CHARS:
+        raise RouterError(
+            f"Method context is {len(markdown)} characters; reduce the route inputs"
+        )
+
+    payload: dict[str, Any] = {
+        "schema": METHOD_CONTEXT_SCHEMA,
+        "route_id": route_id,
+        "include_fallback": include_fallback,
+        "exact_ids": normalized_ids,
+        "when": route["when"],
+        "expected_result": route["result"],
+        "content_path": METHOD_CONTEXT_MARKDOWN,
+        "content_sha256": text_sha256(markdown),
+        "sections": section_rows,
+    }
+    payload["fingerprint"] = payload_fingerprint(payload)
+    return payload, markdown
+
+
+def validate_method_context(
+    payload: Any,
+    markdown: str,
+    *,
+    expected_route_id: str | None = None,
+    verify_sources: bool = False,
+) -> None:
+    """Validate method snapshot integrity, route binding, and optionally live sources."""
+    if not isinstance(payload, dict) or payload.get("schema") != METHOD_CONTEXT_SCHEMA:
+        raise RouterError("Unsupported method context schema")
+    if not isinstance(payload.get("route_id"), str) or not payload["route_id"]:
+        raise RouterError("Method context has no route_id")
+    if payload.get("content_path") != METHOD_CONTEXT_MARKDOWN:
+        raise RouterError("Method context content_path is invalid")
+    if payload.get("content_sha256") != text_sha256(markdown):
+        raise RouterError("Method context Markdown hash mismatch")
+    if payload.get("fingerprint") != payload_fingerprint(payload):
+        raise RouterError("Method context fingerprint mismatch")
+    if not isinstance(payload.get("include_fallback"), bool):
+        raise RouterError("Method context include_fallback must be Boolean")
+    if not isinstance(payload.get("exact_ids"), list):
+        raise RouterError("Method context exact_ids must be an array")
+    if not isinstance(payload.get("sections"), list) or not payload["sections"]:
+        raise RouterError("Method context sections must be a non-empty array")
+    for section in payload["sections"]:
+        if not isinstance(section, dict):
+            raise RouterError("Method context section must be an object")
+        for field in ("kind", "source", "label", "content_sha256"):
+            if not isinstance(section.get(field), str) or not section[field]:
+                raise RouterError(f"Method context section has no {field}")
+        selector = section.get("selector")
+        if not isinstance(selector, dict) or not isinstance(selector.get("value"), str):
+            raise RouterError("Method context section has no selector")
+    if expected_route_id is not None and payload["route_id"] != expected_route_id:
+        raise RouterError(
+            f"Method context route {payload['route_id']!r}, case uses {expected_route_id!r}"
+        )
+
+    if verify_sources:
+        rebuilt_payload, rebuilt_markdown = build_method_context(
+            load_map(),
+            payload["route_id"],
+            include_fallback=payload["include_fallback"],
+            exact_ids=payload["exact_ids"],
+        )
+        if payload != rebuilt_payload or markdown != rebuilt_markdown:
+            raise RouterError("Method context does not match current routed sources")
+
+
+def write_method_context(root: Path, payload: dict[str, Any], markdown: str) -> None:
+    """Create both method artifacts without overwriting prior case state."""
+    target_root = root.expanduser().resolve()
+    metadata_path = target_root / METHOD_CONTEXT_JSON
+    content_path = target_root / METHOD_CONTEXT_MARKDOWN
+    for target in (metadata_path, content_path):
+        if target.exists() or target.is_symlink():
+            raise RouterError(f"Refusing to overwrite method context: {target}")
+    target_root.mkdir(parents=True, exist_ok=True)
+    content_path.write_text(markdown, encoding="utf-8")
+    metadata_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
 
 
 def route_index(data: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -576,6 +798,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     id_parser.add_argument("native_id")
 
+    materialize_parser = subparsers.add_parser(
+        "materialize",
+        help="Create a pinned method-context Markdown and JSON pair",
+    )
+    materialize_parser.add_argument("route_id")
+    materialize_parser.add_argument("--fallback", action="store_true")
+    materialize_parser.add_argument("--id", action="append", default=[])
+    materialize_parser.add_argument("--write", required=True, help="Target case-root")
+
     subparsers.add_parser(
         "validate", help="Validate routes, blocks, IDs, paths, and coverage"
     )
@@ -605,6 +836,21 @@ def main() -> int:
             show_route(data, args.route_id, args.fallback)
         elif args.command == "id":
             show_native_id(args.native_id)
+        elif args.command == "materialize":
+            payload, markdown = build_method_context(
+                data,
+                args.route_id,
+                include_fallback=args.fallback,
+                exact_ids=args.id,
+            )
+            validate_method_context(
+                payload,
+                markdown,
+                expected_route_id=args.route_id,
+                verify_sources=True,
+            )
+            write_method_context(Path(args.write), payload, markdown)
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
         return 0
     except (OSError, RouterError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
