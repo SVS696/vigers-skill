@@ -11,6 +11,7 @@ from pathlib import Path
 
 DEFAULT_SKILL_ROOT = Path(__file__).resolve().parent.parent
 AGENT_NAMES = (
+    "vigers-planner",
     "vigers-system-analyst",
     "vigers-solution-architect",
     "vigers-spec-editor",

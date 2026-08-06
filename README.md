@@ -1,11 +1,12 @@
 # Вигерс
 
-Переносимый мультиагентный workflow для подготовки, поблочной сборки и
-независимого ревью постановок, требований, Acceptance Criteria и Definition of
-Done.
+Переносимый мультиагентный workflow для исследования источников, согласуемого
+планирования, поблочной сборки и независимого ревью постановок, требований,
+Acceptance Criteria и Definition of Done.
 
-Общий пакет содержит четыре независимые роли:
+Общий пакет содержит пять независимых ролей:
 
+- read-only планировщик для research coverage, DAG этапов и external drafts;
 - системный аналитик с условной business-context линзой;
 - архитектор решения в раздельных режимах `design` и `conformance`;
 - редактор постановки в режимах document/block-render/integrate;
@@ -15,14 +16,28 @@ Done.
 Общий prompt-contract задаёт ограниченный assignment envelope, отделяет
 инструкции от source documents и требует явный handoff-формат.
 
-## Compact и block
+## Planning, compact и block
+
+До нового анализа, изменения, декомпозиции или архитектурной проработки Vigers
+создаёт planning-case:
+
+```text
+intake -> researching -> researched -> artifacts_planned
+  -> published_for_review -> approved -> handed_to_vigers
+```
+
+Research включает поиск по применимым источникам project profile, фиксацию
+отрицательных результатов и gaps. Этапы и внешние checklists строятся только
+после coverage gate. Пользователь видит план и созданные draft-артефакты; его
+комментарий создаёт новую immutable revision. Полноценный Vigers case принимает
+только approved `planning-handoff.json/md`.
 
 `compact` обслуживает один связный смысловой контур. `block` делит крупную
 постановку на 3–8 семантических contracts с явным DAG, стабильными IDs и
 сохраняемым состоянием:
 
 ```text
-mode-decision.json + method-context.json/md
+planning-handoff.json/md + mode-decision.json + method-context.json/md
   -> manifest.json + ledger.json + kernel.md
   -> blocks/Bxx.md + Bxx.index.json
   -> local reviews
@@ -45,8 +60,8 @@ python3 scripts/spec_pipeline.py suggest-mode --cwd "$PWD" \
 
 Команда возвращает рекомендацию, сработавшие правила и fingerprint. Явный
 `--requested-mode` имеет приоритет, но расхождение остаётся в warnings. Затем
-`case_pipeline.py init` связывает decision с manifest и отклоняет несовпадение
-режима или профиля.
+`case_pipeline.py init` связывает planning approval и decision с manifest и
+отклоняет несовпадение режима, профиля или fingerprints.
 
 ## Публичное и проектное
 
@@ -58,8 +73,9 @@ python3 scripts/spec_pipeline.py suggest-mode --cwd "$PWD" \
 ```
 
 Ближайший профиль вверх по дереву имеет приоритет; без него используется
-`profiles/generic.md`. Профиль задаёт sources, architecture gate, compact/block
-правила, author/project gates и publication lifecycle.
+`profiles/generic.md`. Профиль задаёт research sources, planning/external
+adapters, architecture gate, compact/block правила, author/project gates и
+publication lifecycle.
 
 ## Установка
 
@@ -70,7 +86,7 @@ python3 ~/.codex/skills/vigers/scripts/install.py
 python3 ~/.codex/skills/vigers/scripts/install.py --check
 ```
 
-Installer подключает skill и четыре именованных агента к Codex и Claude,
+Installer подключает skill и пять именованных агентов к Codex и Claude,
 выполняет preflight и не перетирает существующие targets.
 
 ## Проектный профиль
@@ -127,8 +143,8 @@ workflows, проектные overlays и отсутствие приватны�
 ├── agents/{contracts,codex,claude}
 ├── profiles
 ├── references
-├── scripts/{vigers_context,spec_pipeline,mode_decision,case_pipeline}.py
-└── workflows/{specification-pipeline,block-pipeline}.md
+├── scripts/{vigers_context,spec_pipeline,mode_decision,planning_case,case_pipeline}.py
+└── workflows/{planning-pipeline,specification-pipeline,block-pipeline}.md
 ```
 
 Исходные PDF/FB2/изображения в комплект не входят. Пакет содержит только

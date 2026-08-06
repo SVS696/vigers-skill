@@ -17,6 +17,13 @@ from mode_decision import (
     ModeDecisionError,
     validate_mode_decision,
 )
+from planning_case import (
+    HANDOFF_JSON as PLANNING_HANDOFF_JSON,
+    HANDOFF_MARKDOWN as PLANNING_HANDOFF_MARKDOWN,
+    PlanningError,
+    validate_handoff as validate_planning_handoff,
+)
+from spec_pipeline import PipelineError, detect_profile, select_profile
 from vigers_context import (
     METHOD_CONTEXT_JSON,
     METHOD_CONTEXT_MARKDOWN,
@@ -102,6 +109,39 @@ FINAL_GATES = GATE_NAMES
 
 class CaseError(RuntimeError):
     """Invalid case state or unsafe transition."""
+
+
+def resolve_init_profile(requested_id: str, cwd: Path):
+    """Resolve the nearest profile without allowing an explicit generic bypass."""
+    try:
+        detected = detect_profile(cwd)
+        if requested_id == "generic" and detected.profile_id != "generic":
+            raise CaseError(
+                "Explicit generic profile cannot override the nearest project profile"
+            )
+        return detected if requested_id == "auto" else select_profile(requested_id, cwd)
+    except PipelineError as exc:
+        raise CaseError(str(exc)) from exc
+
+
+def resolve_init_project_context(
+    requested_id: str,
+    cwd: Path,
+    explicit_project_root: Path | None,
+):
+    """Detect from cwd and treat an explicit project root only as a cross-check."""
+    selection = resolve_init_profile(requested_id, cwd)
+    selected_project_root = (
+        str(selection.project_root.resolve()) if selection.project_root is not None else None
+    )
+    expected_project_root = (
+        str(explicit_project_root.expanduser().resolve())
+        if explicit_project_root is not None
+        else None
+    )
+    if expected_project_root is not None and expected_project_root != selected_project_root:
+        raise CaseError("Explicit project root conflicts with detected profile")
+    return selection, selected_project_root
 
 
 def now_utc() -> str:
@@ -191,6 +231,7 @@ def init_case(
     project_root: str | None,
     allow_unrecorded_mode: bool = False,
     allow_unrecorded_method: bool = False,
+    allow_unplanned: bool = False,
 ) -> None:
     """Create a new case package."""
     if not CASE_ID_RE.fullmatch(case_id):
@@ -207,6 +248,8 @@ def init_case(
         MODE_DECISION_FILENAME,
         METHOD_CONTEXT_JSON,
         METHOD_CONTEXT_MARKDOWN,
+        PLANNING_HANDOFF_JSON,
+        PLANNING_HANDOFF_MARKDOWN,
     }
     unexpected_entries = [
         entry for entry in existing_entries if entry.name not in allowed_preinit_entries
@@ -275,6 +318,47 @@ def init_case(
             "run vigers_context.py materialize first"
         )
 
+    planning_binding: dict[str, str | int] | None = None
+    planning_metadata_path = root / PLANNING_HANDOFF_JSON
+    planning_content_path = root / PLANNING_HANDOFF_MARKDOWN
+    planning_entries_exist = (
+        planning_metadata_path.exists() or planning_metadata_path.is_symlink(),
+        planning_content_path.exists() or planning_content_path.is_symlink(),
+    )
+    if any(planning_entries_exist) and not all(planning_entries_exist):
+        raise CaseError("Planning handoff requires both Markdown and JSON artifacts")
+    if all(planning_entries_exist):
+        resolved_metadata_path = case_file(root, PLANNING_HANDOFF_JSON)
+        resolved_content_path = case_file(root, PLANNING_HANDOFF_MARKDOWN)
+        if not resolved_metadata_path.is_file() or not resolved_content_path.is_file():
+            raise CaseError("Planning handoff artifacts must be readable files")
+        planning_payload = read_json(resolved_metadata_path)
+        planning_markdown = resolved_content_path.read_text(encoding="utf-8")
+        try:
+            validate_planning_handoff(
+                planning_payload,
+                planning_markdown,
+                expected_profile_id=profile_id,
+                expected_project_root=project_root,
+                enforce_project_root=True,
+            )
+        except PlanningError as exc:
+            raise CaseError(f"Invalid planning handoff: {exc}") from exc
+        planning_binding = {
+            "metadata_path": PLANNING_HANDOFF_JSON,
+            "content_path": PLANNING_HANDOFF_MARKDOWN,
+            "planning_case_id": planning_payload["planning_case_id"],
+            "planning_revision": planning_payload["planning_revision"],
+            "project_root": planning_payload["project_root"],
+            "fingerprint": planning_payload["fingerprint"],
+            "content_sha256": planning_payload["content_sha256"],
+        }
+    elif intent != "review" and not allow_unplanned:
+        raise CaseError(
+            f"Missing {PLANNING_HANDOFF_JSON} and {PLANNING_HANDOFF_MARKDOWN}; "
+            "complete and approve planning_case.py before Vigers init"
+        )
+
     (root / "blocks").mkdir(parents=True, exist_ok=True)
     (root / "reviews").mkdir(parents=True, exist_ok=True)
     write_template(
@@ -311,6 +395,7 @@ def init_case(
         "project_root": project_root,
         "mode_decision": decision_binding,
         "method_context": method_binding,
+        "planning_handoff": planning_binding,
         "created_at": now_utc(),
         "updated_at": now_utc(),
         "kernel": {
@@ -339,6 +424,9 @@ def init_case(
                 ),
                 method_context=(
                     method_binding["fingerprint"] if method_binding is not None else None
+                ),
+                planning_handoff=(
+                    planning_binding["fingerprint"] if planning_binding is not None else None
                 ),
             )
         ],
@@ -840,6 +928,34 @@ def validate_case(
                     errors.append("manifest method_context content hash mismatch")
             except (OSError, CaseError, RouterError) as exc:
                 errors.append(f"Invalid method context: {exc}")
+    planning_binding = manifest.get("planning_handoff")
+    if planning_binding is not None:
+        if not isinstance(planning_binding, dict):
+            errors.append("manifest planning_handoff binding must be an object or null")
+        elif (
+            planning_binding.get("metadata_path") != PLANNING_HANDOFF_JSON
+            or planning_binding.get("content_path") != PLANNING_HANDOFF_MARKDOWN
+        ):
+            errors.append("manifest planning_handoff paths are invalid")
+        else:
+            try:
+                planning_payload = read_json(case_file(root, PLANNING_HANDOFF_JSON))
+                planning_markdown = case_file(root, PLANNING_HANDOFF_MARKDOWN).read_text(
+                    encoding="utf-8"
+                )
+                validate_planning_handoff(
+                    planning_payload,
+                    planning_markdown,
+                    expected_profile_id=manifest.get("profile_id"),
+                    expected_project_root=manifest.get("project_root"),
+                    enforce_project_root=True,
+                )
+                if planning_binding.get("fingerprint") != planning_payload["fingerprint"]:
+                    errors.append("manifest planning_handoff fingerprint mismatch")
+                if planning_binding.get("content_sha256") != planning_payload["content_sha256"]:
+                    errors.append("manifest planning_handoff content hash mismatch")
+            except (OSError, CaseError, PlanningError) as exc:
+                errors.append(f"Invalid planning handoff: {exc}")
     try:
         ensure_acyclic(ledger)
     except CaseError as exc:
@@ -1017,6 +1133,8 @@ def context_bundle(
 ) -> dict[str, Any]:
     """Build a bounded, role-specific list of case inputs."""
     common = ["manifest.json", "kernel.md", "evidence.md", "decisions.md"]
+    if manifest.get("planning_handoff") is not None:
+        common[1:1] = [PLANNING_HANDOFF_JSON, PLANNING_HANDOFF_MARKDOWN]
     if manifest.get("mode_decision") is not None:
         common.insert(1, MODE_DECISION_FILENAME)
     method_inputs: list[str] = []
@@ -1100,6 +1218,7 @@ def render_status(root: Path, manifest: dict[str, Any], ledger: dict[str, Any]) 
         f"- route: `{manifest['route_id']}`",
         f"- mode decision: `{'recorded' if manifest.get('mode_decision') else 'legacy-unrecorded'}`",
         f"- method context: `{'recorded' if manifest.get('method_context') else 'legacy-unrecorded'}`",
+        f"- planning handoff: `{'recorded' if manifest.get('planning_handoff') else 'legacy-unplanned'}`",
         f"- kernel revision: `{manifest['kernel']['revision']}`",
         f"- updated: `{manifest['updated_at']}`",
         "",
@@ -1151,7 +1270,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("create", "update", "review", "decompose", "architecture"),
         default="create",
     )
-    init_parser.add_argument("--profile-id", default="generic")
+    init_parser.add_argument("--cwd", default=".")
+    init_parser.add_argument("--profile-id", default="auto")
     init_parser.add_argument("--route-id", default="core")
     init_parser.add_argument("--project-root")
     init_parser.add_argument(
@@ -1163,6 +1283,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--allow-unrecorded-method",
         action="store_true",
         help="Migration escape hatch for a case without pinned method context",
+    )
+    init_parser.add_argument(
+        "--allow-unplanned",
+        action="store_true",
+        help="Migration escape hatch for a non-review case without an approved planning handoff",
     )
 
     add_parser = subparsers.add_parser("add-block", help="Add a semantic block")
@@ -1218,16 +1343,22 @@ def main() -> int:
     args = parser.parse_args()
     try:
         if args.command == "init":
+            selection, selected_project_root = resolve_init_project_context(
+                args.profile_id,
+                Path(args.cwd),
+                Path(args.project_root) if args.project_root else None,
+            )
             init_case(
                 Path(args.case_root),
                 case_id=args.case_id,
                 mode=args.mode,
                 intent=args.intent,
-                profile_id=args.profile_id,
+                profile_id=selection.profile_id,
                 route_id=args.route_id,
-                project_root=args.project_root,
+                project_root=selected_project_root,
                 allow_unrecorded_mode=args.allow_unrecorded_mode,
                 allow_unrecorded_method=args.allow_unrecorded_method,
+                allow_unplanned=args.allow_unplanned,
             )
             print(f"PASS case={args.case_id} mode={args.mode}")
             return 0

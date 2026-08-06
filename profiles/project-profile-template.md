@@ -1,6 +1,7 @@
 ---
 vigers_profile: 2
 profile_id: example
+planning_anchors:
 ---
 
 # Профиль постановок проекта
@@ -16,6 +17,34 @@ profile_id: example
 ## Канонические источники
 
 Источники в порядке приоритета и правила проверки изменчивых фактов.
+
+## Планирование и внешние артефакты
+
+Опиши:
+
+- обязательные системы research и search order, включая критерий достаточности,
+  freshness, отрицательный результат и недоступное покрытие;
+- место passport, правило временного ID и обновления binding после появления
+  tracker ID без создания второго passport;
+- роль каждой системы: личный WIP, канонический tracker, описание/решение,
+  локальный архив;
+- project adapters: допустимые create/update/link actions, поля draft-объекта,
+  authority source, `publish_gate`
+  (`before_research|before_review|after_approval|none`) и обязательный read-back;
+- нужны ли profile-required пустые учётные anchors при появлении личной работы;
+  перечисли системы, trigger, create-or-link правило без дублей, минимальные поля
+  и запрети добавлять в anchor описание, статус, assignee, priority и commitment
+  date; перечисли обязательные системы в frontmatter `planning_anchors` через
+  запятую и отдельно укажи, может ли личный anchor предшествовать tracker/wiki;
+- когда external artifact должен существовать до user review, а когда создаётся
+  только после approval;
+- маппинг этапов/checklists в личный task manager: details/done_when в task note,
+  допустимая подробность пункта и subtask только для самостоятельного
+  outcome/dependency/owner;
+- запрещённые обратные ссылки, личные пути и поля, которые нельзя публиковать в
+  командные системы;
+- действия, запрещённые до approval: workflow status, assignee, priority,
+  commitment dates, реализация и delivery mutations.
 
 ## Системный анализ
 

@@ -14,6 +14,7 @@ import spec_pipeline
 PROFILE_BODY = """---
 vigers_profile: 2
 profile_id: {profile_id}
+planning_anchors: {planning_anchors}
 ---
 
 # Project profile
@@ -23,6 +24,9 @@ Scope.
 
 ## Канонические источники
 Sources.
+
+## Планирование и внешние артефакты
+Planning.
 
 ## Системный анализ
 Analysis.
@@ -41,10 +45,20 @@ Lifecycle.
 """
 
 
-def write_profile(root: Path, profile_id: str = "project-alpha") -> Path:
+def write_profile(
+    root: Path,
+    profile_id: str = "project-alpha",
+    planning_anchors: str = "",
+) -> Path:
     profile = root / ".vigers" / "profile.md"
     profile.parent.mkdir(parents=True)
-    profile.write_text(PROFILE_BODY.format(profile_id=profile_id), encoding="utf-8")
+    profile.write_text(
+        PROFILE_BODY.format(
+            profile_id=profile_id,
+            planning_anchors=planning_anchors,
+        ),
+        encoding="utf-8",
+    )
     return profile
 
 
@@ -72,9 +86,9 @@ class PipelineTests(unittest.TestCase):
         counts = spec_pipeline.validate()
         self.assertEqual(counts["builtin_profiles"], 1)
         self.assertEqual(counts["project_profiles"], 0)
-        self.assertEqual(counts["contracts"], 4)
-        self.assertEqual(counts["runtime_adapters"], 8)
-        self.assertEqual(counts["workflows"], 2)
+        self.assertEqual(counts["contracts"], 5)
+        self.assertEqual(counts["runtime_adapters"], 10)
+        self.assertEqual(counts["workflows"], 3)
 
     def test_generic_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -94,6 +108,22 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(selection.project_root, root.resolve())
             self.assertEqual(selection.profile_path, profile.resolve())
             self.assertEqual(selection.source, "project")
+
+    def test_project_overlay_exposes_machine_readable_planning_anchors(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            write_profile(root, planning_anchors="Tracker, Personal tasks")
+            selection = spec_pipeline.detect_profile(root)
+            self.assertEqual(selection.planning_anchors, ("Tracker", "Personal tasks"))
+
+    def test_duplicate_planning_anchor_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            write_profile(root, planning_anchors="Tracker, tracker")
+            with self.assertRaises(spec_pipeline.PipelineError):
+                spec_pipeline.detect_profile(root)
 
     def test_nearest_project_overlay_wins(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -145,7 +175,10 @@ class PipelineTests(unittest.TestCase):
             root = base / "project"
             root.mkdir()
             external = base / "external.md"
-            external.write_text(PROFILE_BODY.format(profile_id="external"), encoding="utf-8")
+            external.write_text(
+                PROFILE_BODY.format(profile_id="external", planning_anchors=""),
+                encoding="utf-8",
+            )
             profile = root / ".vigers" / "profile.md"
             profile.parent.mkdir()
             profile.symlink_to(external)

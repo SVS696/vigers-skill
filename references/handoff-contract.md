@@ -14,6 +14,14 @@ package и передаёт каждой роли только перечисл�
   "profile_id": "generic-or-project-profile-id",
   "project_root": null,
   "route_id": "core",
+  "planning_handoff": {
+    "metadata_path": "planning-handoff.json",
+    "content_path": "planning-handoff.md",
+    "planning_case_id": "stable-planning-id",
+    "planning_revision": 2,
+    "fingerprint": "...",
+    "content_sha256": "..."
+  },
   "mode_decision": {"path": "mode-decision.json", "fingerprint": "..."},
   "method_context": {
     "metadata_path": "method-context.json",
@@ -28,12 +36,47 @@ package и передаёт каждой роли только перечисл�
 }
 ```
 
-`mode_decision` и `method_context` могут быть `null` только у старого case.
+`planning_handoff` обязателен для нового non-review case; review готового
+артефакта и старый runtime state могут содержать `null`. `mode_decision` и
+`method_context` могут быть `null` только у старого case.
 Методический context материализуется до `init`, проверяется по канонической
 выжимке и затем используется как закреплённый snapshot: изменение любого из
 двух файлов ломает валидацию. `manifest.json` не содержит пароли, токены,
 cookies, приватные ключи и дампы БД. В block-mode `ledger.json` хранит DAG и
 состояния блоков; формат и переходы задаёт `case_pipeline.py`.
+
+## Planning handoff
+
+`planning-handoff.json/md` — immutable approved snapshot, а не новый источник
+требований. Он содержит цель и scope planning, research basis/gaps, зависимые
+этапы, passport/external bindings и открытые риски. `case_pipeline.py init`
+проверяет profile, approval revision, fingerprint и content hash.
+
+Системный аналитик использует handoff как bounded intake и всё равно строит
+модель требований. Редактор не превращает checklist в требования автоматически.
+Reviewer проверяет, что итоговая постановка не потеряла approved scope и явно
+объясняет обоснованные отклонения.
+
+## Общий envelope результата роли
+
+Каждая роль возвращает один верхнеуровневый envelope:
+
+```yaml
+status: ok | gap | input-error
+mode: <assigned-mode>
+target: <assigned-target>
+reason: <required-for-gap-or-input-error>
+missing_inputs: []
+evidence_refs: []
+payload: <required-for-ok>
+```
+
+`ok` требует полный payload выбранного контракта. `gap` означает, что доступных
+источников недостаточно для честного результата. `input-error` означает неверный
+mode/target, отсутствующий обязательный файл, stale fingerprint или нарушение
+границ assignment. Пустой ответ, refusal и оборванный output не являются `ok`:
+координатор классифицирует их как `input-error` либо `gap` и не сохраняет
+частичный payload как результат роли.
 
 ## Kernel
 

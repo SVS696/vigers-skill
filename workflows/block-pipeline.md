@@ -7,12 +7,13 @@
 ## Фаза 1. Инициализация или возобновление
 
 **Вход:** запрос, выбранные `profile_id`, `route_id`, рабочий `case-root`,
-`method-context.json/md` и `mode-decision.json` с `selected_mode=block`.
+`method-context.json/md`, `mode-decision.json` с `selected_mode=block` и
+approved planning handoff либо явно выбранный `--intent review`.
 
 1. Если case отсутствует, проверь decision и method context, затем создай его
-   командой `case_pipeline.py init` в режиме `block`. Несовпадение режима,
-   профиля, маршрута или выжимки — ошибка входа, а не повод переписать файлы
-   вручную.
+   командой `case_pipeline.py init` в режиме `block` с точным `--intent` и
+   `--cwd`. Несовпадение режима, профиля, маршрута или выжимки — ошибка входа,
+   а не повод переписать файлы вручную.
 2. Если case существует, выполни `status`, затем `validate` и продолжай с
    первого незавершённого блока или гейта.
 3. Не перезапускай готовую роль, пока её результат свеж относительно kernel.

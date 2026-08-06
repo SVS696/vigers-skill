@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import tempfile
 import unittest
@@ -10,6 +11,7 @@ from pathlib import Path
 
 import case_pipeline
 import mode_decision
+import planning_case
 import vigers_context
 
 
@@ -75,6 +77,36 @@ class CasePipelineTests(unittest.TestCase):
         vigers_context.write_method_context(root, payload, markdown)
         return payload
 
+    def write_planning_handoff(
+        self,
+        root: Path,
+        *,
+        profile_id: str = "generic",
+        project_root: str | None = None,
+    ) -> dict[str, object]:
+        markdown = "# Planning handoff\n\nVerified research and approved plan.\n"
+        payload: dict[str, object] = {
+            "schema": planning_case.HANDOFF_SCHEMA_VERSION,
+            "planning_case_id": "demo-plan",
+            "planning_revision": 1,
+            "profile_id": profile_id,
+            "project_root": project_root,
+            "required_anchor_systems": [],
+            "passport": None,
+            "external_bindings": [],
+            "approval": {"revision": 1},
+            "artifact_hashes": {},
+            "content_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
+        }
+        payload["fingerprint"] = planning_case.canonical_fingerprint(payload)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / planning_case.HANDOFF_JSON).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (root / planning_case.HANDOFF_MARKDOWN).write_text(markdown, encoding="utf-8")
+        return payload
+
     def init(self, base: Path, mode: str = "block") -> Path:
         root = base / "case"
         self.write_method_context(root)
@@ -87,6 +119,7 @@ class CasePipelineTests(unittest.TestCase):
             profile_id="generic",
             route_id="core",
             project_root=None,
+            allow_unplanned=True,
         )
         replace_todo(root / "kernel.md", "# Kernel\n\nStable kernel")
         loaded_root, manifest, ledger = case_pipeline.load_case(root)
@@ -148,6 +181,7 @@ class CasePipelineTests(unittest.TestCase):
                 profile_id="generic",
                 route_id="core",
                 project_root=None,
+                allow_unplanned=True,
             )
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             self.assertEqual(
@@ -169,6 +203,7 @@ class CasePipelineTests(unittest.TestCase):
                 profile_id="generic",
                 route_id="traceability",
                 project_root=None,
+                allow_unplanned=True,
             )
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             self.assertEqual(
@@ -194,6 +229,7 @@ class CasePipelineTests(unittest.TestCase):
                     profile_id="generic",
                     route_id="core",
                     project_root=None,
+                    allow_unplanned=True,
                 )
 
     def test_init_requires_mode_decision_without_migration_escape_hatch(self) -> None:
@@ -208,6 +244,7 @@ class CasePipelineTests(unittest.TestCase):
                     profile_id="generic",
                     route_id="core",
                     project_root=None,
+                    allow_unplanned=True,
                 )
 
     def test_init_requires_method_context_without_migration_escape_hatch(self) -> None:
@@ -223,7 +260,115 @@ class CasePipelineTests(unittest.TestCase):
                     profile_id="generic",
                     route_id="core",
                     project_root=None,
+                    allow_unplanned=True,
                 )
+
+    def test_non_review_init_requires_planning_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root, selected_mode="compact")
+            with self.assertRaises(case_pipeline.CaseError):
+                case_pipeline.init_case(
+                    root,
+                    case_id="planning-required",
+                    mode="compact",
+                    intent="create",
+                    profile_id="generic",
+                    route_id="core",
+                    project_root=None,
+                )
+
+    def test_review_init_allows_missing_planning_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root, selected_mode="compact")
+            case_pipeline.init_case(
+                root,
+                case_id="review-without-planning",
+                mode="compact",
+                intent="review",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+            )
+            _, manifest, _ = case_pipeline.load_case(root)
+            self.assertEqual(manifest["intent"], "review")
+            self.assertIsNone(manifest["planning_handoff"])
+
+    def test_handoff_project_root_mismatch_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = base / "case"
+            first_project = base / "first-project"
+            second_project = base / "second-project"
+            self.write_method_context(root)
+            self.write_mode_decision(root, selected_mode="compact", profile_id="demo")
+            self.write_planning_handoff(
+                root,
+                profile_id="demo",
+                project_root=str(first_project.resolve()),
+            )
+            with self.assertRaises(case_pipeline.CaseError):
+                case_pipeline.init_case(
+                    root,
+                    case_id="project-root-mismatch",
+                    mode="compact",
+                    intent="create",
+                    profile_id="demo",
+                    route_id="core",
+                    project_root=str(second_project.resolve()),
+                )
+
+    def test_generic_profile_cannot_override_nearest_project_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp) / "project"
+            profile_dir = project / ".vigers"
+            profile_dir.mkdir(parents=True)
+            template = (
+                Path(__file__).resolve().parents[1]
+                / "profiles"
+                / "project-profile-template.md"
+            ).read_text(encoding="utf-8")
+            (profile_dir / "profile.md").write_text(
+                template.replace("profile_id: example", "profile_id: demo"),
+                encoding="utf-8",
+            )
+            with self.assertRaises(case_pipeline.CaseError):
+                case_pipeline.resolve_init_profile("generic", project)
+
+    def test_explicit_project_root_cannot_bypass_nearest_project_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            project = base / "project"
+            profile_dir = project / ".vigers"
+            profile_dir.mkdir(parents=True)
+            template = (
+                Path(__file__).resolve().parents[1]
+                / "profiles"
+                / "project-profile-template.md"
+            ).read_text(encoding="utf-8")
+            (profile_dir / "profile.md").write_text(
+                template.replace("profile_id: example", "profile_id: demo"),
+                encoding="utf-8",
+            )
+            unrelated = base / "unrelated"
+            unrelated.mkdir()
+            with self.assertRaises(case_pipeline.CaseError):
+                case_pipeline.resolve_init_project_context(
+                    "auto",
+                    project,
+                    unrelated,
+                )
+
+            selection, selected_root = case_pipeline.resolve_init_project_context(
+                "auto",
+                project,
+                project,
+            )
+            self.assertEqual(selection.profile_id, "demo")
+            self.assertEqual(selected_root, str(project.resolve()))
 
     def test_init_rejects_method_route_mismatch(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -239,6 +384,7 @@ class CasePipelineTests(unittest.TestCase):
                     profile_id="generic",
                     route_id="core",
                     project_root=None,
+                    allow_unplanned=True,
                 )
 
     def test_init_allows_explicit_unrecorded_migration_case(self) -> None:
@@ -252,6 +398,7 @@ class CasePipelineTests(unittest.TestCase):
                 profile_id="generic",
                 route_id="core",
                 project_root=None,
+                allow_unplanned=True,
                 allow_unrecorded_mode=True,
                 allow_unrecorded_method=True,
             )
@@ -271,6 +418,7 @@ class CasePipelineTests(unittest.TestCase):
                 profile_id="generic",
                 route_id="core",
                 project_root=None,
+                allow_unplanned=True,
             )
             path = root / mode_decision.MODE_DECISION_FILENAME
             payload = json.loads(path.read_text(encoding="utf-8"))

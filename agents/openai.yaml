@@ -1,4 +1,4 @@
 interface:
   display_name: "Вигерс"
-  short_description: "Поблочный pipeline постановок и решений"
-  default_prompt: "Используй $vigers: выбери профиль и compact/block режим, проведи независимые анализ, интеграцию, global/project-conformance review, а архитектурные проходы включи по условиям."
+  short_description: "Исследование, план и поблочный pipeline постановок"
+  default_prompt: "Используй $vigers: выбери профиль, исследуй проектные источники, согласуй planning-case, затем выбери compact/block режим и проведи независимые анализ, интеграцию, global/project-conformance review; архитектурные проходы включи по условиям."

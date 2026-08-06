@@ -7,12 +7,14 @@
 ## Фаза 1. Инициализация или возобновление
 
 **Вход:** запрос пользователя, выбранные `profile_id`, `route_id`, закреплённые
-`method-context.json/md` и `mode-decision.json` с `selected_mode=compact`.
+`method-context.json/md`, `mode-decision.json` с `selected_mode=compact` и
+approved planning handoff либо явно выбранный `--intent review`.
 
 1. Найди существующий case package текущего результата.
 2. Если его нет, проверь decision через `case_pipeline.py init` в режиме
-   `compact` в рабочей области координатора, не в каноническом каталоге проекта.
-   Если decision выбирает `block`, перейди в block pipeline.
+   `compact` с точным `--intent` и `--cwd` в рабочей области координатора, не в
+   каноническом каталоге проекта. Если decision выбирает `block`, перейди в
+   block pipeline.
 3. Если есть частичный прогон, проверь свежесть источников и продолжай с первой
    незавершённой фазы. Не запускай готовые роли повторно без причины.
 4. Определи режим: `create`, `update`, `review`, `decompose` или `architecture`.

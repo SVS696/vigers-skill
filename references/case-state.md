@@ -4,6 +4,11 @@
 требования и не пишет постановку: хранит состояние, проверяет зависимости,
 свежесть kernel, semantic IDs и гейты.
 
+Для нового non-review case обязательны approved `planning-handoff.json/md`,
+экспортированные `planning_case.py`. `--allow-unplanned` существует только для
+миграции старого runtime state. Planning package и specification package имеют
+разные state machines и не объединяются в один manifest.
+
 ## Состав case package
 
 ```text
@@ -11,6 +16,8 @@
 ├── mode-decision.json         # факты, правила, выбранный режим, fingerprint
 ├── method-context.json        # маршрут, состав выжимки, hashes, fingerprint
 ├── method-context.md          # ограниченный методический контекст ролей
+├── planning-handoff.json      # approved planning revision и fingerprints
+├── planning-handoff.md        # bounded research/plan basis для ролей
 ├── manifest.json              # режим, kernel revision, gates, event log
 ├── ledger.json                # блоки, DAG, состояния, пути артефактов
 ├── status.md                  # генерируемый человекочитаемый DoD
@@ -29,9 +36,9 @@
 └── draft.md                   # интегрированный документ
 ```
 
-Machine truth — связка `mode-decision.json`, `method-context.json/md`,
-`manifest.json` и `ledger.json`. Не редактируй их вручную. `status.md` можно в
-любой момент пересобрать командой `status`.
+Machine truth — связка `planning-handoff.json/md`, `mode-decision.json`,
+`method-context.json/md`, `manifest.json` и `ledger.json`. Не редактируй их
+вручную. `status.md` можно в любой момент пересобрать командой `status`.
 
 ## Решение о режиме
 
@@ -53,14 +60,16 @@ python3 {baseDir}/scripts/spec_pipeline.py suggest-mode --cwd "<cwd>" \
   --write "<case-root>/mode-decision.json"
 ```
 
-До `init` case-root может содержать decision и пару `method-context.json/md`,
-созданную `vigers_context.py materialize`. `init` проверяет связь с `--mode`,
-`--profile-id` и `--route-id`, пересобирает методическую выжимку по текущим
-источникам и сохраняет оба fingerprint в manifest. Последующие проверки case
+До `init` case-root содержит exported planning handoff, decision и пару
+`method-context.json/md`, созданную `vigers_context.py materialize`. `init`
+проверяет planning approval, связь с `--mode`, `--profile-id` и `--route-id`,
+пересобирает методическую выжимку по текущим источникам и сохраняет fingerprints
+в manifest. Последующие проверки case
 валидируют уже закреплённый snapshot и обнаруживают ручное изменение. Старые
 cases без decision или method context читаются как `legacy-unrecorded`. Для их
 миграции есть явные `--allow-unrecorded-mode` и
-`--allow-unrecorded-method`; новый workflow эти escape hatches не использует.
+`--allow-unrecorded-method` и `--allow-unplanned`; новый workflow эти escape
+hatches не использует.
 
 ## Состояния блока
 
@@ -80,8 +89,8 @@ kernel edit: in_progress|analyzed|reviewed|integrated → stale → ready
 
 ```text
 python3 {baseDir}/scripts/case_pipeline.py init \
-  --case-root "<path>" --case-id "<id>" --mode block \
-  --profile-id "<profile>" --route-id core
+  --case-root "<path>" --case-id "<id>" --mode block --intent create \
+  --cwd "<cwd>" --profile-id "<profile>" --route-id core
 
 python3 {baseDir}/scripts/case_pipeline.py add-block \
   --case-root "<path>" --id B01 --kind scenarios --title "Основной поток"
@@ -105,6 +114,9 @@ python3 {baseDir}/scripts/case_pipeline.py check \
 python3 {baseDir}/scripts/case_pipeline.py validate \
   --case-root "<path>" --final
 ```
+
+Для review готового артефакта используй `--intent review`. Это единственный
+новый case, которому разрешено не иметь `planning-handoff.json/md`.
 
 `context --role system-analyst|spec-reviewer` всегда включает закреплённые
 `method-context.json/md`. Редактору и архитектору эти файлы не выдаются: они

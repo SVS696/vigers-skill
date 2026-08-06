@@ -1,7 +1,6 @@
 ---
 name: vigers
-description: "Оркестрирует независимых агентов для анализа, проектирования, поблочной подготовки, интеграции и ревью постановок, требований, технических заданий, acceptance criteria и Definition of Done. Применяется к запросам «напиши постановку», «проверь требования», «проработай решение», «декомпозируй задачу», «сформируй AC/DoD», включая большие документы, которые нужно обрабатывать итерационно без потери контекста. Не применяется для чистого code review, реализации утвержденной задачи и изменения внешнего трекера без явной просьбы."
-allowed-tools: Read Glob Grep Write Edit Bash AskUserQuestion Task TaskCreate TaskList TaskUpdate TodoRead TodoWrite
+description: "Оркестрирует предварительное исследование источников, согласуемое планирование и независимых агентов для анализа, проектирования, поблочной подготовки, интеграции и ревью постановок, требований, технических заданий, acceptance criteria и Definition of Done. Применяется к запросам «исследуй и спланируй задачу», «напиши постановку», «проверь требования», «проработай решение», «декомпозируй задачу», «сформируй AC/DoD», включая большие документы, которые нужно обрабатывать итерационно без потери контекста. Не применяется для чистого code review, реализации утвержденной задачи и изменения внешнего трекера без явной просьбы."
 ---
 
 # Вигерс: мультиагентная инженерия постановок
@@ -33,6 +32,10 @@ allowed-tools: Read Glob Grep Write Edit Bash AskUserQuestion Task TaskCreate Ta
 7. **Стиль проекта проверяется отдельно.** Логически верная постановка может
    нарушать локальные соглашения API, полей, терминов, шаблонов и файлов. Режим
    reviewer `project-conformance` проверяет это отдельным свежим проходом.
+8. **Планирование начинается с исследования.** Декомпозиция без проверки
+   проектных источников создаёт ложную определённость. Planning-case сначала
+   фиксирует search coverage, противоречия и gaps, затем строит зависимые этапы,
+   внешние draft-артефакты и обязательный user-review gate.
 
 ## Когда применять
 
@@ -41,6 +44,8 @@ allowed-tools: Read Glob Grep Write Edit Bash AskUserQuestion Task TaskCreate Ta
 - Нужно подготовить решение и сверить его с архитектурой проекта.
 - Нужно обновить постановку без потери трассировки и проектных правил.
 - Нужны findings ревью, AC, DoD или декомпозиция результата.
+- Нужно сначала исследовать трекер, wiki, код и проектные заметки, затем
+  согласовать план работ.
 
 ## Когда не применять
 
@@ -72,7 +77,35 @@ allowed-tools: Read Glob Grep Write Edit Bash AskUserQuestion Task TaskCreate Ta
 
 **Выход:** `profile_id`, `project_root` и один загруженный профиль.
 
-## Фаза 1. Выбери методический маршрут
+## Фаза 1. Исследуй и согласуй planning-case
+
+**Вход:** выбран профиль, задача не сводится к ревью готового артефакта или
+мелкой редакционной правке.
+
+1. Полностью прочитай `{baseDir}/workflows/planning-pipeline.md` и
+   `{baseDir}/references/planning-contract.md`.
+2. Создай planning-case и один ранний passport. Команда `init --cwd "<cwd>"`
+   автоматически подхватывает `planning_anchors` ближайшего profile. Найди
+   существующие единицы результата, создай или свяжи обязательные пустые anchors
+   до research и зафиксируй read-back; это не разрешает наполнять задачи планом
+   или менять workflow-поля.
+3. Пройди `researching → researched`: выполни read-only поиск по применимым
+   источникам profile, зафиксируй запросы, freshness, противоречия и coverage.
+4. Построй зависимые этапы и checklists, подготовь разрешённые до review external
+   artifacts через project adapters и прочитай записи обратно.
+5. Покажи пользователю plan, coverage/gaps и bindings. До явного approval не
+   запускай полноценный Vigers case.
+6. После approval создай или свяжи объявленные profile post-approval artifacts,
+   прочитай их обратно и экспортируй `planning-handoff.json/md` в будущий
+   case-root.
+
+Review готовой постановки может пропустить planning-case, если target и scope
+ревью уже однозначны. Для нового анализа, изменения, декомпозиции или
+архитектурной проработки shortcut `--allow-unplanned` запрещён.
+
+**Выход:** planning-case в `handed_to_vigers` и проверяемый approved handoff.
+
+## Фаза 2. Выбери методический маршрут
 
 **Вход:** понятна область постановки.
 
@@ -95,7 +128,7 @@ allowed-tools: Read Glob Grep Write Edit Bash AskUserQuestion Task TaskCreate Ta
 **Выход:** один `route_id` и неизменяемый ограниченный методический контекст в
 case-root.
 
-## Фаза 2. Выбери масштаб выполнения
+## Фаза 3. Выбери масштаб выполнения
 
 **Вход:** известны профиль, маршрут и объём смысловых связей.
 
@@ -144,12 +177,14 @@ python3 {baseDir}/scripts/spec_pipeline.py suggest-mode --cwd "<cwd>" \
 
 ```text
 python3 {baseDir}/scripts/case_pipeline.py init --case-root "<case-root>" \
-  --case-id "<stable-id>" --mode "<selected_mode>" --profile-id "<profile-id>"
+  --case-id "<stable-id>" --mode "<selected_mode>" --intent "<intent>" \
+  --cwd "<cwd>" --profile-id "<profile-id>" --route-id "<route_id>"
 ```
 
 `init` допускает заранее созданные decision и method context, связывает оба
 fingerprint с manifest и отклоняет несовпадение режима, профиля, маршрута или
-книжной выжимки.
+книжной выжимки. Для review готового артефакта передай `--intent review`: только
+этот intent может запускаться без planning handoff.
 
 **Выход:** выбран и обоснован `compact` или `block`, decision и case package
 согласованы.
@@ -158,6 +193,7 @@ fingerprint с manifest и отклоняет несовпадение режи�
 
 | Роль | Когда | Контракт | Результат |
 |---|---|---|---|
+| `vigers-planner` | До Vigers case; свежий context на research cluster, plan и revision | `{baseDir}/agents/contracts/planner.md` | Research coverage, DAG плана и проект внешних артефактов |
 | `vigers-system-analyst` | Всегда; в block-mode отдельно на каждый блок | `{baseDir}/agents/contracts/system-analyst.md` | Модель требований или блока |
 | `vigers-solution-architect` | По архитектурному гейту, отдельно `design` и `conformance` | `{baseDir}/agents/contracts/solution-architect.md` | Решение или архитектурное заключение |
 | `vigers-spec-editor` | После модели; режимы `document`, `block-render`, `integrate` | `{baseDir}/agents/contracts/spec-editor.md` | Черновик блока или всего документа |
@@ -194,6 +230,8 @@ Business analysis не является отдельной обязательн�
 - `design` и `conformance` архитектора — два разных запуска.
 - Один смысловой блок — один свежий запуск роли. Независимые блоки можно
   выполнять параллельно, но не дроби один блок на несколько конкурирующих истин.
+- Planning research можно делить на независимые source clusters, но итоговый
+  `research.md` и DAG плана сшиваются отдельным свежим проходом.
 - Ревьюер не получает рассуждения редактора, самооценку и предыдущие findings.
 - Роль возвращает структурированный результат координатору. Только координатор
   сохраняет его в case package и применяет принятые изменения.
@@ -201,8 +239,9 @@ Business analysis не является отдельной обязательн�
 
 ## Исполняемый workflow
 
-После выбора профиля, маршрута и масштаба полностью прочитай ровно один
-workflow и выполни его:
+Для новой или изменяемой задачи сначала полностью выполни planning workflow.
+После approved handoff, выбора маршрута и масштаба полностью прочитай ровно один
+specification workflow и выполни его:
 
 - `compact` → `{baseDir}/workflows/specification-pipeline.md`;
 - `block` → `{baseDir}/workflows/block-pipeline.md`.
@@ -215,12 +254,12 @@ workflow и выполни его:
 
 | Запрос | Минимальный путь |
 |---|---|
-| Небольшая новая или изменённая постановка | Compact pipeline |
-| Большая/многоконтурная постановка | Block pipeline |
-| Ревью готовой постановки | Профиль → маршрут → reviewer → architect conformance по гейту |
+| Небольшая новая или изменённая постановка | Planning pipeline → Compact pipeline |
+| Большая/многоконтурная постановка | Planning pipeline → Block pipeline |
+| Ревью готовой постановки | Профиль → маршрут → mode-decision → `--intent review` → reviewer → architect conformance по гейту |
 | Редактура без изменения смысла | Профиль → editor → reviewer только при существенной правке |
-| Архитектурная проработка без постановки | System analyst → architect design → решение |
-| AC/DoD для готовых требований | System analyst → editor → reviewer |
+| Архитектурная проработка без постановки | Planning pipeline → system analyst → architect design → решение |
+| AC/DoD для готовых требований | Planning pipeline → system analyst → editor → reviewer |
 
 ## Проверка скилла
 
@@ -232,9 +271,16 @@ python3 {baseDir}/scripts/spec_pipeline.py validate
 python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 ```
 
+Для конкретного planning-case дополнительно выполни `planning_case.py validate`
+с его реальным `--case-root`; эта команда не относится к package-only проверке.
+
 ## Критерии успеха
 
 - Выбран ровно один ближайший project overlay либо generic и один маршрут метода.
+- Planning research покрывает применимые project sources либо честно фиксирует
+  partial/blocked coverage; план и checklists ссылаются на `SRC-NNN`.
+- Полноценный non-review Vigers case связан с approved planning handoff; старые
+  revisions, user comments и external read-back bindings не потеряны.
 - Методический маршрут материализован и привязан к case; аналитик и reviewer
   получают его автоматически, а редактор не получает книжный корпус.
 - Аналитик отделил факты, решения, предположения и открытые вопросы.
@@ -254,6 +300,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | Путь | Назначение |
 |---|---|
 | `{baseDir}/references/requirements-method.md` | Канонический метод Вигерса |
+| `{baseDir}/references/planning-contract.md` | Research, plan DAG, passport, external drafts и approval contract |
 | `{baseDir}/references/handoff-contract.md` | Контракт case package и результатов ролей |
 | `{baseDir}/references/prompt-contract.md` | Сборка ограниченного prompt для независимой роли |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
@@ -261,10 +308,12 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/references/knowledge-map.md` | Детерминированная карта методических маршрутов |
 | `{baseDir}/workflows/specification-pipeline.md` | Мультиагентный pipeline |
 | `{baseDir}/workflows/block-pipeline.md` | Итерационный pipeline по смысловым блокам |
+| `{baseDir}/workflows/planning-pipeline.md` | Research-and-planning preflight |
 | `{baseDir}/profiles/generic.md` | Безопасный fallback без проектных сведений |
 | `{baseDir}/profiles/project-profile-template.md` | Контракт локального `.vigers/profile.md` |
 | `{baseDir}/agents/contracts/` | Канонические контракты общих ролей |
 | `{baseDir}/scripts/spec_pipeline.py` | Детектирование и валидация профилей |
 | `{baseDir}/scripts/case_pipeline.py` | Детерминированный оркестратор case-state |
+| `{baseDir}/scripts/planning_case.py` | Planning state, revisions, external bindings и approved handoff |
 | `{baseDir}/scripts/vigers_context.py` | Маршрутизация методического контекста |
 | `{baseDir}/scripts/install.py` | Безопасное подключение скилла и агентов к рантаймам |

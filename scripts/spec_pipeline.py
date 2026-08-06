@@ -27,6 +27,7 @@ PROFILE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 REQUIRED_PROFILE_HEADINGS = (
     "## Область",
     "## Канонические источники",
+    "## Планирование и внешние артефакты",
     "## Системный анализ",
     "## Архитектурный гейт",
     "## Режимы и разбиение",
@@ -34,6 +35,7 @@ REQUIRED_PROFILE_HEADINGS = (
     "## Жизненный цикл и публикация",
 )
 REQUIRED_CONTRACTS = (
+    "planner",
     "system-analyst",
     "solution-architect",
     "spec-editor",
@@ -44,6 +46,7 @@ REQUIRED_AGENT_REFERENCES = (
     "references/handoff-contract.md",
 )
 REQUIRED_WORKFLOWS = {
+    "planning-pipeline.md": 8,
     "specification-pipeline.md": 10,
     "block-pipeline.md": 13,
 }
@@ -63,6 +66,7 @@ class ProfileSelection:
     profile_path: Path
     project_root: Path | None
     source: str
+    planning_anchors: tuple[str, ...]
 
 
 def safe_file(relative: str) -> Path:
@@ -109,6 +113,22 @@ def parse_frontmatter(text: str, source: Path) -> dict[str, str]:
     return metadata
 
 
+def parse_planning_anchors(metadata: dict[str, str], source: Path) -> tuple[str, ...]:
+    """Parse the optional comma-separated profile anchor contract."""
+    anchors: list[str] = []
+    seen: set[str] = set()
+    for raw in metadata.get("planning_anchors", "").split(","):
+        anchor = raw.strip()
+        if not anchor:
+            continue
+        normalized = anchor.casefold()
+        if normalized in seen:
+            raise PipelineError(f"{source}: duplicate planning anchor {anchor!r}")
+        seen.add(normalized)
+        anchors.append(anchor)
+    return tuple(anchors)
+
+
 def validate_profile_text(
     text: str,
     source: Path,
@@ -124,6 +144,7 @@ def validate_profile_text(
         raise PipelineError(f"{source}: invalid profile_id: {profile_id!r}")
     if profile_id == "generic" and not allow_generic:
         raise PipelineError(f"{source}: project profile cannot shadow generic")
+    parse_planning_anchors(metadata, source)
     missing = [heading for heading in REQUIRED_PROFILE_HEADINGS if heading not in text]
     if missing:
         raise PipelineError(f"{source}: missing headings: {', '.join(missing)}")
@@ -144,7 +165,14 @@ def read_project_profile(root: Path) -> ProfileSelection | None:
         raise PipelineError(f"{candidate}: project profile is not a readable file")
     text = resolved.read_text(encoding="utf-8")
     profile_id = validate_profile_text(text, candidate, allow_generic=False)
-    return ProfileSelection(profile_id, resolved, root.resolve(), "project")
+    metadata = parse_frontmatter(text, candidate)
+    return ProfileSelection(
+        profile_id,
+        resolved,
+        root.resolve(),
+        "project",
+        parse_planning_anchors(metadata, candidate),
+    )
 
 
 def detect_profile(cwd: Path) -> ProfileSelection:
@@ -160,7 +188,14 @@ def detect_profile(cwd: Path) -> ProfileSelection:
         GENERIC_PROFILE_PATH,
         allow_generic=True,
     )
-    return ProfileSelection(profile_id, GENERIC_PROFILE_PATH, None, "generic")
+    metadata = parse_frontmatter(generic_text, GENERIC_PROFILE_PATH)
+    return ProfileSelection(
+        profile_id,
+        GENERIC_PROFILE_PATH,
+        None,
+        "generic",
+        parse_planning_anchors(metadata, GENERIC_PROFILE_PATH),
+    )
 
 
 def select_profile(requested_id: str, cwd: Path) -> ProfileSelection:
@@ -168,7 +203,14 @@ def select_profile(requested_id: str, cwd: Path) -> ProfileSelection:
     if requested_id == "generic":
         text = GENERIC_PROFILE_PATH.read_text(encoding="utf-8")
         profile_id = validate_profile_text(text, GENERIC_PROFILE_PATH, allow_generic=True)
-        return ProfileSelection(profile_id, GENERIC_PROFILE_PATH, None, "generic")
+        metadata = parse_frontmatter(text, GENERIC_PROFILE_PATH)
+        return ProfileSelection(
+            profile_id,
+            GENERIC_PROFILE_PATH,
+            None,
+            "generic",
+            parse_planning_anchors(metadata, GENERIC_PROFILE_PATH),
+        )
 
     detected = detect_profile(cwd)
     if requested_id == "auto":
@@ -282,7 +324,9 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
         "references/case-state.md",
         "references/block-contract.md",
         "references/requirements-method.md",
+        "references/planning-contract.md",
         "scripts/mode_decision.py",
+        "scripts/planning_case.py",
         "scripts/case_pipeline.py",
         "scripts/install.py",
     )
@@ -392,6 +436,7 @@ def main() -> int:
                 "project_root": (
                     str(selection.project_root) if selection.project_root is not None else None
                 ),
+                "planning_anchors": list(selection.planning_anchors),
             }
             if args.json:
                 print(json.dumps(payload, ensure_ascii=False))

@@ -520,6 +520,7 @@ def validate() -> dict[str, int]:
         "references/requirements-method.md",
         "references/handoff-contract.md",
         "references/prompt-contract.md",
+        "references/planning-contract.md",
         "references/case-state.md",
         "references/block-contract.md",
     }
