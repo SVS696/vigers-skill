@@ -208,7 +208,9 @@ Checklist item — исполнимый шаг, а не односложный �
 
 `artifact-plan.json` задаёт target `EXT-NNN`, system, action, purpose, authority,
 `publish_gate` (`before_research|before_review|after_approval|none`) и
-`read_back_required`.
+`read_back_required`. Target, который служит растущей постановкой для человека,
+дополнительно получает `working_projection: true` и неизменяемый
+`evidence_kind: local_file|external_readback`.
 Общий core не знает URL, проекты, workflow и поля конкретного tracker — их
 задаёт ближайший project profile.
 
@@ -234,6 +236,23 @@ Checklist item — исполнимый шаг, а не односложный �
 - трекер, wiki и проектные заметки сохраняют техническую декомпозицию и
   каноническую историю по правилам profile;
 - draft creation не означает approval, назначение или начало реализации;
+- frontmatter profile задаёт `working_projection: required|optional|disabled`.
+  При `required` artifact plan содержит хотя бы один actionable target с
+  `working_projection: true`, `publish_gate: after_approval` и обязательным
+  read-back. Каждый такой target заранее объявляет `evidence_kind`; runtime CLI
+  не может подменить внешний read-back локальным файлом. При `disabled` такие
+  targets запрещены;
+- working projection создаётся или связывается после approval и до полного
+  анализа. Это видимый человеку рабочий draft, а не новая машина истины:
+  runtime case хранит факты, semantic IDs и состояние; проекция показывает
+  растущий результат и статусы проверенности;
+- локальный файл считается таким же projection target, как tracker/wiki:
+  `system` и `object_id` содержат объявленные profile канал и путь, а read-back
+  подтверждает существование и прочитанное содержимое;
+- форму projection target выбирает только project profile и исследованная форма
+  результата. Core не создаёт параллельный локальный документ, если profile
+  объявляет tracker description, wiki page/delta или несколько внешних targets
+  рабочей проекцией;
 - `after_approval` target заранее входит в опубликованный artifact plan, но
   создаётся или связывается только после approval. До export он получает
   read-back binding; изменение его system, purpose, action или gate требует
@@ -277,6 +296,14 @@ fingerprint, content hash и approval revision. Handoff переносит immut
 `automation-timing.json`. Для исполнительных ролей отдельно материализуется
 `planning-role-context.json` без ETA и runtime facts. Эти данные не проецируются
 в checklist task manager и не считаются временем пользователя.
+Handoff также содержит policy и связанные working projection targets с их
+read-back bindings. `case_pipeline.py init` переносит их в
+`working-projection.json`. После значимого обновления координатор фиксирует
+target, semantic source и его hash, hash прочитанного содержимого, evidence ref
+и время read-back командой `projection-update`. Для локального файла команда
+проверяет файл напрямую; для tracker/wiki принимает только сохранённый adapter
+receipt по `references/handoff-contract.md`. Само наличие скрытых block artifacts или
+`draft.md` не считается таким обновлением.
 Без пары approved handoff files
 новый non-review Vigers case не запускается. `--allow-unplanned` существует
 только для миграции старых cases и не используется новым workflow.

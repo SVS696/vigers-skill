@@ -23,6 +23,7 @@
 ├── role-manifest.json         # bounded manifest ролей без timing-derived полей
 ├── ledger.json                # блоки, DAG, состояния, пути артефактов
 ├── automation-timing.json     # прогноз и wall-clock факт approved этапов
+├── working-projection.json    # видимые draft targets и read-back updates
 ├── status.md                  # генерируемый человекочитаемый DoD
 ├── kernel.md                  # общие цель, scope, словарь и инварианты
 ├── evidence.md                # источники, факты, gaps и актуальность
@@ -43,6 +44,26 @@ Machine truth — связка `planning-handoff.json/md`, `mode-decision.json`,
 `method-context.json/md`, `manifest.json`, `ledger.json` и
 `automation-timing.json`. Не редактируй их вручную. `status.md` можно в любой
 момент пересобрать командой `status`.
+
+`working-projection.json` не хранит текст постановки. Он доказывает, куда и
+когда проецировался растущий человекочитаемый draft. При policy `required`
+target уже создан или связан до полного анализа. После каждого reviewed блока
+координатор обновляет все targets, выполняет read-back и записывает update с
+`source=Bxx`. Пока хотя бы один reviewed блок отсутствует в проекции, следующий
+semantic pass не запускается. В compact-mode первый update обязателен до
+`author_passes`, а его `source_sha256` должен совпадать с текущим `draft.md`.
+В block-mode перед `author_passes` так же проверяется текущий `integration`
+update. Последующие существенные исправления также читаются обратно.
+Канал выбирается из project profile: локальный документ остаётся обычным
+проектным файлом, а tracker/wiki проекция записывается непосредственно в
+объявленный внешний target. Универсальный параллельный файл core не создаёт.
+
+Для `local_file` evidence команда сама читает bound project file и сверяет его
+SHA-256. Путь обязан точно совпадать с `object_id` target и находиться за
+пределами скрытого runtime case. Для `external_readback` project adapter
+сохраняет в case отдельный JSON receipt по `references/handoff-contract.md`;
+одного URL недостаточно. Runtime update принимает только `evidence_kind`,
+зафиксированный target в approved handoff.
 
 ## Решение о режиме
 
@@ -130,6 +151,13 @@ python3 {baseDir}/scripts/case_pipeline.py context \
 python3 {baseDir}/scripts/case_pipeline.py refresh-kernel \
   --case-root "<path>" --affects B01
 
+python3 {baseDir}/scripts/case_pipeline.py projection-update \
+  --case-root "<path>" --target-id EXT-001 --source B01 \
+  --source-sha256 "<sha256-source-artifact>" \
+  --content-sha256 "<sha256-read-back-content>" \
+  --evidence-kind "<local_file|external_readback>" \
+  --evidence-ref "<file-or-receipt-path>" --read-back-at "<iso-8601>"
+
 python3 {baseDir}/scripts/case_pipeline.py check \
   --case-root "<path>" --final-trace
 
@@ -162,6 +190,13 @@ manifest и semantic ledger, сохраняет текущие блоки, св�
 создаёт свежий runtime checklist. Уже выполненные пункты после этого повторно
 подтверждаются обычными `automation_timing.py check` с evidence и внешним
 read-back. Миграция запрещена, пока semantic block находится в `in_progress`.
+Старый case без `working-projection.json` мигрирует с policy `optional`. Updates
+сохраняются только для target, чья identity
+`target_id+system+object_id+url+evidence_kind` не изменилась; при перенаправлении target
+прошлые read-back updates остаются в архиве, но не переносятся в новую revision.
+Старый `planning-role-context.json` без ключа `working_projection` принимается
+только вместе со старым handoff и при точном совпадении сохранённого fingerprint;
+остальные расхождения по-прежнему считаются tampering.
 
 Для review готового артефакта используй `--intent review`. Это единственный
 новый case, которому разрешено не иметь `planning-handoff.json/md`.

@@ -163,18 +163,45 @@ class CasePipelineTests(unittest.TestCase):
         *,
         profile_id: str = "generic",
         project_root: str | None = None,
+        working_projection: bool = False,
+        revision: int = 1,
+        projection_object_id: str = "specification.md",
+        projection_url: str | None = None,
+        projection_evidence_kind: str = "local_file",
     ) -> dict[str, object]:
         markdown = "# Planning handoff\n\nVerified research and approved plan.\n"
+        projection_binding = {
+            "target_id": "EXT-001",
+            "system": "visible-draft",
+            "object_id": projection_object_id,
+            "url": projection_url,
+            "read_back_at": "2026-08-08T10:00:00+00:00",
+        }
         payload: dict[str, object] = {
             "schema": planning_case.HANDOFF_SCHEMA_VERSION,
             "planning_case_id": "demo-plan",
-            "planning_revision": 1,
+            "planning_revision": revision,
             "profile_id": profile_id,
             "project_root": project_root,
             "required_anchor_systems": [],
             "passport": None,
-            "external_bindings": [],
-            "approval": {"revision": 1},
+            "external_bindings": [projection_binding] if working_projection else [],
+            "working_projection": {
+                "policy": "required" if working_projection else "optional",
+                "targets": (
+                    [
+                        {
+                            **projection_binding,
+                            "action": "create",
+                            "purpose": "Growing specification",
+                            "evidence_kind": projection_evidence_kind,
+                        }
+                    ]
+                    if working_projection
+                    else []
+                ),
+            },
+            "approval": {"revision": revision},
             "artifact_hashes": {},
             "content_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
         }
@@ -186,6 +213,33 @@ class CasePipelineTests(unittest.TestCase):
         )
         (root / planning_case.HANDOFF_MARKDOWN).write_text(markdown, encoding="utf-8")
         return payload
+
+    def write_external_receipt(
+        self,
+        root: Path,
+        *,
+        target_id: str = "EXT-001",
+        system: str = "visible-draft",
+        object_id: str = "specification.md",
+        content_sha256: str,
+        read_back_at: str,
+        relative: str = "readbacks/ext-001.json",
+    ) -> str:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "schema": case_pipeline.EXTERNAL_READBACK_RECEIPT_SCHEMA,
+            "kind": "external_readback",
+            "adapter": "test-project-adapter",
+            "target_id": target_id,
+            "system": system,
+            "object_id": object_id,
+            "read_back_at": read_back_at,
+            "content_sha256": content_sha256,
+            "response_fingerprint": "f" * 64,
+        }
+        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return relative
 
     def write_timed_planning_handoff(
         self,
@@ -314,6 +368,102 @@ class CasePipelineTests(unittest.TestCase):
             self.assertEqual(manifest["schema"], 2)
             self.assertEqual(ledger["blocks"], [])
 
+    def test_status_handles_non_object_working_projection_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            (root / case_pipeline.WORKING_PROJECTION_JSON).write_text(
+                "[]\n", encoding="utf-8"
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.render_status(loaded_root, manifest, ledger)
+            status = (root / "status.md").read_text(encoding="utf-8")
+            self.assertIn("working projection: `invalid`", status)
+
+    def test_projection_update_cli_requires_evidence_kind(self) -> None:
+        parser = case_pipeline.build_parser()
+        args = parser.parse_args(
+            [
+                "projection-update",
+                "--case-root",
+                "/tmp/case",
+                "--target-id",
+                "EXT-001",
+                "--source",
+                "draft",
+                "--source-sha256",
+                "a" * 64,
+                "--content-sha256",
+                "b" * 64,
+                "--evidence-kind",
+                "external_readback",
+                "--evidence-ref",
+                "readbacks/ext-001.json",
+                "--read-back-at",
+                "2026-08-08T10:30:00+00:00",
+            ]
+        )
+        self.assertEqual(args.evidence_kind, "external_readback")
+
+    def test_legacy_planning_role_context_without_projection_stays_valid(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root)
+            self.write_planning_handoff(root)
+            handoff_path = root / planning_case.HANDOFF_JSON
+            handoff = json.loads(handoff_path.read_text(encoding="utf-8"))
+            handoff.pop("working_projection")
+            handoff["fingerprint"] = planning_case.canonical_fingerprint(handoff)
+            handoff_path.write_text(
+                json.dumps(handoff, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            case_pipeline.init_case(
+                root,
+                case_id="legacy-role-context",
+                mode="block",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+            )
+            role_path = root / case_pipeline.PLANNING_ROLE_CONTEXT_JSON
+            role_context = json.loads(role_path.read_text(encoding="utf-8"))
+            role_context.pop("working_projection")
+            role_context["fingerprint"] = case_pipeline.role_context_fingerprint(
+                role_context
+            )
+            role_path.write_text(
+                json.dumps(role_context, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            manifest_path = root / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["planning_handoff"]["role_context_fingerprint"] = role_context[
+                "fingerprint"
+            ]
+            manifest["artifacts"].pop("working_projection")
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            (root / case_pipeline.WORKING_PROJECTION_JSON).unlink()
+            (root / case_pipeline.ROLE_MANIFEST_JSON).write_text(
+                json.dumps(
+                    case_pipeline.role_manifest(manifest),
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(
+                case_pipeline.validate_case(loaded_root, manifest, ledger, final=False),
+                [],
+            )
+
     def test_migrate_planning_preserves_semantic_work_and_archives_old_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             base = Path(temp)
@@ -433,6 +583,102 @@ class CasePipelineTests(unittest.TestCase):
                     handoff_root=replacement,
                     reason="runtime contract upgrade",
                 )
+
+    def test_migrate_legacy_case_without_working_projection_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = base / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root)
+            self.write_timed_planning_handoff(root, revision=1)
+            case_pipeline.init_case(
+                root,
+                case_id="legacy-projection-migration",
+                mode="block",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+            )
+            (root / case_pipeline.WORKING_PROJECTION_JSON).unlink()
+            replacement = base / "replacement"
+            self.write_timed_planning_handoff(replacement, revision=2)
+
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.migrate_planning_handoff(
+                loaded_root,
+                manifest,
+                ledger,
+                handoff_root=replacement,
+                reason="add working projection runtime contract",
+            )
+
+            projection = case_pipeline.read_json(
+                root / case_pipeline.WORKING_PROJECTION_JSON
+            )
+            self.assertEqual(projection["policy"], "optional")
+            self.assertEqual(projection["updates"], [])
+
+    def test_migrate_drops_updates_when_projection_target_is_redirected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = base / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root)
+            self.write_planning_handoff(
+                root,
+                working_projection=True,
+                revision=1,
+                project_root=str(base),
+            )
+            case_pipeline.init_case(
+                root,
+                case_id="redirected-projection",
+                mode="block",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=str(base),
+            )
+            replace_todo(root / "draft.md", "# Draft\n\nFirst version")
+            visible = base / "specification.md"
+            visible.write_text("# Visible\n\nFirst version\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_working_projection_update(
+                loaded_root,
+                manifest,
+                ledger,
+                target_id="EXT-001",
+                source="draft",
+                source_sha256=case_pipeline.sha256(root / "draft.md"),
+                content_sha256=case_pipeline.sha256(visible),
+                evidence_kind="local_file",
+                evidence_ref="specification.md",
+                read_back_at="2026-08-08T10:30:00+00:00",
+            )
+
+            replacement = base / "replacement"
+            self.write_planning_handoff(
+                replacement,
+                working_projection=True,
+                revision=2,
+                project_root=str(base),
+                projection_object_id="specification-v2.md",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.migrate_planning_handoff(
+                loaded_root,
+                manifest,
+                ledger,
+                handoff_root=replacement,
+                reason="move the visible draft target",
+            )
+
+            projection = case_pipeline.read_json(
+                root / case_pipeline.WORKING_PROJECTION_JSON
+            )
+            self.assertEqual(projection["targets"][0]["object_id"], "specification-v2.md")
+            self.assertEqual(projection["updates"], [])
 
     def test_init_binds_precomputed_mode_decision(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -712,6 +958,449 @@ class CasePipelineTests(unittest.TestCase):
                 self.transition(root, "B02", "ready")
             self.analyze_and_review(root, "B01", "SCN-B01-001")
             self.transition(root, "B02", "ready")
+
+    def test_reviewed_block_must_reach_visible_projection_before_next_work(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            project_root = Path(temp)
+            root = project_root / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root)
+            self.write_planning_handoff(
+                root,
+                working_projection=True,
+                project_root=str(project_root),
+            )
+            case_pipeline.init_case(
+                root,
+                case_id="visible-draft",
+                mode="block",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=str(project_root),
+            )
+            replace_todo(root / "kernel.md", "# Kernel\n\nStable kernel")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.refresh_kernel(loaded_root, manifest, ledger, [])
+            self.add(root, "B01")
+            self.add(root, "B02", ["B01"])
+            self.analyze_and_review(root, "B01", "SCN-B01-001")
+            self.transition(root, "B02", "ready")
+            with self.assertRaises(case_pipeline.CaseError):
+                self.transition(root, "B02", "in_progress")
+
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            source_hash = case_pipeline.blocks_by_id(ledger)["B01"]["artifact_sha256"]
+            visible = project_root / "specification.md"
+            visible.write_text("# Visible draft\n\nB01 reviewed.\n", encoding="utf-8")
+            case_pipeline.record_working_projection_update(
+                loaded_root,
+                manifest,
+                ledger,
+                target_id="EXT-001",
+                source="B01",
+                source_sha256=source_hash,
+                content_sha256=case_pipeline.sha256(visible),
+                evidence_kind="local_file",
+                evidence_ref="specification.md",
+                read_back_at="2026-08-08T10:30:00+00:00",
+            )
+            self.transition(root, "B01", "in_progress")
+            replace_todo(root / "blocks" / "B01.md", "# B01\n\nCorrected analysis")
+            self.transition(root, "B01", "analyzed")
+            self.transition(root, "B01", "reviewed")
+            with self.assertRaises(case_pipeline.CaseError):
+                self.transition(root, "B02", "in_progress")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            corrected_hash = case_pipeline.blocks_by_id(ledger)["B01"]["artifact_sha256"]
+            visible.write_text("# Visible draft\n\nB01 corrected.\n", encoding="utf-8")
+            case_pipeline.record_working_projection_update(
+                loaded_root,
+                manifest,
+                ledger,
+                target_id="EXT-001",
+                source="B01",
+                source_sha256=corrected_hash,
+                content_sha256=case_pipeline.sha256(visible),
+                evidence_kind="local_file",
+                evidence_ref="specification.md",
+                read_back_at="2026-08-08T10:40:00+00:00",
+            )
+            self.transition(root, "B02", "in_progress")
+            payload = json.loads(
+                (root / case_pipeline.WORKING_PROJECTION_JSON).read_text(encoding="utf-8")
+            )
+            self.assertEqual(len(payload["updates"]), 2)
+            self.assertEqual(payload["updates"][-1]["source_sha256"], corrected_hash)
+
+    def test_reviewed_block_can_return_to_in_progress_before_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            project_root = Path(temp)
+            root = project_root / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root)
+            self.write_planning_handoff(
+                root,
+                working_projection=True,
+                project_root=str(project_root),
+            )
+            case_pipeline.init_case(
+                root,
+                case_id="reviewed-rollback",
+                mode="block",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=str(project_root),
+            )
+            replace_todo(root / "kernel.md", "# Kernel\n\nStable kernel")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.refresh_kernel(loaded_root, manifest, ledger, [])
+            self.add(root, "B01")
+            self.analyze_and_review(root, "B01", "SCN-B01-001")
+
+            self.transition(root, "B01", "in_progress")
+
+            _, _, ledger = case_pipeline.load_case(root)
+            self.assertEqual(
+                case_pipeline.blocks_by_id(ledger)["B01"]["status"],
+                "in_progress",
+            )
+
+    def test_projection_update_rejects_unknown_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            project_root = Path(temp)
+            root = project_root / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root)
+            self.write_planning_handoff(
+                root,
+                working_projection=True,
+                project_root=str(project_root),
+            )
+            case_pipeline.init_case(
+                root,
+                case_id="projection-source",
+                mode="block",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=str(project_root),
+            )
+            visible = project_root / "specification.md"
+            visible.write_text("visible\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaises(case_pipeline.CaseError):
+                case_pipeline.record_working_projection_update(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    target_id="EXT-001",
+                    source="arbitrary",
+                    source_sha256="a" * 64,
+                    content_sha256=case_pipeline.sha256(visible),
+                    evidence_kind="local_file",
+                    evidence_ref="specification.md",
+                    read_back_at="2026-08-08T10:30:00+00:00",
+                )
+
+    def test_local_projection_update_checks_read_back_content_and_is_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            project_root = Path(temp)
+            root = project_root / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root, selected_mode="compact")
+            self.write_planning_handoff(
+                root,
+                working_projection=True,
+                project_root=str(project_root),
+            )
+            case_pipeline.init_case(
+                root,
+                case_id="local-readback",
+                mode="compact",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=str(project_root),
+            )
+            replace_todo(root / "draft.md", "# Draft\n\nComplete")
+            visible = project_root / "specification.md"
+            visible.write_text("# Visible\n\nComplete\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaises(case_pipeline.CaseError):
+                case_pipeline.record_working_projection_update(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    target_id="EXT-001",
+                    source="draft",
+                    source_sha256=case_pipeline.sha256(root / "draft.md"),
+                    content_sha256="a" * 64,
+                    evidence_kind="local_file",
+                    evidence_ref="specification.md",
+                    read_back_at="2026-08-08T10:30:00+00:00",
+                )
+
+            update = {
+                "target_id": "EXT-001",
+                "source": "draft",
+                "source_sha256": case_pipeline.sha256(root / "draft.md"),
+                "content_sha256": case_pipeline.sha256(visible),
+                "evidence_kind": "local_file",
+                "evidence_ref": "specification.md",
+                "read_back_at": "2026-08-08T10:30:00+00:00",
+            }
+            case_pipeline.record_working_projection_update(
+                loaded_root,
+                manifest,
+                ledger,
+                **update,
+            )
+            manifest_before = (root / "manifest.json").read_bytes()
+            projection_before = (
+                root / case_pipeline.WORKING_PROJECTION_JSON
+            ).read_bytes()
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_working_projection_update(
+                loaded_root,
+                manifest,
+                ledger,
+                **update,
+            )
+            self.assertEqual((root / "manifest.json").read_bytes(), manifest_before)
+            self.assertEqual(
+                (root / case_pipeline.WORKING_PROJECTION_JSON).read_bytes(),
+                projection_before,
+            )
+            visible.write_text("# Visible\n\nComplete plus note\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_working_projection_update(
+                loaded_root,
+                manifest,
+                ledger,
+                **{
+                    **update,
+                    "content_sha256": case_pipeline.sha256(visible),
+                    "read_back_at": "2026-08-08T10:40:00+00:00",
+                },
+            )
+            projection = case_pipeline.read_json(
+                root / case_pipeline.WORKING_PROJECTION_JSON
+            )
+            self.assertEqual(len(projection["updates"]), 2)
+
+    def test_hidden_case_file_cannot_satisfy_local_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            project_root = Path(temp)
+            root = project_root / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root, selected_mode="compact")
+            self.write_planning_handoff(
+                root,
+                working_projection=True,
+                project_root=str(project_root),
+                projection_object_id="case/draft.md",
+            )
+            case_pipeline.init_case(
+                root,
+                case_id="hidden-projection",
+                mode="compact",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=str(project_root),
+            )
+            replace_todo(root / "draft.md", "# Draft\n\nHidden runtime content")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "Hidden runtime case"):
+                case_pipeline.record_working_projection_update(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    target_id="EXT-001",
+                    source="draft",
+                    source_sha256=case_pipeline.sha256(root / "draft.md"),
+                    content_sha256=case_pipeline.sha256(root / "draft.md"),
+                    evidence_kind="local_file",
+                    evidence_ref="case/draft.md",
+                    read_back_at="2026-08-08T10:30:00+00:00",
+                )
+
+    def test_external_projection_rejects_parallel_local_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            project_root = Path(temp)
+            root = project_root / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root, selected_mode="compact")
+            self.write_planning_handoff(
+                root,
+                working_projection=True,
+                project_root=str(project_root),
+                projection_object_id="TASK-42",
+                projection_url="https://tracker.example.invalid/TASK-42",
+                projection_evidence_kind="external_readback",
+            )
+            case_pipeline.init_case(
+                root,
+                case_id="external-no-local-duplicate",
+                mode="compact",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=str(project_root),
+            )
+            replace_todo(root / "draft.md", "# Draft\n\nComplete")
+            local_duplicate = project_root / "TASK-42"
+            local_duplicate.write_text("duplicate\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(
+                case_pipeline.CaseError,
+                "does not match the declared target contract",
+            ):
+                case_pipeline.record_working_projection_update(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    target_id="EXT-001",
+                    source="draft",
+                    source_sha256=case_pipeline.sha256(root / "draft.md"),
+                    content_sha256=case_pipeline.sha256(local_duplicate),
+                    evidence_kind="local_file",
+                    evidence_ref="TASK-42",
+                    read_back_at="2026-08-08T10:30:00+00:00",
+                )
+
+    def test_external_projection_update_requires_stable_adapter_receipt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root, selected_mode="compact")
+            self.write_planning_handoff(
+                root,
+                working_projection=True,
+                projection_url="https://tracker.example.invalid/TASK-42",
+                projection_evidence_kind="external_readback",
+            )
+            case_pipeline.init_case(
+                root,
+                case_id="external-readback",
+                mode="compact",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+            )
+            replace_todo(root / "draft.md", "# Draft\n\nComplete")
+            read_back_at = "2026-08-08T10:30:00+00:00"
+            content_hash = "b" * 64
+            receipt = self.write_external_receipt(
+                root,
+                content_sha256=content_hash,
+                read_back_at=read_back_at,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_working_projection_update(
+                loaded_root,
+                manifest,
+                ledger,
+                target_id="EXT-001",
+                source="draft",
+                source_sha256=case_pipeline.sha256(root / "draft.md"),
+                content_sha256=content_hash,
+                evidence_kind="external_readback",
+                evidence_ref=receipt,
+                read_back_at=read_back_at,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(
+                case_pipeline.validate_case(loaded_root, manifest, ledger, final=False),
+                [],
+            )
+
+            receipt_path = root / receipt
+            payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+            payload["content_sha256"] = "c" * 64
+            receipt_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            errors = case_pipeline.validate_case(loaded_root, manifest, ledger, final=False)
+            self.assertTrue(any("receipt" in error for error in errors))
+
+    def test_compact_author_pass_requires_current_draft_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            project_root = Path(temp)
+            root = project_root / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root, selected_mode="compact")
+            self.write_planning_handoff(
+                root,
+                working_projection=True,
+                project_root=str(project_root),
+            )
+            case_pipeline.init_case(
+                root,
+                case_id="compact-projection-freshness",
+                mode="compact",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=str(project_root),
+            )
+            draft = root / "draft.md"
+            visible = project_root / "specification.md"
+            replace_todo(draft, "# Draft\n\nVersion one")
+            visible.write_text("# Visible\n\nVersion one\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_working_projection_update(
+                loaded_root,
+                manifest,
+                ledger,
+                target_id="EXT-001",
+                source="draft",
+                source_sha256=case_pipeline.sha256(draft),
+                content_sha256=case_pipeline.sha256(visible),
+                evidence_kind="local_file",
+                evidence_ref="specification.md",
+                read_back_at="2026-08-08T10:30:00+00:00",
+            )
+
+            replace_todo(draft, "# Draft\n\nVersion two")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaises(case_pipeline.CaseError):
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name="author_passes",
+                    status="pass",
+                    evidence="draft.md",
+                    note=None,
+                )
+
+            visible.write_text("# Visible\n\nVersion two\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_working_projection_update(
+                loaded_root,
+                manifest,
+                ledger,
+                target_id="EXT-001",
+                source="draft",
+                source_sha256=case_pipeline.sha256(draft),
+                content_sha256=case_pipeline.sha256(visible),
+                evidence_kind="local_file",
+                evidence_ref="specification.md",
+                read_back_at="2026-08-08T10:40:00+00:00",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="author_passes",
+                status="pass",
+                evidence="draft.md",
+                note=None,
+            )
 
     def test_kernel_change_marks_completed_block_and_dependents_stale(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

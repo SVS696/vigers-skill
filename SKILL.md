@@ -51,6 +51,13 @@ description: "Оркестрирует предварительное иссле
     gate разрешён только для доказанной существенной evidence-дыры. Minor-only polish
     выполняется не более одного раза на review gate; затем остаток фиксируется и
     pipeline идёт дальше по `{baseDir}/references/convergence-contract.md`.
+12. **Скрытый case не заменяет рабочий документ.** Если profile объявляет
+    `working_projection: required`, после planning approval и до полного анализа
+    создай или свяжи видимый человеку файл, tracker либо wiki target. Обновляй
+    его после каждого reviewed блока и значимой compact-фазы, явно помечая
+    непроверенные части. Форму target определяет project profile: core не создаёт
+    параллельный локальный файл рядом с объявленным tracker/wiki target. Рабочая
+    проекция не является финальной публикацией.
 
 ## Когда применять
 
@@ -116,9 +123,14 @@ description: "Оркестрирует предварительное иссле
    являются утверждёнными требованиями или финальным DoD.
 5. Покажи пользователю plan, coverage/gaps и bindings. До явного approval не
    запускай полноценный Vigers case.
-6. После approval создай или свяжи объявленные profile post-approval artifacts,
-   прочитай их обратно и экспортируй `planning-handoff.json/md` в будущий
-   case-root.
+6. После approval создай или свяжи объявленные profile post-approval artifacts.
+   Для `working_projection: required` хотя бы один target должен иметь
+   `working_projection: true`, `publish_gate: after_approval` и read-back.
+   Target также фиксирует `evidence_kind: local_file|external_readback`; тип
+   evidence нельзя менять при runtime update. Он существует до запуска полного
+   анализа, даже если пока содержит только
+   рабочую рамку и маркировку непроверенных разделов. Затем экспортируй
+   `planning-handoff.json/md` в будущий case-root.
 
 Review готовой постановки может пропустить planning-case, если target и scope
 ревью уже однозначны. Для нового анализа, изменения, декомпозиции или
@@ -283,6 +295,15 @@ approval пользователя до продолжения изменённо
 Внутри уже принятого плана выполняй обычные `Pxx-Cxx` без отдельного
 согласования каждого пункта: completion evidence и внешняя галка подтверждают
 выполнение, а не запрашивают новое решение пользователя.
+Runtime `draft.md`, block artifacts и `working-projection.json` остаются машинным
+контуром. После каждого reviewed semantic block сначала обнови все обязательные
+видимые targets через project adapter, выполни read-back и зарегистрируй его
+командой `case_pipeline.py projection-update --source Bxx`. Пока проекция
+отстаёт, новый блок и author-pass gate не продолжаются. В compact-mode обнови
+проекцию после первого полного draft и после существенных исправлений. Локальный
+файл подтверждай `--evidence-kind local_file`, внешний tracker/wiki —
+сохранённым JSON receipt проектного адаптера и
+`--evidence-kind external_readback`.
 
 ## Быстрые режимы
 
@@ -322,6 +343,10 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
   `execution_use: human_information_only` и не влияет на runtime-решения.
 - Ролевой context содержит `planning-role-context.json`, но не automation plan,
   ETA или runtime ledger.
+- При `working_projection: required` видимый target создан или связан до полного
+  анализа. Каждый reviewed блок отражён отдельным read-back update; скрытый case
+  не выдаётся за пользовательский черновик, а рабочий draft не называется
+  финальной публикацией.
 - Каждый выполненный обязательный checklist item немедленно имеет completion
   evidence; внешняя галка подтверждена read-back, а completed stage не содержит
   pending items.
@@ -359,6 +384,8 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/references/handoff-contract.md` | Контракт case package и результатов ролей |
 | `{baseDir}/references/prompt-contract.md` | Сборка ограниченного prompt для независимой роли |
 | `{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json` | Регрессия prompt: закрытый coverage не переоткрывается без существенной evidence-дыры |
+| `{baseDir}/evals/prompt-cookbook/early-working-projection.json` | Регрессия prompt: обязательный рабочий draft появляется и обновляется до финальной интеграции |
+| `{baseDir}/evals/prompt-cookbook/profile-owned-working-projection.json` | Регрессия prompt: форма видимой проекции берётся из project profile без универсального локального дубля |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/block-contract.md` | Контракт семантического блока и sidecar index |
 | `{baseDir}/references/knowledge-map.md` | Детерминированная карта методических маршрутов |

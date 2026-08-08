@@ -24,6 +24,8 @@ GENERIC_PROFILE_PATH = ROOT / "profiles" / "generic.md"
 PROFILE_TEMPLATE_PATH = ROOT / "profiles" / "project-profile-template.md"
 PROJECT_PROFILE_RELATIVE = Path(".vigers") / "profile.md"
 PROFILE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+WORKING_PROJECTION_POLICIES = {"required", "optional", "disabled"}
+PROJECTION_EVIDENCE_KINDS = {"local_file", "external_readback"}
 REQUIRED_PROFILE_HEADINGS = (
     "## Область",
     "## Канонические источники",
@@ -53,6 +55,8 @@ REQUIRED_WORKFLOWS = {
 }
 REQUIRED_PROMPT_EVALS = (
     "evals/prompt-cookbook/convergence-closed-coverage.json",
+    "evals/prompt-cookbook/early-working-projection.json",
+    "evals/prompt-cookbook/profile-owned-working-projection.json",
 )
 PUBLIC_FORBIDDEN_MARKERS = tuple(
     "".join(parts) for parts in (("R", "TL"), ("H", "ÆZE"), ("HA", "EZE"))
@@ -71,6 +75,7 @@ class ProfileSelection:
     project_root: Path | None
     source: str
     planning_anchors: tuple[str, ...]
+    working_projection: str
 
 
 def safe_file(relative: str) -> Path:
@@ -133,6 +138,17 @@ def parse_planning_anchors(metadata: dict[str, str], source: Path) -> tuple[str,
     return tuple(anchors)
 
 
+def parse_working_projection(metadata: dict[str, str], source: Path) -> str:
+    """Return the machine-readable visibility policy declared by a profile."""
+    policy = metadata.get("working_projection", "optional").strip().casefold() or "optional"
+    if policy not in WORKING_PROJECTION_POLICIES:
+        allowed = ", ".join(sorted(WORKING_PROJECTION_POLICIES))
+        raise PipelineError(
+            f"{source}: working_projection must be one of {allowed}, got {policy!r}"
+        )
+    return policy
+
+
 def validate_profile_text(
     text: str,
     source: Path,
@@ -149,6 +165,7 @@ def validate_profile_text(
     if profile_id == "generic" and not allow_generic:
         raise PipelineError(f"{source}: project profile cannot shadow generic")
     parse_planning_anchors(metadata, source)
+    parse_working_projection(metadata, source)
     missing = [heading for heading in REQUIRED_PROFILE_HEADINGS if heading not in text]
     if missing:
         raise PipelineError(f"{source}: missing headings: {', '.join(missing)}")
@@ -176,6 +193,7 @@ def read_project_profile(root: Path) -> ProfileSelection | None:
         root.resolve(),
         "project",
         parse_planning_anchors(metadata, candidate),
+        parse_working_projection(metadata, candidate),
     )
 
 
@@ -199,6 +217,7 @@ def detect_profile(cwd: Path) -> ProfileSelection:
         None,
         "generic",
         parse_planning_anchors(metadata, GENERIC_PROFILE_PATH),
+        parse_working_projection(metadata, GENERIC_PROFILE_PATH),
     )
 
 
@@ -214,6 +233,7 @@ def select_profile(requested_id: str, cwd: Path) -> ProfileSelection:
             None,
             "generic",
             parse_planning_anchors(metadata, GENERIC_PROFILE_PATH),
+            parse_working_projection(metadata, GENERIC_PROFILE_PATH),
         )
 
     detected = detect_profile(cwd)
@@ -385,6 +405,8 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/references/block-contract.md",
             "{baseDir}/references/convergence-contract.md",
             "{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json",
+            "{baseDir}/evals/prompt-cookbook/early-working-projection.json",
+            "{baseDir}/evals/prompt-cookbook/profile-owned-working-projection.json",
             "{baseDir}/scripts/spec_pipeline.py",
             "{baseDir}/scripts/case_pipeline.py",
         ):
@@ -476,6 +498,7 @@ def main() -> int:
                     str(selection.project_root) if selection.project_root is not None else None
                 ),
                 "planning_anchors": list(selection.planning_anchors),
+                "working_projection": selection.working_projection,
             }
             if args.json:
                 print(json.dumps(payload, ensure_ascii=False))

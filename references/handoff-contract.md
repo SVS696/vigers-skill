@@ -34,7 +34,8 @@ package и передаёт каждой роли только перечисл�
   "kernel": {"path": "kernel.md", "revision": 1, "sha256": "..."},
   "artifacts": {
     "automation_timing": "automation-timing.json",
-    "planning_role_context": "planning-role-context.json"
+    "planning_role_context": "planning-role-context.json",
+    "working_projection": "working-projection.json"
   },
   "gates": {},
   "events": []
@@ -52,8 +53,31 @@ cookies, приватные ключи и дампы БД. В block-mode `ledger
 `automation-timing.json` хранит отдельный runtime ledger approved planning stages
 и не передаётся ролям как источник требований.
 
+`working-projection.json` связывает case с видимым человеку растущим черновиком.
+Он хранит policy profile, targets из approved artifact plan и append-only
+read-back updates. Каждый target содержит неизменяемый
+`evidence_kind: local_file|external_readback`. Update использует только semantic source `Bxx`, `draft` или
+`integration` и содержит `source_sha256`, `content_sha256`, `evidence_kind`,
+`evidence_ref`, `evidence_sha256` и `read_back_at`. Runtime `draft.md` и block artifacts остаются машинными
+рабочими материалами и не доказывают, что пользователь видит результат.
+Рабочая проекция явно отличена от финальной публикации; непроверенные разделы
+не превращаются в утверждённые требования только потому, что записаны наружу.
+Перед `author_passes` runtime сверяет хеш текущего `draft.md` с последним
+`draft` update в compact-mode или `integration` update в block-mode.
+
+`evidence_kind=local_file` указывает на реально прочитанный файл из bound project
+root. Его путь точно совпадает с `object_id` target и не может находиться внутри
+скрытого runtime case; текущий SHA-256 обязан совпадать с последним
+`content_sha256` target. `evidence_kind=external_readback` указывает на сохранённый
+в case JSON receipt проектного адаптера. Receipt содержит `schema=1`,
+`kind=external_readback`, adapter, target/system/object identity, `read_back_at`,
+`content_sha256` нормализованного прочитанного текста и
+`response_fingerprint`. Один URL или заявленный хеш без receipt не являются
+read-back evidence.
+
 `planning-role-context.json` — производный bounded input для исполнительных
-ролей. Он содержит planning linkage и preliminary requirements, но машинно
+ролей. Он содержит planning linkage, preliminary requirements и контракт
+working projection, но машинно
 исключает `automation_plan`, ETA и runtime facts. Raw `planning-handoff.json`
 доступен оркестратору для валидации, но не входит в `case_pipeline.py context`.
 Аналогично `role-manifest.json` проецирует только mode/profile/method/kernel,

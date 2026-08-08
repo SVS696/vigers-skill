@@ -16,6 +16,7 @@ PROFILE_BODY = """---
 vigers_profile: 2
 profile_id: {profile_id}
 planning_anchors: {planning_anchors}
+working_projection: {working_projection}
 ---
 
 # Project profile
@@ -50,6 +51,7 @@ def write_profile(
     root: Path,
     profile_id: str = "project-alpha",
     planning_anchors: str = "",
+    working_projection: str = "optional",
 ) -> Path:
     profile = root / ".vigers" / "profile.md"
     profile.parent.mkdir(parents=True)
@@ -57,6 +59,7 @@ def write_profile(
         PROFILE_BODY.format(
             profile_id=profile_id,
             planning_anchors=planning_anchors,
+            working_projection=working_projection,
         ),
         encoding="utf-8",
     )
@@ -90,7 +93,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["contracts"], 5)
         self.assertEqual(counts["runtime_adapters"], 10)
         self.assertEqual(counts["workflows"], 3)
-        self.assertEqual(counts["prompt_evals"], 1)
+        self.assertEqual(counts["prompt_evals"], 3)
 
     def test_closed_coverage_prompt_eval_rejects_archaeological_restart(self) -> None:
         eval_path = (
@@ -114,6 +117,42 @@ class PipelineTests(unittest.TestCase):
                 "target_sources",
                 "stop_condition",
             ],
+        )
+
+    def test_early_projection_eval_rejects_hidden_case_as_user_artifact(self) -> None:
+        eval_path = (
+            spec_pipeline.ROOT
+            / "evals"
+            / "prompt-cookbook"
+            / "early-working-projection.json"
+        )
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        expected = payload["expected"]
+        self.assertIn(
+            "считать .vigers case достаточной видимостью для пользователя",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "read-back before continuation",
+            expected["required_output_signals"],
+        )
+
+    def test_projection_target_eval_defers_to_project_profile(self) -> None:
+        eval_path = (
+            spec_pipeline.ROOT
+            / "evals"
+            / "prompt-cookbook"
+            / "profile-owned-working-projection.json"
+        )
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        expected = payload["expected"]
+        self.assertIn(
+            "создавать локальный файл постановки вопреки project profile",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "external adapter read-back receipt",
+            expected["required_output_signals"],
         )
 
     def test_generic_fallback(self) -> None:
@@ -148,6 +187,30 @@ class PipelineTests(unittest.TestCase):
             root = Path(temp) / "project"
             root.mkdir()
             write_profile(root, planning_anchors="Tracker, tracker")
+            with self.assertRaises(spec_pipeline.PipelineError):
+                spec_pipeline.detect_profile(root)
+
+    def test_project_overlay_exposes_working_projection_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            write_profile(root, working_projection="required")
+            selection = spec_pipeline.detect_profile(root)
+            self.assertEqual(selection.working_projection, "required")
+
+    def test_empty_working_projection_policy_defaults_to_optional(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            write_profile(root, working_projection="")
+            selection = spec_pipeline.detect_profile(root)
+            self.assertEqual(selection.working_projection, "optional")
+
+    def test_invalid_working_projection_policy_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            write_profile(root, working_projection="sometimes")
             with self.assertRaises(spec_pipeline.PipelineError):
                 spec_pipeline.detect_profile(root)
 
@@ -202,7 +265,11 @@ class PipelineTests(unittest.TestCase):
             root.mkdir()
             external = base / "external.md"
             external.write_text(
-                PROFILE_BODY.format(profile_id="external", planning_anchors=""),
+                PROFILE_BODY.format(
+                    profile_id="external",
+                    planning_anchors="",
+                    working_projection="optional",
+                ),
                 encoding="utf-8",
             )
             profile = root / ".vigers" / "profile.md"

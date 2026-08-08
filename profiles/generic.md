@@ -2,6 +2,7 @@
 vigers_profile: 2
 profile_id: generic
 planning_anchors:
+working_projection: optional
 ---
 
 # Профиль постановок Generic
@@ -30,6 +31,17 @@ Fallback для проекта без специального профиля. �
 - External targets по умолчанию имеют `authority: none`. Создание артефактов в
   личном task manager, tracker или wiki разрешено только явным запросом
   пользователя и с обязательным read-back.
+- Видимая рабочая проекция опциональна. Если пользователь или локальные правила
+  задают файл, tracker либо wiki как место растущего черновика, объяви target с
+  `working_projection: true` и подходящим
+  `evidence_kind: local_file|external_readback`, создай или свяжи его после
+  approval и до полного анализа. Иначе явно покажи черновик в согласованном
+  канале; скрытый runtime case сам по себе не считается доступным пользователю
+  результатом.
+- Не создавай дублирующий локальный файл, если выбранный target уже является
+  tracker description или wiki page/delta. Для project file подтверждай
+  read-back через `local_file`; для внешней системы сохраняй JSON receipt
+  проектного адаптера и используй `external_readback`.
 - `before_research` targets по умолчанию отсутствуют. Их можно объявить только в
   локальном profile как обязательные пустые учётные anchors.
 - Объявленный profile task manager отражает личное обязательство и ближайшее

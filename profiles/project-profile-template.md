@@ -2,6 +2,7 @@
 vigers_profile: 2
 profile_id: example
 planning_anchors:
+working_projection: optional
 ---
 
 # Профиль постановок проекта
@@ -31,6 +32,11 @@ planning_anchors:
 - project adapters: допустимые create/update/link actions, поля draft-объекта,
   authority source, `publish_gate`
   (`before_research|before_review|after_approval|none`) и обязательный read-back;
+- политику `working_projection` во frontmatter:
+  `required|optional|disabled`; для `required` объяви хотя бы один actionable
+  target с `working_projection: true`, `publish_gate: after_approval` и
+  обязательным read-back; target сразу фиксирует
+  `evidence_kind: local_file|external_readback`;
 - нужны ли profile-required пустые учётные anchors при появлении личной работы;
   перечисли системы, trigger, create-or-link правило без дублей, минимальные поля
   и запрети добавлять в anchor описание, статус, assignee, priority и commitment
@@ -38,6 +44,14 @@ planning_anchors:
   запятую и отдельно укажи, может ли личный anchor предшествовать tracker/wiki;
 - когда external artifact должен существовать до user review, а когда создаётся
   только после approval;
+- где живёт ранняя человекочитаемая проекция постановки, когда она впервые
+  создаётся, какие события обновляют её и как помечаются непроверенные части;
+  отдельно выбери форму результата: project file, tracker description, wiki
+  page/delta или согласованное сочетание targets. Не требуй параллельный
+  локальный файл, если рабочей проекцией служит внешний target;
+- вид read-back evidence: `local_file` только для точного `object_id` файла за
+  пределами скрытого case либо `external_readback` с сохраняемым JSON receipt
+  project adapter;
 - маппинг этапов/checklists в личный task manager: details/done_when в task note,
   допустимая подробность пункта и subtask только для самостоятельного
   outcome/dependency/owner;

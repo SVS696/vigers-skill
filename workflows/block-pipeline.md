@@ -139,6 +139,13 @@ case-root и свежих block contexts.
 6. Если тот же `blocker/major` остался после двух точечных циклов, верни
    `user-decision`. Иначе переведи блок в `reviewed`, когда открытых принятых
    `blocker/major` нет; residual minor переход не блокируют.
+7. Сразу после `reviewed` проецируй принятый block-render во все обязательные
+   working targets. Сохрани уже показанные разделы, добавь или обнови только
+   затронутый смысл, а будущие разделы пометь как непроверенные. Выполни
+   read-back и `projection-update --source Bxx`: `local_file` проверяется по
+   реально прочитанному project file, `external_readback` — по сохранённому
+   receipt проектного адаптера. Пока update не записан, новый semantic block не
+   запускай.
 
 **Выход:** каждый смысловой блок проверен независимо и свеж относительно kernel.
 
@@ -154,6 +161,9 @@ case-root и свежих block contexts.
 4. Проверь, что ни один semantic ID не потерян и не появился без определения.
 5. После фактического включения переводите блоки `reviewed → integrated`.
 6. Зафиксируй гейт `semantic_integration` с evidence `draft.md`.
+7. Обнови working projection интегрированным draft, сохраняя явную маркировку
+   ещё не пройденных global/project/architecture gates. После read-back запиши
+   `projection-update --source integration`.
 
 **Выход:** единый draft и явное покрытие всех блоков.
 

@@ -20,7 +20,13 @@ def write_json(path: Path, payload: object) -> None:
 
 
 class PlanningCaseTests(unittest.TestCase):
-    def init(self, base: Path, *, required_anchors: list[str] | None = None) -> Path:
+    def init(
+        self,
+        base: Path,
+        *,
+        required_anchors: list[str] | None = None,
+        working_projection_policy: str = "optional",
+    ) -> Path:
         root = base / "planning"
         planning_case.init_case(
             root,
@@ -30,6 +36,7 @@ class PlanningCaseTests(unittest.TestCase):
             passport_id=None,
             passport_path=None,
             required_anchor_systems=required_anchors,
+            working_projection_policy=working_projection_policy,
         )
         return root
 
@@ -699,6 +706,8 @@ class PlanningCaseTests(unittest.TestCase):
                         "authority": "profile",
                         "publish_gate": "after_approval",
                         "read_back_required": True,
+                        "working_projection": True,
+                        "evidence_kind": "external_readback",
                     }
                 ],
             }
@@ -734,6 +743,13 @@ class PlanningCaseTests(unittest.TestCase):
             _, manifest = planning_case.load_case(root)
             output = base / "with-binding"
             planning_case.export_handoff(root, manifest, output)
+            exported = json.loads(
+                (output / planning_case.HANDOFF_JSON).read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                exported["working_projection"]["targets"][0]["target_id"],
+                "EXT-001",
+            )
             _, manifest = planning_case.load_case(root)
             self.assertEqual(manifest["state"], "handed_to_vigers")
             self.assertEqual(planning_case.validate_case(root, manifest, final=True), [])
@@ -747,6 +763,110 @@ class PlanningCaseTests(unittest.TestCase):
                 "external bindings changed after handoff export",
                 planning_case.validate_case(root, manifest, final=True),
             )
+
+    def test_required_working_projection_must_be_post_approval_and_read_back(self) -> None:
+        missing = planning_case.validate_artifact_plan(
+            {"schema": 1, "targets": []},
+            working_projection_policy="required",
+        )
+        self.assertIn("profile requires at least one working projection target", missing)
+
+        invalid = planning_case.validate_artifact_plan(
+            {
+                "schema": 1,
+                "targets": [
+                    {
+                        "id": "EXT-001",
+                        "system": "visible-draft",
+                        "action": "create",
+                        "purpose": "Growing specification",
+                        "authority": "profile",
+                        "publish_gate": "before_review",
+                        "read_back_required": False,
+                        "working_projection": True,
+                        "evidence_kind": "local_file",
+                    }
+                ],
+            },
+            working_projection_policy="required",
+        )
+        self.assertTrue(any("after_approval" in item for item in invalid))
+        self.assertTrue(any("requires read-back" in item for item in invalid))
+
+        missing_evidence_kind = planning_case.validate_artifact_plan(
+            {
+                "schema": 1,
+                "targets": [
+                    {
+                        "id": "EXT-001",
+                        "system": "visible-draft",
+                        "action": "create",
+                        "purpose": "Growing specification",
+                        "authority": "profile",
+                        "publish_gate": "after_approval",
+                        "read_back_required": True,
+                        "working_projection": True,
+                    }
+                ],
+            },
+            working_projection_policy="required",
+        )
+        self.assertTrue(
+            any("requires evidence_kind" in item for item in missing_evidence_kind)
+        )
+
+        valid = planning_case.validate_artifact_plan(
+            {
+                "schema": 1,
+                "targets": [
+                    {
+                        "id": "EXT-001",
+                        "system": "visible-draft",
+                        "action": "create",
+                        "purpose": "Growing specification",
+                        "authority": "profile",
+                        "publish_gate": "after_approval",
+                        "read_back_required": True,
+                        "working_projection": True,
+                        "evidence_kind": "local_file",
+                    }
+                ],
+            },
+            working_projection_policy="required",
+        )
+        self.assertEqual(valid, [])
+
+    def test_disabled_working_projection_rejects_projection_target(self) -> None:
+        errors = planning_case.validate_artifact_plan(
+            {
+                "schema": 1,
+                "targets": [
+                    {
+                        "id": "EXT-001",
+                        "system": "visible-draft",
+                        "action": "create",
+                        "purpose": "Growing specification",
+                        "authority": "profile",
+                        "publish_gate": "after_approval",
+                        "read_back_required": True,
+                        "working_projection": True,
+                        "evidence_kind": "local_file",
+                    }
+                ],
+            },
+            working_projection_policy="disabled",
+        )
+        self.assertIn("profile disables working projection targets", errors)
+
+    def test_required_projection_is_planned_after_research_not_before_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(
+                Path(temp),
+                working_projection_policy="required",
+            )
+            self.complete_research(root)
+            with self.assertRaises(planning_case.PlanningError):
+                self.complete_plan(root, external=False)
 
     def test_handoff_rejects_required_anchor_without_read_back_binding(self) -> None:
         markdown = "# Planning handoff\n\nVerified plan.\n"

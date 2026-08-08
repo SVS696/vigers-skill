@@ -45,12 +45,28 @@ Research включает поиск по применимым источник�
 пользователя.
 Неизменившиеся пункты принятого плана поштучно не согласовываются.
 
+Project profile может потребовать раннюю working projection. Тогда после
+planning approval и до полного анализа создаётся или связывается обычный файл,
+tracker либо wiki draft. Он обновляется после каждого reviewed блока с
+обязательным read-back; `.vigers/cases/` не считается видимым человеку
+результатом. Форму target задаёт project profile: core не создаёт параллельный
+локальный файл для tracker/wiki проекции. Project file проверяется напрямую,
+внешний read-back — по JSON receipt проектного адаптера. Рабочая проекция и
+финальная публикация остаются разными состояниями.
+Тип evidence закрепляется в approved target: внешний target нельзя закрыть
+локальным файлом, а `local_file` должен точно совпадать с объявленным путём вне
+скрытого runtime case.
+
 Цикл исправлений заканчивается, когда нет открытых принятых `blocker/major`.
 `minor` можно исправить одним пакетным проходом или оставить в residual log;
 они не запускают новое полное review. После coverage gate новый research разрешён
 только для конкретного `blocker|major` с точным вопросом, целевыми источниками
 и условием остановки. Это поведение закреплено повторяемым Prompt Cookbook
 fixture `evals/prompt-cookbook/convergence-closed-coverage.json`.
+Ранняя видимость отдельно проверяется fixture
+`evals/prompt-cookbook/early-working-projection.json`.
+Выбор project-owned target вместо универсального локального файла проверяется
+fixture `evals/prompt-cookbook/profile-owned-working-projection.json`.
 
 `compact` обслуживает один связный смысловой контур. `block` делит крупную
 постановку на 3–8 семантических contracts с явным DAG, стабильными IDs и

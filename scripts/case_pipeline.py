@@ -29,10 +29,16 @@ from planning_case import (
     HANDOFF_JSON as PLANNING_HANDOFF_JSON,
     HANDOFF_MARKDOWN as PLANNING_HANDOFF_MARKDOWN,
     PlanningError,
+    TARGET_ID_RE,
     canonical_fingerprint as canonical_planning_fingerprint,
     validate_handoff as validate_planning_handoff,
 )
-from spec_pipeline import PipelineError, detect_profile, select_profile
+from spec_pipeline import (
+    PROJECTION_EVIDENCE_KINDS,
+    PipelineError,
+    detect_profile,
+    select_profile,
+)
 from vigers_context import (
     METHOD_CONTEXT_JSON,
     METHOD_CONTEXT_MARKDOWN,
@@ -47,12 +53,16 @@ PLANNING_ROLE_CONTEXT_JSON = "planning-role-context.json"
 PLANNING_ROLE_CONTEXT_SCHEMA = 1
 ROLE_MANIFEST_JSON = "role-manifest.json"
 ROLE_MANIFEST_SCHEMA = 1
+WORKING_PROJECTION_JSON = "working-projection.json"
+WORKING_PROJECTION_SCHEMA = 1
+EXTERNAL_READBACK_RECEIPT_SCHEMA = 1
 CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BLOCK_ID_RE = re.compile(r"^B[0-9]{2,3}$")
 SEMANTIC_ID_RE = re.compile(
     r"^(GOAL|ACT|SCN|RULE|DATA|STATE|IF|QUAL|REQ|AC|DOD|ASM|Q|DEC|CON)-"
     r"(B[0-9]{2,3})-[0-9]{3}$"
 )
+SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 BLOCK_KINDS = {
     "context",
@@ -233,19 +243,27 @@ def planning_role_context(payload: dict[str, Any]) -> dict[str, Any]:
         "passport": payload.get("passport"),
         "required_anchor_systems": payload.get("required_anchor_systems", []),
         "external_bindings": payload.get("external_bindings", []),
+        "working_projection": payload.get(
+            "working_projection", {"policy": "optional", "targets": []}
+        ),
         "preliminary_requirements": payload.get("preliminary_requirements"),
         "approval": payload.get("approval"),
         "timing_visibility": "human_information_only",
         "excluded_fields": ["automation_plan", "automation_estimation", "estimates"],
     }
+    result["fingerprint"] = role_context_fingerprint(result)
+    return result
+
+
+def role_context_fingerprint(payload: dict[str, Any]) -> str:
+    """Hash a bounded role context without trusting its stored fingerprint."""
     encoded = json.dumps(
-        result,
+        {key: value for key, value in payload.items() if key != "fingerprint"},
         ensure_ascii=False,
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    result["fingerprint"] = hashlib.sha256(encoded).hexdigest()
-    return result
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def role_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
@@ -263,6 +281,7 @@ def role_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     artifacts = manifest.get("artifacts", {})
     allowed_artifacts = (
         "planning_role_context",
+        "working_projection",
         "evidence",
         "decisions",
         "draft",
@@ -300,6 +319,338 @@ def role_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     ).encode("utf-8")
     result["fingerprint"] = hashlib.sha256(encoded).hexdigest()
     return result
+
+
+def validate_working_projection_state(payload: Any) -> list[str]:
+    """Validate the visible working-draft linkage and read-back ledger."""
+    errors: list[str] = []
+    if not isinstance(payload, dict) or payload.get("schema") != WORKING_PROJECTION_SCHEMA:
+        return ["working-projection.json has unsupported schema"]
+    policy = payload.get("policy")
+    if policy not in {"required", "optional", "disabled"}:
+        errors.append("working projection policy is invalid")
+    targets = payload.get("targets")
+    if not isinstance(targets, list):
+        return [*errors, "working projection targets must be an array"]
+    target_ids: set[str] = set()
+    for target in targets:
+        if not isinstance(target, dict):
+            errors.append("working projection targets must be objects")
+            continue
+        target_id = target.get("target_id")
+        if not isinstance(target_id, str) or not TARGET_ID_RE.fullmatch(target_id):
+            errors.append(f"invalid working projection target id: {target_id!r}")
+            continue
+        if target_id in target_ids:
+            errors.append(f"duplicate working projection target: {target_id}")
+        target_ids.add(target_id)
+        for field in ("system", "object_id", "read_back_at"):
+            if not isinstance(target.get(field), str) or not target[field].strip():
+                errors.append(f"{target_id}: missing {field}")
+        if target.get("evidence_kind") not in PROJECTION_EVIDENCE_KINDS:
+            errors.append(f"{target_id}: invalid evidence_kind")
+    if policy == "required" and not target_ids:
+        errors.append("required working projection has no targets")
+    if policy == "disabled" and target_ids:
+        errors.append("disabled working projection has targets")
+
+    updates = payload.get("updates")
+    if not isinstance(updates, list):
+        return [*errors, "working projection updates must be an array"]
+    seen_updates: set[tuple[str, str, str, str]] = set()
+    for update in updates:
+        if not isinstance(update, dict):
+            errors.append("working projection updates must be objects")
+            continue
+        target_id = update.get("target_id")
+        if target_id not in target_ids:
+            errors.append(f"working projection update references unknown target {target_id!r}")
+        for field in ("source", "read_back_at", "evidence_ref"):
+            if not isinstance(update.get(field), str) or not update[field].strip():
+                errors.append(f"working projection update {target_id}: missing {field}")
+        source = update.get("source")
+        if not isinstance(source, str) or not (
+            BLOCK_ID_RE.fullmatch(source) or source in {"draft", "integration"}
+        ):
+            errors.append(f"working projection update {target_id}: invalid source")
+        source_hash = update.get("source_sha256")
+        if not isinstance(source_hash, str) or not SHA256_RE.fullmatch(source_hash):
+            errors.append(f"working projection update {target_id}: invalid source_sha256")
+        content_hash = update.get("content_sha256")
+        if not isinstance(content_hash, str) or not SHA256_RE.fullmatch(content_hash):
+            errors.append(f"working projection update {target_id}: invalid content_sha256")
+        evidence_kind = update.get("evidence_kind")
+        if evidence_kind not in PROJECTION_EVIDENCE_KINDS:
+            errors.append(f"working projection update {target_id}: invalid evidence_kind")
+        evidence_hash = update.get("evidence_sha256")
+        if not isinstance(evidence_hash, str) or not SHA256_RE.fullmatch(evidence_hash):
+            errors.append(f"working projection update {target_id}: invalid evidence_sha256")
+        key = (
+            str(target_id),
+            str(update.get("source")),
+            str(source_hash),
+            str(content_hash),
+        )
+        if key in seen_updates:
+            errors.append(f"duplicate working projection update: {target_id}/{update.get('source')}")
+        seen_updates.add(key)
+    return errors
+
+
+def working_projection_targets(payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Index projection targets by stable planning target id."""
+    return {
+        item["target_id"]: item
+        for item in payload.get("targets", [])
+        if isinstance(item, dict) and isinstance(item.get("target_id"), str)
+    }
+
+
+def projection_local_file(
+    root: Path,
+    manifest: dict[str, Any],
+    target: dict[str, Any],
+    evidence_ref: str,
+) -> Path:
+    """Resolve the exact visible project file declared by the projection target."""
+    project_root_raw = manifest.get("project_root")
+    project_root = (
+        Path(project_root_raw).expanduser().resolve()
+        if isinstance(project_root_raw, str) and project_root_raw.strip()
+        else None
+    )
+    object_id = target.get("object_id")
+    if not isinstance(object_id, str) or not object_id.strip():
+        raise CaseError("Local projection target has no object_id path")
+    declared = Path(object_id).expanduser()
+    if declared.is_absolute():
+        expected = declared.resolve()
+    elif project_root is not None:
+        expected = (project_root / declared).resolve()
+    else:
+        raise CaseError(
+            "Relative local projection target requires a bound project root"
+        )
+    raw_evidence = Path(evidence_ref).expanduser()
+    if raw_evidence.is_absolute():
+        candidate = raw_evidence.resolve()
+    elif project_root is not None:
+        candidate = (project_root / raw_evidence).resolve()
+    else:
+        raise CaseError("Relative local projection evidence requires a bound project root")
+    if candidate != expected:
+        raise CaseError("Local projection evidence does not match target object_id")
+    runtime_root = root.resolve()
+    if candidate == runtime_root or runtime_root in candidate.parents:
+        raise CaseError("Hidden runtime case cannot be a visible local projection")
+    if project_root is not None and not (
+        candidate == project_root or project_root in candidate.parents
+    ):
+        raise CaseError("Local projection target escapes the bound project root")
+    if not candidate.is_file():
+        raise CaseError(f"Local projection read-back file is missing: {evidence_ref}")
+    return candidate
+
+
+def external_readback_receipt(
+    root: Path,
+    target: dict[str, Any],
+    *,
+    evidence_ref: str,
+    content_sha256: str,
+    read_back_at: str,
+) -> tuple[Path, dict[str, Any]]:
+    """Validate one persisted receipt produced by an external project adapter."""
+    receipt_path = case_file(root, evidence_ref)
+    receipt = read_json(receipt_path)
+    if not isinstance(receipt, dict):
+        raise CaseError("External read-back receipt must be a JSON object")
+    expected = {
+        "schema": EXTERNAL_READBACK_RECEIPT_SCHEMA,
+        "kind": "external_readback",
+        "target_id": target.get("target_id"),
+        "system": target.get("system"),
+        "object_id": target.get("object_id"),
+        "read_back_at": read_back_at,
+        "content_sha256": content_sha256,
+    }
+    mismatches = [field for field, value in expected.items() if receipt.get(field) != value]
+    if mismatches:
+        raise CaseError(
+            "External read-back receipt does not match the projection update: "
+            + ", ".join(mismatches)
+        )
+    if not isinstance(receipt.get("adapter"), str) or not receipt["adapter"].strip():
+        raise CaseError("External read-back receipt must name the project adapter")
+    response_fingerprint = receipt.get("response_fingerprint")
+    if not isinstance(response_fingerprint, str) or not SHA256_RE.fullmatch(
+        response_fingerprint
+    ):
+        raise CaseError("External read-back receipt has invalid response_fingerprint")
+    return receipt_path, receipt
+
+
+def projection_evidence_sha256(
+    root: Path,
+    manifest: dict[str, Any],
+    target: dict[str, Any],
+    *,
+    evidence_kind: str,
+    evidence_ref: str,
+    content_sha256: str,
+    read_back_at: str,
+) -> str:
+    """Verify read-back evidence and return the evidence artifact hash."""
+    if target.get("evidence_kind") != evidence_kind:
+        raise CaseError(
+            "Projection evidence kind does not match the declared target contract"
+        )
+    if evidence_kind == "local_file":
+        evidence_path = projection_local_file(root, manifest, target, evidence_ref)
+        evidence_hash = sha256(evidence_path)
+        if evidence_hash != content_sha256:
+            raise CaseError("Local projection content hash does not match read-back file")
+        return evidence_hash
+    if evidence_kind == "external_readback":
+        evidence_path, _ = external_readback_receipt(
+            root,
+            target,
+            evidence_ref=evidence_ref,
+            content_sha256=content_sha256,
+            read_back_at=read_back_at,
+        )
+        return sha256(evidence_path)
+    raise CaseError(f"Unknown projection evidence kind: {evidence_kind}")
+
+
+def projection_evidence_errors(
+    root: Path,
+    manifest: dict[str, Any],
+    payload: dict[str, Any],
+) -> list[str]:
+    """Detect missing or changed read-back evidence after an update was recorded."""
+    errors: list[str] = []
+    targets = working_projection_targets(payload)
+    updates = payload.get("updates", [])
+    latest_local_index: dict[str, int] = {}
+    for index, update in enumerate(updates):
+        if (
+            isinstance(update, dict)
+            and update.get("evidence_kind") == "local_file"
+            and isinstance(update.get("target_id"), str)
+        ):
+            latest_local_index[update["target_id"]] = index
+    for index, update in enumerate(updates):
+        if not isinstance(update, dict):
+            continue
+        if (
+            update.get("evidence_kind") == "local_file"
+            and latest_local_index.get(str(update.get("target_id"))) != index
+        ):
+            continue
+        target = targets.get(update.get("target_id"))
+        if target is None:
+            continue
+        try:
+            evidence_hash = projection_evidence_sha256(
+                root,
+                manifest,
+                target,
+                evidence_kind=str(update.get("evidence_kind")),
+                evidence_ref=str(update.get("evidence_ref")),
+                content_sha256=str(update.get("content_sha256")),
+                read_back_at=str(update.get("read_back_at")),
+            )
+        except CaseError as exc:
+            errors.append(
+                f"{update.get('target_id')}/{update.get('source')}: {exc}"
+            )
+            continue
+        if evidence_hash != update.get("evidence_sha256"):
+            errors.append(
+                f"{update.get('target_id')}/{update.get('source')}: "
+                "projection evidence changed after read-back"
+            )
+    return errors
+
+
+def projection_update_sources(payload: dict[str, Any], target_id: str) -> dict[str, str]:
+    """Return the latest recorded subject hash for each projected source."""
+    return {
+        item["source"]: item["source_sha256"]
+        for item in payload.get("updates", [])
+        if isinstance(item, dict)
+        and item.get("target_id") == target_id
+        and isinstance(item.get("source"), str)
+        and isinstance(item.get("source_sha256"), str)
+    }
+
+
+def working_projection_errors(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    require_any_update: bool,
+    exclude_sources: set[str] | None = None,
+) -> list[str]:
+    """Return visibility gaps for required projections and reviewed blocks."""
+    relative = manifest.get("artifacts", {}).get("working_projection")
+    if not isinstance(relative, str):
+        return []
+    try:
+        payload = read_json(case_file(root, relative))
+    except CaseError as exc:
+        return [str(exc)]
+    errors = validate_working_projection_state(payload)
+    if not errors:
+        errors.extend(projection_evidence_errors(root, manifest, payload))
+    if errors or payload.get("policy") == "disabled" or not payload.get("targets"):
+        return errors
+    target_ids = [
+        item.get("target_id")
+        for item in payload.get("targets", [])
+        if isinstance(item, dict) and isinstance(item.get("target_id"), str)
+    ]
+    required_document_source = None
+    expected_document_hash = None
+    if require_any_update:
+        required_document_source = (
+            "draft" if manifest.get("mode") == "compact" else "integration"
+        )
+        draft_relative = manifest.get("artifacts", {}).get("draft")
+        if isinstance(draft_relative, str):
+            draft_path = case_file(root, draft_relative)
+            if artifact_ready(draft_path):
+                expected_document_hash = sha256(draft_path)
+    for target_id in target_ids:
+        sources = projection_update_sources(payload, target_id)
+        if require_any_update and not sources:
+            errors.append(f"{target_id}: working projection has no read-back update")
+        if (
+            required_document_source is not None
+            and expected_document_hash is not None
+            and sources.get(required_document_source) != expected_document_hash
+        ):
+            errors.append(
+                f"{target_id}: working projection has no current "
+                f"{required_document_source} read-back"
+            )
+        for block in ledger.get("blocks", []):
+            if block.get("status") not in {"reviewed", "integrated"}:
+                continue
+            block_id = block.get("id")
+            if block_id in (exclude_sources or set()):
+                continue
+            if block_id not in sources:
+                errors.append(
+                    f"{target_id}: reviewed block {block_id} is absent from working projection"
+                )
+            elif sources[block_id] != block.get("artifact_sha256"):
+                errors.append(
+                    f"{target_id}: reviewed block {block_id} has a stale working projection"
+                )
+    return errors
 
 
 def initial_gates(mode: str) -> dict[str, dict[str, Any]]:
@@ -464,6 +815,26 @@ def init_case(
             "complete and approve planning_case.py before Vigers init"
         )
 
+    working_projection = (
+        planning_payload.get("working_projection")
+        if isinstance(planning_payload, dict)
+        else None
+    )
+    if not isinstance(working_projection, dict):
+        working_projection = {
+            "policy": "disabled" if intent == "review" else "optional",
+            "targets": [],
+        }
+    projection_state = {
+        "schema": WORKING_PROJECTION_SCHEMA,
+        "policy": working_projection.get("policy", "optional"),
+        "targets": working_projection.get("targets", []),
+        "updates": [],
+    }
+    projection_errors = validate_working_projection_state(projection_state)
+    if projection_errors:
+        raise CaseError("Invalid working projection handoff: " + "; ".join(projection_errors))
+
     (root / "blocks").mkdir(parents=True, exist_ok=True)
     (root / "reviews").mkdir(parents=True, exist_ok=True)
     write_template(
@@ -489,6 +860,7 @@ def init_case(
         root / "reviews" / "architecture.md",
         "# Architecture conformance\n\nVIGERS_TODO\n",
     )
+    atomic_json(root / WORKING_PROJECTION_JSON, projection_state)
 
     manifest = {
         "schema": SCHEMA_VERSION,
@@ -514,6 +886,7 @@ def init_case(
             "planning_role_context": (
                 PLANNING_ROLE_CONTEXT_JSON if planning_binding is not None else None
             ),
+            "working_projection": WORKING_PROJECTION_JSON,
             "evidence": "evidence.md",
             "decisions": "decisions.md",
             "draft": "draft.md",
@@ -568,10 +941,16 @@ def load_case(root: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]:
     return root, manifest, ledger
 
 
-def _external_binding_identity(payload: dict[str, Any]) -> set[tuple[str, str, str]]:
-    """Return stable external object bindings without volatile read-back fields."""
+def _external_binding_identity(
+    payload: dict[str, Any],
+) -> dict[str, tuple[str, str, str | None]]:
+    """Return external object identity without volatile read-back fields."""
     return {
-        (binding["target_id"], binding["system"], binding["object_id"])
+        binding["target_id"]: (
+            binding["system"],
+            binding["object_id"],
+            binding.get("url"),
+        )
         for binding in payload.get("external_bindings", [])
         if isinstance(binding, dict)
         and all(
@@ -662,8 +1041,71 @@ def migrate_planning_handoff(
         raise CaseError("Replacement planning handoff changes the passport")
     old_bindings = _external_binding_identity(old_payload)
     new_bindings = _external_binding_identity(new_payload)
-    if not old_bindings.issubset(new_bindings):
-        raise CaseError("Replacement planning handoff removes or redirects external bindings")
+    if not old_bindings.keys() <= new_bindings.keys():
+        raise CaseError("Replacement planning handoff removes external bindings")
+    projection_path = case_file(root, WORKING_PROJECTION_JSON)
+    projection_state = (
+        read_json(projection_path)
+        if projection_path.is_file()
+        else {
+            "schema": WORKING_PROJECTION_SCHEMA,
+            "policy": "optional",
+            "targets": [],
+            "updates": [],
+        }
+    )
+    projection_errors = validate_working_projection_state(projection_state)
+    if projection_errors:
+        raise CaseError("Existing working projection is invalid: " + "; ".join(projection_errors))
+    replacement_projection = new_payload.get(
+        "working_projection", {"policy": "optional", "targets": []}
+    )
+    if not isinstance(replacement_projection, dict):
+        raise CaseError("Replacement working projection is invalid")
+    old_projection_targets = {
+        item.get("target_id"): (
+            item.get("system"),
+            item.get("object_id"),
+            item.get("url"),
+            item.get("evidence_kind"),
+        )
+        for item in projection_state.get("targets", [])
+        if isinstance(item, dict) and isinstance(item.get("target_id"), str)
+    }
+    new_projection_targets = {
+        item.get("target_id"): (
+            item.get("system"),
+            item.get("object_id"),
+            item.get("url"),
+            item.get("evidence_kind"),
+        )
+        for item in replacement_projection.get("targets", [])
+        if isinstance(item, dict) and isinstance(item.get("target_id"), str)
+    }
+    if not old_projection_targets.keys() <= new_projection_targets.keys():
+        raise CaseError("Replacement planning handoff removes a working projection target")
+    unchanged_projection_targets = {
+        target_id
+        for target_id, identity in old_projection_targets.items()
+        if new_projection_targets.get(target_id) == identity
+    }
+    preserved_updates = [
+        update
+        for update in projection_state.get("updates", [])
+        if isinstance(update, dict)
+        and update.get("target_id") in unchanged_projection_targets
+    ]
+    replacement_projection_state = {
+        "schema": WORKING_PROJECTION_SCHEMA,
+        "policy": replacement_projection.get("policy", "optional"),
+        "targets": replacement_projection.get("targets", []),
+        "updates": preserved_updates,
+    }
+    projection_errors = validate_working_projection_state(replacement_projection_state)
+    if projection_errors:
+        raise CaseError(
+            "Replacement working projection is invalid: " + "; ".join(projection_errors)
+        )
 
     replacement_timing = initialize_automation_timing(
         case_id=manifest["case_id"],
@@ -687,6 +1129,7 @@ def migrate_planning_handoff(
         AUTOMATION_TIMING_FILENAME,
         ROLE_MANIFEST_JSON,
         PLANNING_ROLE_CONTEXT_JSON,
+        WORKING_PROJECTION_JSON,
     )
     archived: dict[str, str] = {}
     for relative in archive_files:
@@ -702,6 +1145,7 @@ def migrate_planning_handoff(
     role_context_payload = planning_role_context(new_payload)
     atomic_json(root / PLANNING_ROLE_CONTEXT_JSON, role_context_payload)
     atomic_json(root / AUTOMATION_TIMING_FILENAME, replacement_timing)
+    atomic_json(root / WORKING_PROJECTION_JSON, replacement_projection_state)
     manifest["planning_handoff"] = {
         "metadata_path": PLANNING_HANDOFF_JSON,
         "content_path": PLANNING_HANDOFF_MARKDOWN,
@@ -718,6 +1162,7 @@ def migrate_planning_handoff(
             "automation_timing": AUTOMATION_TIMING_FILENAME,
             "role_manifest": ROLE_MANIFEST_JSON,
             "planning_role_context": PLANNING_ROLE_CONTEXT_JSON,
+            "working_projection": WORKING_PROJECTION_JSON,
         }
     )
     migrated_at = now_utc()
@@ -772,6 +1217,105 @@ def save_case(root: Path, manifest: dict[str, Any], ledger: dict[str, Any]) -> N
     atomic_json(root / ROLE_MANIFEST_JSON, role_manifest(manifest))
     atomic_json(root / "ledger.json", ledger)
     render_status(root, manifest, ledger)
+
+
+def record_working_projection_update(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    target_id: str,
+    source: str,
+    source_sha256: str,
+    content_sha256: str,
+    evidence_kind: str,
+    evidence_ref: str,
+    read_back_at: str,
+) -> None:
+    """Record one user-visible projection update only after a successful read-back."""
+    relative = manifest.get("artifacts", {}).get("working_projection")
+    if not isinstance(relative, str):
+        raise CaseError("Case has no working projection artifact")
+    path = case_file(root, relative)
+    payload = read_json(path)
+    errors = validate_working_projection_state(payload)
+    if errors:
+        raise CaseError("Invalid working projection state: " + "; ".join(errors))
+    if not source.strip() or not evidence_ref.strip() or not read_back_at.strip():
+        raise CaseError("Projection source, evidence ref, and read-back time are required")
+    normalized_source_hash = source_sha256.strip().lower()
+    if not SHA256_RE.fullmatch(normalized_source_hash):
+        raise CaseError("Projection source hash must be a lowercase SHA-256 value")
+    normalized_content_hash = content_sha256.strip().lower()
+    if not SHA256_RE.fullmatch(normalized_content_hash):
+        raise CaseError("Projection content hash must be a lowercase SHA-256 value")
+    targets = working_projection_targets(payload)
+    if target_id not in targets:
+        raise CaseError(f"Unknown working projection target: {target_id}")
+    normalized_source = source.strip()
+    if BLOCK_ID_RE.fullmatch(normalized_source):
+        block = blocks_by_id(ledger).get(normalized_source)
+        if block is None:
+            raise CaseError(f"Unknown projection source block: {normalized_source}")
+        if block.get("status") not in {"reviewed", "integrated"}:
+            raise CaseError(f"Projection source block is not reviewed: {normalized_source}")
+        if block.get("artifact_sha256") != normalized_source_hash:
+            raise CaseError(f"Projection source hash is stale for {normalized_source}")
+    elif normalized_source in {"draft", "integration"}:
+        draft = case_file(root, manifest["artifacts"]["draft"])
+        if not artifact_ready(draft) or sha256(draft) != normalized_source_hash:
+            raise CaseError(f"Projection source hash is stale for {normalized_source}")
+    else:
+        raise CaseError(f"Unknown projection source: {normalized_source}")
+    normalized_evidence_kind = evidence_kind.strip().lower()
+    evidence_hash = projection_evidence_sha256(
+        root,
+        manifest,
+        targets[target_id],
+        evidence_kind=normalized_evidence_kind,
+        evidence_ref=evidence_ref.strip(),
+        content_sha256=normalized_content_hash,
+        read_back_at=read_back_at.strip(),
+    )
+    candidate = {
+        "target_id": target_id,
+        "source": normalized_source,
+        "source_sha256": normalized_source_hash,
+        "content_sha256": normalized_content_hash,
+        "evidence_kind": normalized_evidence_kind,
+        "evidence_ref": evidence_ref.strip(),
+        "evidence_sha256": evidence_hash,
+        "read_back_at": read_back_at.strip(),
+    }
+    duplicate = next(
+        (
+            item
+            for item in payload["updates"]
+            if isinstance(item, dict)
+            and item.get("target_id") == target_id
+            and item.get("source") == candidate["source"]
+            and item.get("source_sha256") == normalized_source_hash
+            and item.get("content_sha256") == normalized_content_hash
+        ),
+        None,
+    )
+    if duplicate is not None:
+        return
+    payload["updates"].append(candidate)
+    atomic_json(path, payload)
+    manifest["events"].append(
+        event(
+            "working_projection_updated",
+            target_id=target_id,
+            source=candidate["source"],
+            source_sha256=normalized_source_hash,
+            content_sha256=normalized_content_hash,
+            evidence_kind=normalized_evidence_kind,
+            evidence_ref=candidate["evidence_ref"],
+            evidence_sha256=evidence_hash,
+        )
+    )
+    save_case(root, manifest, ledger)
 
 
 def blocks_by_id(ledger: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -1045,6 +1589,25 @@ def transition_block(
     if new_status not in ALLOWED_TRANSITIONS[old_status]:
         raise CaseError(f"Invalid transition {old_status} -> {new_status} for {block_id}")
 
+    if new_status in {"in_progress", "reviewed", "integrated"}:
+        rollback_source = (
+            {block_id}
+            if new_status == "in_progress" and old_status in {"reviewed", "integrated"}
+            else set()
+        )
+        projection_errors = working_projection_errors(
+            root,
+            manifest,
+            ledger,
+            require_any_update=False,
+            exclude_sources=rollback_source,
+        )
+        if projection_errors:
+            raise CaseError(
+                "Working projection is behind reviewed content: "
+                + "; ".join(projection_errors)
+            )
+
     if new_status == "ready":
         incomplete = [
             dependency
@@ -1166,6 +1729,18 @@ def set_gate(
         raise CaseError("A not_required gate requires --note")
     if status == "pass" and not evidence:
         raise CaseError("A passed gate requires --evidence")
+    if status == "pass" and name == "author_passes":
+        projection_errors = working_projection_errors(
+            root,
+            manifest,
+            ledger,
+            require_any_update=True,
+        )
+        if projection_errors:
+            raise CaseError(
+                "Working projection must be visible before author passes: "
+                + "; ".join(projection_errors)
+            )
     evidence_hash = None
     subject_hash = None
     if status == "pass" and evidence:
@@ -1198,6 +1773,14 @@ def validate_case(
 ) -> list[str]:
     """Return structural, freshness, traceability, and optional final errors."""
     errors: list[str] = []
+    errors.extend(
+        working_projection_errors(
+            root,
+            manifest,
+            ledger,
+            require_any_update=final,
+        )
+    )
     decision_binding = manifest.get("mode_decision")
     if decision_binding is not None:
         if not isinstance(decision_binding, dict):
@@ -1280,11 +1863,31 @@ def validate_case(
                         case_file(root, PLANNING_ROLE_CONTEXT_JSON)
                     )
                     expected_role_context = planning_role_context(planning_payload)
-                    if stored_role_context != expected_role_context:
+                    accepted_role_contexts = [expected_role_context]
+                    if "working_projection" not in planning_payload:
+                        legacy_role_context = {
+                            key: value
+                            for key, value in expected_role_context.items()
+                            if key not in {"working_projection", "fingerprint"}
+                        }
+                        legacy_role_context["fingerprint"] = role_context_fingerprint(
+                            legacy_role_context
+                        )
+                        accepted_role_contexts.append(legacy_role_context)
+                    if stored_role_context not in accepted_role_contexts:
                         errors.append("planning role-context differs from approved handoff")
-                    if planning_binding.get("role_context_fingerprint") != expected_role_context[
-                        "fingerprint"
-                    ]:
+                    stored_role_fingerprint = (
+                        stored_role_context.get("fingerprint")
+                        if isinstance(stored_role_context, dict)
+                        else None
+                    )
+                    if (
+                        not isinstance(stored_role_context, dict)
+                        or stored_role_fingerprint
+                        != role_context_fingerprint(stored_role_context)
+                        or planning_binding.get("role_context_fingerprint")
+                        != stored_role_fingerprint
+                    ):
                         errors.append("manifest planning role-context fingerprint mismatch")
             except (OSError, CaseError, PlanningError) as exc:
                 errors.append(f"Invalid planning handoff: {exc}")
@@ -1494,6 +2097,8 @@ def context_bundle(
 ) -> dict[str, Any]:
     """Build a bounded, role-specific list of case inputs."""
     common = [ROLE_MANIFEST_JSON, "kernel.md", "evidence.md", "decisions.md"]
+    if isinstance(manifest.get("artifacts", {}).get("working_projection"), str):
+        common.insert(1, WORKING_PROJECTION_JSON)
     if manifest.get("planning_handoff") is not None:
         common.insert(1, PLANNING_ROLE_CONTEXT_JSON)
     if manifest.get("mode_decision") is not None:
@@ -1582,12 +2187,31 @@ def render_status(root: Path, manifest: dict[str, Any], ledger: dict[str, Any]) 
         f"- planning handoff: `{'recorded' if manifest.get('planning_handoff') else 'legacy-unplanned'}`",
         f"- kernel revision: `{manifest['kernel']['revision']}`",
         f"- updated: `{manifest['updated_at']}`",
-        "",
-        "## Blocks",
-        "",
-        "| ID | Kind | Status | Depends on | Title |",
-        "|---|---|---|---|---|",
     ]
+    projection_relative = manifest.get("artifacts", {}).get("working_projection")
+    if isinstance(projection_relative, str):
+        try:
+            projection = read_json(case_file(root, projection_relative))
+            if not isinstance(projection, dict):
+                raise CaseError("working projection payload must be an object")
+            lines.extend(
+                [
+                    f"- working projection: `{projection.get('policy', 'invalid')}`",
+                    f"- projection targets: `{len(projection.get('targets', []))}`",
+                    f"- projection updates: `{len(projection.get('updates', []))}`",
+                ]
+            )
+        except CaseError:
+            lines.append("- working projection: `invalid`")
+    lines.extend(
+        [
+            "",
+            "## Blocks",
+            "",
+            "| ID | Kind | Status | Depends on | Title |",
+            "|---|---|---|---|---|",
+        ]
+    )
     if ledger["blocks"]:
         for block in ledger["blocks"]:
             dependencies = ", ".join(block["depends_on"]) or "—"
@@ -1708,6 +2332,23 @@ def build_parser() -> argparse.ArgumentParser:
     gate_parser.add_argument("--evidence")
     gate_parser.add_argument("--note")
 
+    projection_parser = subparsers.add_parser(
+        "projection-update",
+        help="Record a visible working projection update after read-back",
+    )
+    projection_parser.add_argument("--case-root", required=True)
+    projection_parser.add_argument("--target-id", required=True)
+    projection_parser.add_argument("--source", required=True)
+    projection_parser.add_argument("--source-sha256", required=True)
+    projection_parser.add_argument("--content-sha256", required=True)
+    projection_parser.add_argument(
+        "--evidence-kind",
+        choices=sorted(PROJECTION_EVIDENCE_KINDS),
+        required=True,
+    )
+    projection_parser.add_argument("--evidence-ref", required=True)
+    projection_parser.add_argument("--read-back-at", required=True)
+
     context_parser = subparsers.add_parser("context", help="Print a bounded role context")
     context_parser.add_argument("--case-root", required=True)
     context_parser.add_argument("--block", help="Required in block mode; omit in compact mode")
@@ -1769,7 +2410,7 @@ def main() -> int:
             print(
                 "PASS planning-migration="
                 f"r{result['from_revision']}->r{result['to_revision']} "
-                f"archive={result['archived_files'] and 'recorded'}"
+                f"archive={'recorded' if result['archived_files'] else 'none'}"
             )
             return 0
         if args.command == "add-block":
@@ -1813,6 +2454,21 @@ def main() -> int:
                 note=args.note,
             )
             print(f"PASS gate={args.name} status={args.status}")
+            return 0
+        if args.command == "projection-update":
+            record_working_projection_update(
+                root,
+                manifest,
+                ledger,
+                target_id=args.target_id,
+                source=args.source,
+                source_sha256=args.source_sha256,
+                content_sha256=args.content_sha256,
+                evidence_kind=args.evidence_kind,
+                evidence_ref=args.evidence_ref,
+                read_back_at=args.read_back_at,
+            )
+            print(f"PASS projection={args.target_id} source={args.source}")
             return 0
         if args.command == "context":
             print(

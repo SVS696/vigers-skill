@@ -100,7 +100,13 @@ python3 {baseDir}/scripts/planning_case.py context --case-root "<planning-root>"
    и обязательным `validation_gate: full_analysis`. Не считай planning approval
    утверждением US/DoD: полный анализ может подтвердить, изменить, разделить,
    отклонить или дополнить их.
-4. Сформируй `plan.md`, `artifact-plan.json` и `handoff.md`.
+4. Сформируй `plan.md`, `artifact-plan.json` и `handoff.md`. Если profile
+   объявляет `working_projection: required`, добавь один или несколько
+   согласованных targets с `working_projection: true`,
+   `publish_gate: after_approval` и обязательным read-back. Канал выбирает
+   профиль: обычный проектный файл, tracker, wiki либо их допустимая комбинация.
+   Для каждого target сразу зафиксируй
+   `evidence_kind: local_file|external_readback`.
 5. Сохрани уже связанные `before_research` targets; не создавай их повторно.
 6. Для checklist примени правила `{baseDir}/references/planning-contract.md`:
    содержательный title, optional details/done_when в task note и subtask только
@@ -169,6 +175,9 @@ python3 {baseDir}/scripts/planning_case.py review \
 1. Обработай targets с `publish_gate: after_approval` через project adapter.
    Их action и назначение уже входят в approved snapshot и не меняются. Прочитай
    объекты обратно и запиши bindings командой из фазы 5.
+   Working projection создай до экспорта handoff: даже начальная рамка должна
+   быть видимой человеку, отличать проверенные сведения от provisional и явно
+   говорить, что это не финальная публикация.
 2. Экспортируй bounded snapshot в ещё не инициализированный Vigers case-root:
 
 ```text

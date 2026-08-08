@@ -77,6 +77,13 @@ Task manager отражает личное обязательство и бли�
 координатор через project adapter. Не наполняй ранние пустые anchors. Targets
 `after_approval` планируются до review, но применяются после approval.
 
+Если profile объявляет `working_projection: required`, добавь минимально
+достаточный набор targets с `working_projection: true`,
+`publish_gate: after_approval` и обязательным read-back. Выбери канал только по
+profile и исследованной форме результата; сразу зафиксируй
+`evidence_kind: local_file|external_readback`. Не подменяй видимый рабочий draft
+ссылкой на скрытый runtime case и не называй projection финальной публикацией.
+
 Checklist формулируй по planning-contract: полное действие, optional
 details/done_when, subtask только для собственного outcome/dependency/owner.
 Перед выдачей проверь список целиком: ясность → `simplicity-spec` → `humanizer`

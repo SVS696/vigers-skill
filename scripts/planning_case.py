@@ -20,7 +20,13 @@ from automation_timing import (
     validate_automation_plan,
     validate_plan_estimation,
 )
-from spec_pipeline import PipelineError, detect_profile, select_profile
+from spec_pipeline import (
+    PROJECTION_EVIDENCE_KINDS,
+    WORKING_PROJECTION_POLICIES,
+    PipelineError,
+    detect_profile,
+    select_profile,
+)
 
 
 SCHEMA_VERSION = 1
@@ -173,9 +179,14 @@ def init_case(
     passport_id: str | None,
     passport_path: str | None,
     required_anchor_systems: list[str] | None = None,
+    working_projection_policy: str = "optional",
 ) -> None:
     if not CASE_ID_RE.fullmatch(case_id):
         raise PlanningError(f"Invalid planning case id: {case_id!r}")
+    if working_projection_policy not in WORKING_PROJECTION_POLICIES:
+        raise PlanningError(
+            f"Invalid working projection policy: {working_projection_policy!r}"
+        )
     root = root.expanduser().resolve()
     manifest_path = root / MANIFEST_FILENAME
     if manifest_path.exists():
@@ -284,6 +295,7 @@ def init_case(
         "profile_id": profile_id,
         "project_root": project_root,
         "required_anchor_systems": normalized_anchor_systems,
+        "working_projection_policy": working_projection_policy,
         "state": "intake",
         "revision": 1,
         "created_at": now_utc(),
@@ -377,7 +389,11 @@ def validate_source_map(payload: Any) -> list[str]:
     return errors
 
 
-def validate_artifact_plan(payload: Any) -> list[str]:
+def validate_artifact_plan(
+    payload: Any,
+    *,
+    working_projection_policy: str = "optional",
+) -> list[str]:
     errors: list[str] = []
     if not isinstance(payload, dict) or payload.get("schema") != SCHEMA_VERSION:
         return ["artifact-plan.json has unsupported schema"]
@@ -386,6 +402,7 @@ def validate_artifact_plan(payload: Any) -> list[str]:
         return ["artifact-plan targets must be an array"]
     seen: set[str] = set()
     early_systems: dict[str, str] = {}
+    projection_targets: list[str] = []
     for target in targets:
         if not isinstance(target, dict):
             errors.append("artifact-plan targets must be objects")
@@ -399,6 +416,22 @@ def validate_artifact_plan(payload: Any) -> list[str]:
             seen.add(target_id)
         if target.get("action") not in {"create", "update", "link", "none"}:
             errors.append(f"{target_id}: invalid action")
+        projection = target.get("working_projection", False)
+        if not isinstance(projection, bool):
+            errors.append(f"{target_id}: working_projection must be boolean")
+            projection = False
+        if projection:
+            projection_targets.append(str(target_id))
+            if target.get("evidence_kind") not in PROJECTION_EVIDENCE_KINDS:
+                errors.append(f"{target_id}: working projection requires evidence_kind")
+            if target.get("action") == "none":
+                errors.append(f"{target_id}: working projection must be actionable")
+            if target.get("publish_gate") != "after_approval":
+                errors.append(
+                    f"{target_id}: working projection must use publish_gate after_approval"
+                )
+            if target.get("read_back_required") is not True:
+                errors.append(f"{target_id}: working projection requires read-back")
         if target.get("authority") not in {"explicit", "profile", "none"}:
             errors.append(f"{target_id}: invalid authority")
         if target.get("action") != "none" and target.get("authority") == "none":
@@ -438,7 +471,27 @@ def validate_artifact_plan(payload: Any) -> list[str]:
                 errors.append(f"{target_id}: missing {field}")
         if not isinstance(target.get("read_back_required"), bool):
             errors.append(f"{target_id}: read_back_required must be boolean")
+    if working_projection_policy not in WORKING_PROJECTION_POLICIES:
+        errors.append(
+            f"invalid working projection policy: {working_projection_policy!r}"
+        )
+    elif working_projection_policy == "required" and not projection_targets:
+        errors.append("profile requires at least one working projection target")
+    elif working_projection_policy == "disabled" and projection_targets:
+        errors.append("profile disables working projection targets")
     return errors
+
+
+def effective_projection_policy(
+    manifest: dict[str, Any],
+    *,
+    require_declared_target: bool,
+) -> str:
+    """Delay a required projection until research has produced an artifact plan."""
+    policy = manifest.get("working_projection_policy", "optional")
+    if policy == "required" and not require_declared_target:
+        return "optional"
+    return policy
 
 
 def ensure_acyclic(stages: list[dict[str, Any]]) -> None:
@@ -824,7 +877,14 @@ def validate_artifacts(root: Path, manifest: dict[str, Any], *, for_review: bool
     plan_graph = read_json(paths["plan_graph"])
     bindings = read_json(paths["bindings"])
     errors.extend(validate_source_map(source_map))
-    errors.extend(validate_artifact_plan(artifact_plan))
+    errors.extend(
+        validate_artifact_plan(
+            artifact_plan,
+            working_projection_policy=effective_projection_policy(
+                manifest, require_declared_target=True
+            ),
+        )
+    )
     errors.extend(validate_required_anchors(manifest, artifact_plan))
     source_ids = {
         source.get("id")
@@ -904,7 +964,12 @@ def transition(
     if new_state == "researching":
         artifact_plan = read_json(paths["artifact_plan"])
         bindings = read_json(paths["bindings"])
-        errors = validate_artifact_plan(artifact_plan)
+        errors = validate_artifact_plan(
+            artifact_plan,
+            working_projection_policy=effective_projection_policy(
+                manifest, require_declared_target=False
+            ),
+        )
         errors.extend(validate_required_anchors(manifest, artifact_plan))
         errors.extend(
             validate_bindings(
@@ -1092,7 +1157,14 @@ def record_binding(
             raise PlanningError("Approved external target action cannot be changed")
         if action != target.get("action"):
             target["action"] = action
-            errors = validate_artifact_plan(artifact_plan)
+            errors = validate_artifact_plan(
+                artifact_plan,
+                working_projection_policy=effective_projection_policy(
+                    manifest,
+                    require_declared_target=manifest.get("state")
+                    not in {"intake", "blocked", "researching"},
+                ),
+            )
             errors.extend(validate_required_anchors(manifest, artifact_plan))
             if errors:
                 raise PlanningError("Invalid external target action: " + "; ".join(errors))
@@ -1235,6 +1307,30 @@ def build_handoff(root: Path, manifest: dict[str, Any]) -> tuple[dict[str, Any],
         raise PlanningError("Approved revision has no immutable snapshot")
     markdown = paths["handoff"].read_text(encoding="utf-8")
     bindings = read_json(paths["bindings"])
+    artifact_plan = read_json(paths["artifact_plan"])
+    binding_by_target = {
+        item.get("target_id"): item
+        for item in bindings.get("external", [])
+        if isinstance(item, dict) and isinstance(item.get("target_id"), str)
+    }
+    working_projection_targets: list[dict[str, Any]] = []
+    for target in artifact_plan.get("targets", []):
+        if not isinstance(target, dict) or target.get("working_projection") is not True:
+            continue
+        target_id = target.get("id")
+        binding = binding_by_target.get(target_id, {})
+        working_projection_targets.append(
+            {
+                "target_id": target_id,
+                "system": target.get("system"),
+                "action": target.get("action"),
+                "purpose": target.get("purpose"),
+                "evidence_kind": target.get("evidence_kind"),
+                "object_id": binding.get("object_id"),
+                "url": binding.get("url"),
+                "read_back_at": binding.get("read_back_at"),
+            }
+        )
     plan_graph = read_json(paths["plan_graph"])
     automation_plan = None
     if plan_graph.get("schema") in {
@@ -1260,6 +1356,10 @@ def build_handoff(root: Path, manifest: dict[str, Any]) -> tuple[dict[str, Any],
             else None
         ),
         "external_bindings": bindings["external"],
+        "working_projection": {
+            "policy": manifest.get("working_projection_policy", "optional"),
+            "targets": working_projection_targets,
+        },
         "approval": manifest["approval"],
         "artifact_hashes": snapshot,
         "content_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
@@ -1322,6 +1422,40 @@ def validate_handoff(
     external_bindings = payload.get("external_bindings")
     if not isinstance(external_bindings, list):
         raise PlanningError("planning handoff external bindings are invalid")
+    working_projection = payload.get(
+        "working_projection", {"policy": "optional", "targets": []}
+    )
+    if not isinstance(working_projection, dict):
+        raise PlanningError("planning handoff working projection is invalid")
+    projection_policy = working_projection.get("policy", "optional")
+    if projection_policy not in WORKING_PROJECTION_POLICIES:
+        raise PlanningError("planning handoff working projection policy is invalid")
+    projection_targets = working_projection.get("targets")
+    if not isinstance(projection_targets, list):
+        raise PlanningError("planning handoff working projection targets are invalid")
+    seen_projection_targets: set[str] = set()
+    for target in projection_targets:
+        if not isinstance(target, dict):
+            raise PlanningError("planning handoff working projection target is invalid")
+        target_id = target.get("target_id")
+        if not isinstance(target_id, str) or not TARGET_ID_RE.fullmatch(target_id):
+            raise PlanningError("planning handoff working projection target id is invalid")
+        if target_id in seen_projection_targets:
+            raise PlanningError("planning handoff working projection target is duplicated")
+        seen_projection_targets.add(target_id)
+        for field in ("system", "object_id", "read_back_at"):
+            if not isinstance(target.get(field), str) or not target[field].strip():
+                raise PlanningError(
+                    f"planning handoff working projection {target_id} misses {field}"
+                )
+        if target.get("evidence_kind") not in PROJECTION_EVIDENCE_KINDS:
+            raise PlanningError(
+                f"planning handoff working projection {target_id} has invalid evidence_kind"
+            )
+    if projection_policy == "required" and not projection_targets:
+        raise PlanningError("planning handoff requires a working projection target")
+    if projection_policy == "disabled" and projection_targets:
+        raise PlanningError("planning handoff disables working projection targets")
     bound_systems = {
         binding.get("system").casefold()
         for binding in external_bindings
@@ -1331,6 +1465,34 @@ def validate_handoff(
         and isinstance(binding.get("read_back_at"), str)
         and binding.get("read_back_at").strip()
     }
+    bound_target_ids = {
+        binding.get("target_id")
+        for binding in external_bindings
+        if isinstance(binding, dict) and isinstance(binding.get("target_id"), str)
+    }
+    missing_projection_bindings = sorted(
+        seen_projection_targets - bound_target_ids
+    )
+    if missing_projection_bindings:
+        raise PlanningError(
+            "planning handoff working projections have no external binding: "
+            + ", ".join(missing_projection_bindings)
+        )
+    binding_by_target = {
+        binding.get("target_id"): binding
+        for binding in external_bindings
+        if isinstance(binding, dict) and isinstance(binding.get("target_id"), str)
+    }
+    for target in projection_targets:
+        binding = binding_by_target.get(target.get("target_id"))
+        if not isinstance(binding, dict):
+            continue
+        for field in ("system", "object_id", "url", "read_back_at"):
+            if target.get(field) != binding.get(field):
+                raise PlanningError(
+                    "planning handoff working projection binding mismatch: "
+                    f"{target.get('target_id')}/{field}"
+                )
     missing_anchors = [
         system for system in required_anchors if system.casefold() not in bound_systems
     ]
@@ -1387,7 +1549,14 @@ def validate_case(root: Path, manifest: dict[str, Any], *, final: bool) -> list[
     state = manifest["state"]
     if state not in {"artifacts_planned", "published_for_review", "approved", "handed_to_vigers"}:
         artifact_plan = read_json(paths["artifact_plan"])
-        errors.extend(validate_artifact_plan(artifact_plan))
+        errors.extend(
+            validate_artifact_plan(
+                artifact_plan,
+                working_projection_policy=effective_projection_policy(
+                    manifest, require_declared_target=False
+                ),
+            )
+        )
         errors.extend(validate_required_anchors(manifest, artifact_plan))
     if state in {"researched", "artifacts_planned", "published_for_review", "approved", "handed_to_vigers"}:
         errors.extend(validate_source_map(read_json(paths["source_map"])))
@@ -1610,6 +1779,7 @@ def main() -> int:
                 passport_id=args.passport_id,
                 passport_path=args.passport_path,
                 required_anchor_systems=list(selection.planning_anchors),
+                working_projection_policy=selection.working_projection,
             )
             print(f"PASS planning-case={args.case_id} state=intake")
             return 0

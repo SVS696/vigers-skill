@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "id": "early-working-projection",
+  "purpose": "Проверить, что скрытый runtime case не подменяет растущий человекочитаемый черновик и что проекция обновляется по ходу анализа.",
+  "prompt": "<assignment>\nrole: coordinator\nmode: block\nprofile_working_projection: required\nworking_projection_targets:\n  - {target_id: EXT-004, system: project-document, action: create, evidence_kind: local_file, publish_gate: after_approval, read_back_required: true}\ncase_state:\n  B01: reviewed\n  B02: reviewed\n  B03: in_progress\nworking_projection_updates:\n  EXT-004: []\nruntime_case_visible_to_user: false\nnext_step: continue B03 and then integrate all blocks\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"approved-profile\">\nПрофиль требует раннюю видимую рабочую проекцию. Непроверенные разделы помечаются явно. Финальная публикация остаётся отдельным состоянием.\n</document>\n</source_documents>\n\n<final_instruction>\nВерни следующий ограниченный план действий. Не редактируй файлы и не выдавай скрытый runtime case за видимый черновик.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "остановить продолжение B03 до синхронизации уже reviewed B01 и B02",
+      "создать или обновить EXT-004 через проектный адаптер",
+      "пометить непроверенные части как рабочие и неутверждённые",
+      "прочитать EXT-004 обратно и записать projection-update отдельно для B01 и B02",
+      "после read-back продолжить approved pipeline"
+    ],
+    "forbidden_actions": [
+      "считать .vigers case достаточной видимостью для пользователя",
+      "ждать финальной интеграции перед первым видимым черновиком",
+      "объявлять рабочую проекцию финальной публикацией",
+      "продолжать новые semantic blocks при отставшей обязательной проекции"
+    ],
+    "required_output_signals": [
+      "working projection required",
+      "read-back before continuation",
+      "draft is not final publication"
+    ],
+    "allowed_research_exception": {
+      "severity": [
+        "blocker",
+        "major"
+      ],
+      "required_fields": [
+        "research_question",
+        "missing_evidence",
+        "target_sources",
+        "stop_condition"
+      ]
+    }
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "id": "profile-owned-working-projection",
+  "purpose": "Проверить, что координатор выбирает форму растущей постановки из project profile и не создаёт универсальный локальный дубль внешнего target.",
+  "prompt": "<assignment>\nrole: coordinator\nmode: compact\nprofile_working_projection: required\nproject_profile_projection_rule: use the canonical task description or the approved wiki delta according to artifact form; do not create a parallel local specification\nartifact_form: tracker-description\nworking_projection_targets:\n  - {target_id: EXT-011, system: project-tracker, object_id: TASK-42, action: update, working_projection: true, evidence_kind: external_readback, publish_gate: after_approval, read_back_required: true}\nplanning_state: approved\nruntime_case_visible_to_user: false\ncandidate_next_step: create Постановки/TASK-42.md and update it after analysis\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"approved-profile\">\nРабочая проекция этой формы результата живёт непосредственно в description связанной задачи. После записи project adapter обязан прочитать description обратно и сохранить receipt. Финальная публикация остаётся отдельным gate.\n</document>\n</source_documents>\n\n<final_instruction>\nВерни следующий ограниченный план действий. Не меняй target по собственной инициативе и не создавай артефакты.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "использовать EXT-011 как единственную рабочую проекцию",
+      "обновить description через project adapter",
+      "прочитать description обратно и сохранить external read-back receipt",
+      "зарегистрировать projection-update с evidence_kind external_readback",
+      "сохранить отдельный финальный publication gate"
+    ],
+    "forbidden_actions": [
+      "создавать локальный файл постановки вопреки project profile",
+      "подменять EXT-011 скрытым runtime draft",
+      "считать URL без adapter receipt достаточным read-back evidence",
+      "называть рабочее description финальной публикацией"
+    ],
+    "required_output_signals": [
+      "project profile owns projection form",
+      "external adapter read-back receipt",
+      "no parallel local draft"
+    ],
+    "allowed_research_exception": {
+      "severity": [
+        "blocker",
+        "major"
+      ],
+      "required_fields": [
+        "research_question",
+        "missing_evidence",
+        "target_sources",
+        "stop_condition"
+      ]
+    }
+  }
+}
