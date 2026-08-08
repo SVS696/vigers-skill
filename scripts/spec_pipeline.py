@@ -44,12 +44,16 @@ REQUIRED_CONTRACTS = (
 REQUIRED_AGENT_REFERENCES = (
     "references/prompt-contract.md",
     "references/handoff-contract.md",
+    "references/convergence-contract.md",
 )
 REQUIRED_WORKFLOWS = {
     "planning-pipeline.md": 8,
     "specification-pipeline.md": 10,
     "block-pipeline.md": 13,
 }
+REQUIRED_PROMPT_EVALS = (
+    "evals/prompt-cookbook/convergence-closed-coverage.json",
+)
 PUBLIC_FORBIDDEN_MARKERS = tuple(
     "".join(parts) for parts in (("R", "TL"), ("H", "ÆZE"), ("HA", "EZE"))
 )
@@ -317,6 +321,37 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
         except PipelineError as exc:
             errors.append(str(exc))
 
+    prompt_eval_count = 0
+    for relative in REQUIRED_PROMPT_EVALS:
+        try:
+            payload = json.loads(safe_file(relative).read_text(encoding="utf-8"))
+            if payload.get("schema") != 1:
+                errors.append(f"{relative}: schema must be 1")
+            if not isinstance(payload.get("id"), str) or not payload["id"].strip():
+                errors.append(f"{relative}: missing id")
+            prompt = payload.get("prompt")
+            if not isinstance(prompt, str):
+                errors.append(f"{relative}: prompt must be a string")
+            else:
+                for marker in ("<assignment>", "<source_documents>", "<final_instruction>"):
+                    if marker not in prompt:
+                        errors.append(f"{relative}: prompt missing {marker}")
+            expected = payload.get("expected")
+            if not isinstance(expected, dict):
+                errors.append(f"{relative}: expected must be an object")
+            else:
+                for field in (
+                    "required_actions",
+                    "forbidden_actions",
+                    "required_output_signals",
+                    "allowed_research_exception",
+                ):
+                    if not expected.get(field):
+                        errors.append(f"{relative}: expected.{field} is required")
+            prompt_eval_count += 1
+        except (json.JSONDecodeError, PipelineError) as exc:
+            errors.append(f"{relative}: {exc}")
+
     required_files = (
         "SKILL.md",
         "references/handoff-contract.md",
@@ -325,6 +360,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
         "references/block-contract.md",
         "references/requirements-method.md",
         "references/planning-contract.md",
+        "references/convergence-contract.md",
         "scripts/mode_decision.py",
         "scripts/planning_case.py",
         "scripts/case_pipeline.py",
@@ -347,6 +383,8 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/references/prompt-contract.md",
             "{baseDir}/references/case-state.md",
             "{baseDir}/references/block-contract.md",
+            "{baseDir}/references/convergence-contract.md",
+            "{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json",
             "{baseDir}/scripts/spec_pipeline.py",
             "{baseDir}/scripts/case_pipeline.py",
         ):
@@ -378,6 +416,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
         "contracts": len(REQUIRED_CONTRACTS),
         "runtime_adapters": len(REQUIRED_CONTRACTS) * 2,
         "workflows": len(REQUIRED_WORKFLOWS),
+        "prompt_evals": prompt_eval_count,
     }
 
 

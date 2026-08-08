@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import automation_timing
 import case_pipeline
 import mode_decision
 import planning_case
@@ -186,6 +187,72 @@ class CasePipelineTests(unittest.TestCase):
         (root / planning_case.HANDOFF_MARKDOWN).write_text(markdown, encoding="utf-8")
         return payload
 
+    def write_timed_planning_handoff(
+        self,
+        root: Path,
+        *,
+        revision: int,
+        project_root: str | None = None,
+    ) -> dict[str, object]:
+        markdown = f"# Planning handoff\n\nApproved revision {revision}.\n"
+        plan = {
+            "schema": 3,
+            "revision": revision,
+            "automation_estimation": {
+                "policy": "required",
+                "metric": "wall_clock",
+                "unit": "seconds",
+                "execution_use": "human_information_only",
+            },
+            "stages": [
+                {
+                    "id": "P01",
+                    "title": "Verify source",
+                    "depends_on": [],
+                    "automation_estimate": {
+                        "optimistic_seconds": 30,
+                        "likely_seconds": 60,
+                        "pessimistic_seconds": 120,
+                        "basis": "heuristic",
+                        "confidence": "low",
+                        "sample_size": 0,
+                    },
+                    "external_target_id": None,
+                    "checklist": [
+                        {
+                            "id": "P01-C01",
+                            "text": "Verify the source",
+                            "done_when": "Evidence is recorded",
+                        }
+                    ],
+                }
+            ],
+        }
+        automation_plan = automation_timing.build_automation_plan(plan)
+        payload: dict[str, object] = {
+            "schema": planning_case.HANDOFF_SCHEMA_VERSION,
+            "planning_case_id": "demo-plan",
+            "planning_revision": revision,
+            "profile_id": "generic",
+            "project_root": project_root,
+            "required_anchor_systems": [],
+            "passport": {"id": "PASS-1", "path": None},
+            "automation_plan": automation_plan,
+            "preliminary_requirements": None,
+            "external_bindings": [],
+            "approval": {"revision": revision, "kind": "coordinator_local_replan"},
+            "artifact_hashes": {},
+            "content_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
+        }
+        payload["fingerprint"] = planning_case.canonical_fingerprint(payload)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / planning_case.HANDOFF_JSON).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        (root / planning_case.HANDOFF_MARKDOWN).write_text(markdown, encoding="utf-8")
+        return payload
+
     def init(self, base: Path, mode: str = "block") -> Path:
         root = base / "case"
         self.write_method_context(root)
@@ -246,6 +313,126 @@ class CasePipelineTests(unittest.TestCase):
             _, manifest, ledger = case_pipeline.load_case(root)
             self.assertEqual(manifest["schema"], 2)
             self.assertEqual(ledger["blocks"], [])
+
+    def test_migrate_planning_preserves_semantic_work_and_archives_old_runtime(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = base / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root)
+            self.write_timed_planning_handoff(root, revision=1)
+            case_pipeline.init_case(
+                root,
+                case_id="migration-case",
+                mode="block",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.add_block(
+                loaded_root,
+                manifest,
+                ledger,
+                block_id="B01",
+                title="Preserved block",
+                kind="scenarios",
+                depends_on=[],
+            )
+            old_timing_hash = case_pipeline.sha256(root / "automation-timing.json")
+
+            replacement = base / "replacement"
+            new_payload = self.write_timed_planning_handoff(replacement, revision=2)
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            result = case_pipeline.migrate_planning_handoff(
+                loaded_root,
+                manifest,
+                ledger,
+                handoff_root=replacement,
+                reason="runtime contract upgrade",
+            )
+
+            self.assertEqual(result["from_revision"], 1)
+            self.assertEqual(result["to_revision"], 2)
+            archive = root / "migrations" / "planning-r001-to-r002"
+            self.assertTrue((archive / "migration.json").is_file())
+            self.assertEqual(
+                case_pipeline.sha256(archive / "automation-timing.json"),
+                old_timing_hash,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(manifest["planning_handoff"]["planning_revision"], 2)
+            self.assertEqual(manifest["artifacts"]["role_manifest"], "role-manifest.json")
+            self.assertEqual(ledger["blocks"][0]["id"], "B01")
+            timing = case_pipeline.read_json(root / "automation-timing.json")
+            self.assertEqual(timing["planning"]["revision"], 2)
+            self.assertEqual(timing["stages"][0]["status"], "pending")
+            self.assertEqual(timing["stages"][0]["checklist"][0]["id"], "P01-C01")
+            self.assertEqual(
+                timing["plan_fingerprint"],
+                new_payload["automation_plan"]["fingerprint"],
+            )
+            self.assertEqual(
+                case_pipeline.validate_case(loaded_root, manifest, ledger, final=False),
+                [],
+            )
+
+    def test_migrate_planning_rejects_in_progress_semantic_block(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = base / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root)
+            self.write_timed_planning_handoff(root, revision=1)
+            case_pipeline.init_case(
+                root,
+                case_id="migration-running",
+                mode="block",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.add_block(
+                loaded_root,
+                manifest,
+                ledger,
+                block_id="B01",
+                title="Running block",
+                kind="scenarios",
+                depends_on=[],
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.transition_block(
+                loaded_root,
+                manifest,
+                ledger,
+                block_id="B01",
+                new_status="ready",
+                note=None,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.transition_block(
+                loaded_root,
+                manifest,
+                ledger,
+                block_id="B01",
+                new_status="in_progress",
+                note=None,
+            )
+            replacement = base / "replacement"
+            self.write_timed_planning_handoff(replacement, revision=2)
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaises(case_pipeline.CaseError):
+                case_pipeline.migrate_planning_handoff(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    handoff_root=replacement,
+                    reason="runtime contract upgrade",
+                )
 
     def test_init_binds_precomputed_mode_decision(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

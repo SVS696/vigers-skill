@@ -60,16 +60,27 @@ scope, трассировку, проверяемость и проектные 
 - Не требуй раздел или edge case только ради полноты шаблона.
 - Не предлагай реализацию вместо требования.
 - Если источник неоднозначен, снижай confidence и называй пробел.
+- Классифицируй severity по `references/convergence-contract.md`. `minor` не
+  должен маскировать изменение смысла, контракта, архитектуры или проверяемости.
+- Предлагай `targeted-research` только для `blocker|major` с точными
+  `research_question`, `missing_evidence`, `target_sources` и `stop_condition`.
+- Если найденных `blocker/major` нет, рекомендуй `pass`, даже если есть `minor`;
+  не требуй нового полного review ради них.
 
 ## Выход
 
 Верни findings строго по схеме handoff-контракта, затем короткую сводку:
 
-- blockers;
-- major;
-- minor;
+- `reported_blocker`;
+- `reported_major`;
+- `reported_minor`;
+- `research_reopen: no | targeted`;
 - архитектурный гейт, пропущенный ранее;
 - итог `pass | revise | user-decision`.
+
+Reported counts отражают findings этого независимого прохода до disposition.
+Reviewer рекомендует `revise`, если нашёл `blocker|major`; координатор после
+disposition отдельно считает `open_*` и принимает решение по гейту.
 
 В `project-conformance` дополнительно верни матрицу
 `surface → rule source → pass/finding/not-applicable`.

@@ -89,6 +89,24 @@ kernel edit: in_progress|analyzed|reviewed|integrated → stale → ready
 - `integrated` требует заполненный `draft.md`.
 - `blocked` всегда содержит причину.
 
+## Сходимость review gates
+
+Review report — evidence гейта, а не повод автоматически запустить ещё один
+полный круг. Перед `set-gate --status pass` координатор проверяет:
+
+- все findings имеют disposition `accepted|rejected|user-decision`;
+- `open_blocker=0` и `open_major=0` после disposition;
+- неисправленные `minor` записаны как `residual` с основанием;
+- `research_reopen=targeted` указан только для принятого `blocker|major` с
+  `research_question`, `missing_evidence`, `target_sources` и `stop_condition`;
+- для minor-only уже использован не более чем один polish-pass текущего гейта.
+
+Повторяй только затронутый review gate и детерминированные проверки. `pass` не
+переоткрывается из-за residual minor. Если тот же `blocker/major` остаётся после
+двух точечных циклов, состояние становится `user-decision`; третий автоматический
+цикл запрещён. Полные правила заданы в
+`{baseDir}/references/convergence-contract.md`.
+
 ## Базовые команды
 
 ```text
@@ -128,6 +146,22 @@ python3 {baseDir}/scripts/automation_timing.py stop \
 python3 {baseDir}/scripts/case_pipeline.py validate \
   --case-root "<path>" --final
 ```
+
+Если новый runtime ужесточил planning/timing-контракт уже после старта case,
+сначала открой и локально утверди новую planning revision, затем экспортируй её
+в отдельный каталог и выполни штатную миграцию:
+
+```text
+python3 {baseDir}/scripts/case_pipeline.py migrate-planning \
+  --case-root "<path>" --handoff-root "<exported-handoff-directory>" \
+  --reason "<why the previous runtime contract is superseded>"
+```
+
+Команда не переносит галки по догадке: она архивирует прежние handoff, timing,
+manifest и semantic ledger, сохраняет текущие блоки, связывает новую revision и
+создаёт свежий runtime checklist. Уже выполненные пункты после этого повторно
+подтверждаются обычными `automation_timing.py check` с evidence и внешним
+read-back. Миграция запрещена, пока semantic block находится в `in_progress`.
 
 Для review готового артефакта используй `--intent review`. Это единственный
 новый case, которому разрешено не иметь `planning-handoff.json/md`.

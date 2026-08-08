@@ -46,6 +46,11 @@ description: "Оркестрирует предварительное иссле
     каждого checklist item координатор сразу обновляет его во внешней системе,
     читает состояние обратно и фиксирует evidence в runtime ledger. Этап нельзя
     завершить при незакрытом обязательном пункте.
+11. **Качество имеет критерий достаточности.** `blocker` и `major` закрываются
+    обязательно; `minor` не блокируют следующий этап. Новый research после coverage
+    gate разрешён только для доказанной существенной evidence-дыры. Minor-only polish
+    выполняется не более одного раза на review gate; затем остаток фиксируется и
+    pipeline идёт дальше по `{baseDir}/references/convergence-contract.md`.
 
 ## Когда применять
 
@@ -266,6 +271,9 @@ specification workflow и выполни его:
 возобновление. Выполнение approved этапов ведёт `automation-timing.json` по
 `{baseDir}/references/automation-timing.md`. Block-mode дополнительно следует
 `{baseDir}/references/case-state.md` и `{baseDir}/references/block-contract.md`.
+Перед research/review полностью прочитай
+`{baseDir}/references/convergence-contract.md`: он определяет, когда поиск можно
+переоткрыть, какие findings блокируют gate и когда нужно идти дальше.
 Как только во время полного анализа доказано, что approved plan неполон или
 неверен, останови текущий проход и не проталкивай старый DAG. Открой новую
 planning revision командой `replan`, сохрани старый snapshot и выполненные
@@ -334,6 +342,9 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 - Архитектор вызван только по гейту; `design` и `conformance` независимы.
 - Редактор не добавил новых требований и решений.
 - Ревьюер вернул доказуемые findings, а не вкусовые пожелания.
+- После review нет открытых принятых `blocker/major`; residual `minor`
+  зафиксированы и не переоткрывают gate. Новый research после coverage gate
+  ссылается на конкретный `blocker|major`, target sources и stop condition.
 - AC трассируются к требованиям, требования — к цели.
 - Публикация и изменения внешних систем не выполнены без явной просьбы.
 
@@ -344,8 +355,10 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/references/requirements-method.md` | Канонический метод Вигерса |
 | `{baseDir}/references/planning-contract.md` | Research, plan DAG, passport, external drafts и approval contract |
 | `{baseDir}/references/automation-timing.md` | Прогноз, wall-clock ledger, команды и агрегация истории |
+| `{baseDir}/references/convergence-contract.md` | Порог качества, переоткрытие research и остановка minor-only циклов |
 | `{baseDir}/references/handoff-contract.md` | Контракт case package и результатов ролей |
 | `{baseDir}/references/prompt-contract.md` | Сборка ограниченного prompt для независимой роли |
+| `{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json` | Регрессия prompt: закрытый coverage не переоткрывается без существенной evidence-дыры |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/block-contract.md` | Контракт семантического блока и sidecar index |
 | `{baseDir}/references/knowledge-map.md` | Детерминированная карта методических маршрутов |

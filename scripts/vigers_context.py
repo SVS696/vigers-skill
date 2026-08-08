@@ -38,6 +38,7 @@ METHOD_CONTEXT_JSON = "method-context.json"
 METHOD_CONTEXT_MARKDOWN = "method-context.md"
 OPERATIONAL_REFERENCE_FILES = {
     "references/automation-timing.md",
+    "references/convergence-contract.md",
 }
 SHORT_TERMS = {
     "api",

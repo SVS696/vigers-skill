@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "id": "convergence-closed-coverage",
+  "purpose": "Проверить, что координатор закрывает существенные findings точечно и продолжает approved pipeline без общего повторного исследования.",
+  "prompt": "<assignment>\nrole: coordinator\nmode: block\ncoverage_verdict: sufficient\ncoverage_gate: closed\ntargets: [B02, B03]\nnext_step: integrate B04 and B05\nreview_state:\n  B02: {open_blocker: 1, open_major: 4, open_minor: 2}\n  B03: {open_blocker: 0, open_major: 2, open_minor: 1}\naccepted_findings: all blocker and major findings\nminor_polish_used: false\nresearch_request: none\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"approved-review\">\nB02: исправить контракт и четыре счётных правила. B03: исправить два правила трассировки. Findings содержат достаточное evidence и не требуют внешних источников.\n</document>\n</source_documents>\n\n<final_instruction>\nВерни следующий ограниченный план действий. Не редактируй файлы и не расширяй scope.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "исправить B02 и B03 по принятым blocker/major",
+      "повторить только затронутые deterministic checks и локальные review gates",
+      "после нулевых open_blocker/open_major перейти к интеграции B04 и B05",
+      "обработать minor одним пакетным polish-pass либо записать residual"
+    ],
+    "forbidden_actions": [
+      "открыть новый общий research cluster",
+      "повторить весь завершённый pipeline",
+      "запросить дополнительное согласование некритичных пунктов",
+      "использовать ETA как ограничение глубины или качества"
+    ],
+    "required_output_signals": [
+      "research_reopen: no",
+      "targeted recheck",
+      "next approved step"
+    ],
+    "allowed_research_exception": {
+      "severity": [
+        "blocker",
+        "major"
+      ],
+      "required_fields": [
+        "research_question",
+        "missing_evidence",
+        "target_sources",
+        "stop_condition"
+      ]
+    }
+  }
+}

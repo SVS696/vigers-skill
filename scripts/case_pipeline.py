@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import re
+import shutil
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -28,6 +29,7 @@ from planning_case import (
     HANDOFF_JSON as PLANNING_HANDOFF_JSON,
     HANDOFF_MARKDOWN as PLANNING_HANDOFF_MARKDOWN,
     PlanningError,
+    canonical_fingerprint as canonical_planning_fingerprint,
     validate_handoff as validate_planning_handoff,
 )
 from spec_pipeline import PipelineError, detect_profile, select_profile
@@ -172,6 +174,13 @@ def atomic_json(path: Path, payload: Any) -> None:
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
+    temporary.replace(path)
+
+
+def atomic_text(path: Path, text: str) -> None:
+    """Write text through a sibling temporary file."""
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(text, encoding="utf-8")
     temporary.replace(path)
 
 
@@ -557,6 +566,203 @@ def load_case(root: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]:
     if not isinstance(ledger.get("blocks"), list):
         raise CaseError("ledger.json: blocks must be an array")
     return root, manifest, ledger
+
+
+def _external_binding_identity(payload: dict[str, Any]) -> set[tuple[str, str, str]]:
+    """Return stable external object bindings without volatile read-back fields."""
+    return {
+        (binding["target_id"], binding["system"], binding["object_id"])
+        for binding in payload.get("external_bindings", [])
+        if isinstance(binding, dict)
+        and all(
+            isinstance(binding.get(field), str) and binding[field].strip()
+            for field in ("target_id", "system", "object_id")
+        )
+    }
+
+
+def migrate_planning_handoff(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    handoff_root: Path,
+    reason: str,
+) -> dict[str, Any]:
+    """Replace a superseded planning handoff without rebuilding semantic work.
+
+    The previous handoff, timing ledger, coordinator manifest, role projection,
+    and semantic ledger are archived before the new planning revision is bound.
+    Runtime checklist progress starts fresh and must be re-established through
+    normal evidence/read-back commands; the archived ledger retains earlier
+    wall-clock observations.
+    """
+    if not reason.strip():
+        raise CaseError("Planning handoff migration requires a reason")
+    in_progress = [
+        str(block.get("id"))
+        for block in ledger.get("blocks", [])
+        if isinstance(block, dict) and block.get("status") == "in_progress"
+    ]
+    if in_progress:
+        raise CaseError(
+            "Planning handoff migration requires stable semantic blocks; in progress: "
+            + ", ".join(in_progress)
+        )
+
+    old_binding = manifest.get("planning_handoff")
+    if not isinstance(old_binding, dict):
+        raise CaseError("Existing case has no planning handoff binding to migrate")
+    old_metadata = case_file(root, PLANNING_HANDOFF_JSON)
+    old_content = case_file(root, PLANNING_HANDOFF_MARKDOWN)
+    old_payload = read_json(old_metadata)
+    old_markdown = old_content.read_text(encoding="utf-8")
+    if old_payload.get("fingerprint") != canonical_planning_fingerprint(old_payload):
+        raise CaseError("Existing planning handoff fingerprint mismatch")
+    if old_payload.get("content_sha256") != hashlib.sha256(
+        old_markdown.encode("utf-8")
+    ).hexdigest():
+        raise CaseError("Existing planning handoff content hash mismatch")
+    if old_binding.get("fingerprint") != old_payload.get("fingerprint"):
+        raise CaseError("Coordinator manifest does not match existing planning handoff")
+
+    source_root = handoff_root.expanduser().resolve()
+    source_metadata = source_root / PLANNING_HANDOFF_JSON
+    source_content = source_root / PLANNING_HANDOFF_MARKDOWN
+    if not source_metadata.is_file() or not source_content.is_file():
+        raise CaseError("Migration source requires planning-handoff.json and .md")
+    new_payload = read_json(source_metadata)
+    new_markdown = source_content.read_text(encoding="utf-8")
+    try:
+        validate_planning_handoff(
+            new_payload,
+            new_markdown,
+            expected_profile_id=manifest.get("profile_id"),
+            expected_project_root=manifest.get("project_root"),
+            enforce_project_root=True,
+        )
+    except PlanningError as exc:
+        raise CaseError(f"Invalid replacement planning handoff: {exc}") from exc
+
+    old_case_id = old_payload.get("planning_case_id")
+    old_revision = old_payload.get("planning_revision")
+    new_revision = new_payload.get("planning_revision")
+    if new_payload.get("planning_case_id") != old_case_id:
+        raise CaseError("Replacement planning handoff belongs to another planning case")
+    if not isinstance(old_revision, int) or not isinstance(new_revision, int):
+        raise CaseError("Planning handoff revisions must be integers")
+    if new_revision <= old_revision:
+        raise CaseError("Replacement planning revision must be newer")
+    old_passport = old_payload.get("passport")
+    new_passport = new_payload.get("passport")
+    if isinstance(old_passport, dict) and isinstance(new_passport, dict):
+        if old_passport.get("id") != new_passport.get("id"):
+            raise CaseError("Replacement planning handoff changes the passport")
+    elif old_passport != new_passport:
+        raise CaseError("Replacement planning handoff changes the passport")
+    old_bindings = _external_binding_identity(old_payload)
+    new_bindings = _external_binding_identity(new_payload)
+    if not old_bindings.issubset(new_bindings):
+        raise CaseError("Replacement planning handoff removes or redirects external bindings")
+
+    replacement_timing = initialize_automation_timing(
+        case_id=manifest["case_id"],
+        automation_plan=new_payload.get("automation_plan"),
+        planning_case_id=new_payload.get("planning_case_id"),
+        planning_revision=new_revision,
+        passport=new_payload.get("passport"),
+    )
+    archive_relative = (
+        f"migrations/planning-r{old_revision:03d}-to-r{new_revision:03d}"
+    )
+    archive = case_file(root, archive_relative)
+    if archive.exists():
+        raise CaseError(f"Planning migration archive already exists: {archive_relative}")
+    archive.mkdir(parents=True)
+    archive_files = (
+        "manifest.json",
+        "ledger.json",
+        PLANNING_HANDOFF_JSON,
+        PLANNING_HANDOFF_MARKDOWN,
+        AUTOMATION_TIMING_FILENAME,
+        ROLE_MANIFEST_JSON,
+        PLANNING_ROLE_CONTEXT_JSON,
+    )
+    archived: dict[str, str] = {}
+    for relative in archive_files:
+        source = root / relative
+        if not source.is_file():
+            continue
+        destination = archive / source.name
+        shutil.copy2(source, destination)
+        archived[relative] = sha256(destination)
+
+    atomic_json(root / PLANNING_HANDOFF_JSON, new_payload)
+    atomic_text(root / PLANNING_HANDOFF_MARKDOWN, new_markdown)
+    role_context_payload = planning_role_context(new_payload)
+    atomic_json(root / PLANNING_ROLE_CONTEXT_JSON, role_context_payload)
+    atomic_json(root / AUTOMATION_TIMING_FILENAME, replacement_timing)
+    manifest["planning_handoff"] = {
+        "metadata_path": PLANNING_HANDOFF_JSON,
+        "content_path": PLANNING_HANDOFF_MARKDOWN,
+        "planning_case_id": new_payload["planning_case_id"],
+        "planning_revision": new_revision,
+        "project_root": new_payload["project_root"],
+        "fingerprint": new_payload["fingerprint"],
+        "content_sha256": new_payload["content_sha256"],
+        "role_context_path": PLANNING_ROLE_CONTEXT_JSON,
+        "role_context_fingerprint": role_context_payload["fingerprint"],
+    }
+    manifest.setdefault("artifacts", {}).update(
+        {
+            "automation_timing": AUTOMATION_TIMING_FILENAME,
+            "role_manifest": ROLE_MANIFEST_JSON,
+            "planning_role_context": PLANNING_ROLE_CONTEXT_JSON,
+        }
+    )
+    migrated_at = now_utc()
+    previous_automation_plan = old_payload.get("automation_plan")
+    replacement_automation_plan = new_payload.get("automation_plan")
+    manifest.setdefault("events", []).append(
+        {
+            "at": migrated_at,
+            "kind": "planning_handoff_migrated",
+            "from_revision": old_revision,
+            "to_revision": new_revision,
+            "archive": archive_relative,
+            "reason": reason.strip(),
+            "previous_automation_plan_fingerprint": (
+                previous_automation_plan.get("fingerprint")
+                if isinstance(previous_automation_plan, dict)
+                else None
+            ),
+            "automation_plan_fingerprint": (
+                replacement_automation_plan.get("fingerprint")
+                if isinstance(replacement_automation_plan, dict)
+                else None
+            ),
+        }
+    )
+    save_case(root, manifest, ledger)
+    migration_record = {
+        "schema": 1,
+        "case_id": manifest["case_id"],
+        "planning_case_id": new_payload["planning_case_id"],
+        "from_revision": old_revision,
+        "to_revision": new_revision,
+        "migrated_at": migrated_at,
+        "reason": reason.strip(),
+        "archived_files": archived,
+        "new_handoff_fingerprint": new_payload["fingerprint"],
+        "new_automation_plan_fingerprint": (
+            replacement_automation_plan.get("fingerprint")
+            if isinstance(replacement_automation_plan, dict)
+            else None
+        ),
+        "runtime_checklist_policy": "reverify_through_normal_check_commands",
+    }
+    atomic_json(archive / "migration.json", migration_record)
+    return migration_record
 
 
 def save_case(root: Path, manifest: dict[str, Any], ledger: dict[str, Any]) -> None:
@@ -1470,6 +1676,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Migration escape hatch for a non-review case without an approved planning handoff",
     )
 
+    migrate_parser = subparsers.add_parser(
+        "migrate-planning",
+        help="Bind a newer planning handoff while preserving semantic case work",
+    )
+    migrate_parser.add_argument("--case-root", required=True)
+    migrate_parser.add_argument("--handoff-root", required=True)
+    migrate_parser.add_argument("--reason", required=True)
+
     add_parser = subparsers.add_parser("add-block", help="Add a semantic block")
     add_parser.add_argument("--case-root", required=True)
     add_parser.add_argument("--id", required=True)
@@ -1544,6 +1758,20 @@ def main() -> int:
             return 0
 
         root, manifest, ledger = load_case(Path(args.case_root))
+        if args.command == "migrate-planning":
+            result = migrate_planning_handoff(
+                root,
+                manifest,
+                ledger,
+                handoff_root=Path(args.handoff_root),
+                reason=args.reason,
+            )
+            print(
+                "PASS planning-migration="
+                f"r{result['from_revision']}->r{result['to_revision']} "
+                f"archive={result['archived_files'] and 'recorded'}"
+            )
+            return 0
         if args.command == "add-block":
             add_block(
                 root,

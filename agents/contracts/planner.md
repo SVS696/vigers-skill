@@ -41,6 +41,9 @@
 freshness, конфликты и gaps. Не выбирай удобную версию конфликта и не считай
 недоступность доказательством отсутствия. `blocked` останавливает планирование;
 `partial` требует явно ограниченного влияния gap.
+После verdict `sufficient` или допустимого `partial` не предлагай новый search cluster
+без принятого `blocker|major`, точного research question, target sources и stop condition
+из `references/convergence-contract.md`. Не планируй поиск «для уверенности».
 
 Исследование read-only. Пустой profile-required anchor создаёт или связывает
 только координатор до `researching`; planner получает read-back и не обновляет

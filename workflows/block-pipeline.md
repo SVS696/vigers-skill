@@ -57,6 +57,11 @@ completed`. Не создавай отдельный таймер на кажд�
    транзитивные потребители.
 6. Зафиксируй гейт `evidence` только после проверки источников.
 
+После закрытия evidence/coverage не запускай новый общий research. Дополнительный
+поиск разрешён только по принятому `blocker|major` с `remediation: targeted-research`,
+точной evidence-дырой, целевыми источниками и условием
+остановки из `{baseDir}/references/convergence-contract.md`.
+
 Если любой аналитический block во время прохода возвращает доказанный
 `status: replan` с `planning_delta`, немедленно останови его и не проталкивай как
 kernel edit. Останови active `Pxx` как `blocked` с причиной `replanning required`
@@ -123,11 +128,17 @@ case-root и свежих block contexts.
 1. Получи набор входов командой `context --role spec-reviewer`.
 2. Запусти новый reviewer в режиме `block` без авторских рассуждений и прошлых
    findings.
-3. Сохрани findings или явный `PASS` в `reviews/Bxx.md`.
-4. Для принятых замечаний переведи блок `analyzed|reviewed → in_progress`,
-   исправь точечно новым editor, снова переведи в `analyzed`, затем повтори
-   локальный reviewer. Максимум два одинаковых цикла blocker.
-5. Переведи блок в `reviewed` только после закрытия blocker/major.
+3. Сохрани findings или явный `PASS` в `reviews/Bxx.md`; отчёт обязан содержать
+   reported counts, `research_reopen` и `gate_recommendation`. Disposition и open
+   counts координатор фиксирует отдельно.
+4. Для открытых принятых `blocker/major` переведи блок `analyzed|reviewed →
+   in_progress`, исправь его точечно новым editor, снова переведи в `analyzed`,
+   затем повтори только локальный reviewer. Полный pipeline не перезапускай.
+5. При minor-only выполни не более одного пакетного polish-pass для этого review
+   gate либо запиши остаток как `residual`; новый полный reviewer не запускай.
+6. Если тот же `blocker/major` остался после двух точечных циклов, верни
+   `user-decision`. Иначе переведи блок в `reviewed`, когда открытых принятых
+   `blocker/major` нет; residual minor переход не блокируют.
 
 **Выход:** каждый смысловой блок проверен независимо и свеж относительно kernel.
 
@@ -165,9 +176,11 @@ case-root и свежих block contexts.
 2. Проверь противоречия между блоками, разные значения одного термина,
    переходы состояний, владельцев данных, сквозные ошибки и сохранность scope.
 3. Не повторяй полное локальное ревью каждого блока без доказанного конфликта.
-4. Сохрани отчёт в `reviews/integration.md`, исправь принятые findings и повтори
-   check.
-5. Зафиксируй gate `integration_review`.
+4. Сохрани отчёт в `reviews/integration.md`. Исправь открытые принятые
+   `blocker/major`, повтори check и только затронутый review. Minor обработай
+   одним polish-pass либо оставь residual.
+5. Зафиксируй gate `integration_review`, когда открытых принятых
+   `blocker/major` нет; residual minor допустимы.
 
 **Выход:** документ сшит семантически, а не только редакционно.
 
@@ -181,7 +194,8 @@ case-root и свежих block contexts.
 4. Запусти новый reviewer в режиме `global` на готовом документе, kernel,
    evidence и indexes. Не передавай локальные review reports.
 5. Сохрани итог в `reviews/global.md`; зафиксируй `global_review` только после
-   закрытия blocker/major.
+   закрытия открытых принятых `blocker/major`. Minor-only замечания не запускают
+   второй полный global review после единственного polish-pass.
 
 **Выход:** глобальная логика, полнота, тестируемость и правила проекта проверены.
 
@@ -196,8 +210,9 @@ case-root и свежих block contexts.
 3. Не требуй нового стиля от неизменяемого legacy-контракта, если проект велит
    сохранять совместимость.
 4. Верни матрицу `surface → source → pass/finding/not-applicable`.
-5. После исправлений повтори consistency-check и затронутые ревью; затем
-   зафиксируй gate `project_conformance`.
+5. После исправлений повтори consistency-check и только затронутые проверки;
+   затем зафиксируй gate `project_conformance`. При отсутствии открытых
+   `blocker/major` residual minor не переоткрывают conformance.
 
 **Выход:** локальные соглашения проверены независимо от общей логики.
 
@@ -210,7 +225,9 @@ case-root и свежих block contexts.
 2. Иначе запусти новый architect в режиме `conformance`; передай канон,
    утверждённые решения и draft, но не design-рассуждения.
 3. Классифицируй итог `conform | decision-required | conflict`.
-4. При правках повтори consistency-check и затронутые ревью.
+4. При `blocker/major` исправь затронутую область и повтори consistency-check и
+   conformance. При minor-only выполни не более одного polish-pass или зафиксируй
+   residual; не запускай новый архитектурный круг.
 
 **Выход:** architecture gate закрыт доказуемым результатом.
 
@@ -218,8 +235,9 @@ case-root и свежих block contexts.
 
 **Вход:** все гейты закрыты.
 
-1. Закрой последний active `Pxx`, выполни `automation_timing.py validate --final`,
-   затем `case_pipeline.py validate --final`.
+1. Проверь нулевые `open_blocker/open_major` во всех review gates и зафиксированный
+   residual log. Затем закрой последний active `Pxx`, выполни
+   `automation_timing.py validate --final`, затем `case_pipeline.py validate --final`.
 2. Выдай готовый текст, существенные допущения, решения и остаточный риск.
 3. Публикуй или меняй внешние системы только по явной просьбе и правилам
    профиля; после записи выполни read-back.

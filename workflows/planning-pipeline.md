@@ -73,7 +73,11 @@ python3 {baseDir}/scripts/planning_case.py context --case-root "<planning-root>"
 5. Если источники уточнили уровень существующей единицы результата, до выхода из
    `researching` скорректируй тот же early binding через `bind --action link
    --replace` и новый read-back; не создавай второй anchor.
-6. Переведи case в `researched`.
+6. После `sufficient` или допустимого `partial` закрой coverage gate. Не создавай
+   новый общий search cluster в последующих фазах. Переоткрыть research можно
+   только по принятому `blocker|major` с `remediation: targeted-research` и
+   полями из `{baseDir}/references/convergence-contract.md`.
+7. Переведи case в `researched`.
 
 **Выход:** coverage gate доказуемо пройден либо case остановлен.
 
@@ -150,7 +154,9 @@ python3 {baseDir}/scripts/planning_case.py review \
 ```
 
 4. Для `changes_requested` переведи case в `researching`: новая revision обязана
-   проверить, нужен ли research delta. Старый snapshot не изменяй.
+   проверить, нужен ли research delta. После уже закрытого coverage новый поиск
+   ограничен конкретным изменением пользователя, новым evidence или принятым
+   `blocker|major`; поиск «для уверенности» запрещён. Старый snapshot не изменяй.
 5. Повтори фазы 2–6 до approval. Не ограничивай число содержательных ревизий, но
    после трёх повторов одной и той же блокировки назови impasse и запроси решение.
 
@@ -203,8 +209,10 @@ python3 {baseDir}/scripts/planning_case.py replan \
   --reason "<why plan must change>" --evidence-ref "<analysis-ref>"
 ```
 
-4. Выполни только необходимый research/plan delta. Старые snapshots, approval,
-   handoff и runtime ledger не удаляй.
+4. Выполни только необходимый research/plan delta. Research delta допустим лишь
+   по существенной evidence-дыре с `research_question`, `missing_evidence`,
+   `target_sources` и `stop_condition`; иначе скорректируй только план. Старые
+   snapshots, approval, handoff и runtime ledger не удаляй.
 5. Синхронизируй изменённый внешний checklist. Уже выполненные неизменившиеся
    пункты сохраняют stable ID и галку; удалённые/заменённые явно пометь в delta.
    Каждую запись прочитай обратно.

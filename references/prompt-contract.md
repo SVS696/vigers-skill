@@ -70,6 +70,9 @@ Process only target B03 and return the required output without editing files.
    `planning-handoff.json`, `automation_plan`, ETA или runtime ledger. Оценки
    времени предназначены человеку и не могут влиять на model behavior; даже
    fingerprints role projection не зависят от значений ETA.
+8. Assignment не предлагает новый research или полный re-review без открытого
+   `blocker|major` и полей из `references/convergence-contract.md`. Minor-only
+   улучшение не скрывается за формулировкой «проверить глубже».
 
 Для `vigers-planner` пункты про kernel/method-context не применяются. Вместо них
 проверь planning revision/state, разрешённый mode, project profile, список
@@ -109,6 +112,11 @@ artifacts и не выполняет external mutations.
 Отдельно проверь, что editor не создаёт смысл, reviewer не переписывает текст,
 architect conformance не продолжает design, а block-agent не читает соседний
 независимый блок.
+Добавь eval с закрытым coverage: координатор должен исправить найденные
+`blocker/major`
+и продолжить pipeline, а не открывать «ещё один археологический круг» без точной
+evidence-дыры. Канонический повторяемый fixture хранится в
+`{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json`.
 
 ## Основание
 

@@ -41,6 +41,8 @@
    - `conflict` — постановка случайно ему противоречит.
 5. Conformance выполняется только после семантической интеграции; локальный
    block review его не заменяет.
+6. Классифицируй findings по `references/convergence-contract.md`. Если конфликтов
+   `blocker/major` нет, не переоткрывай conformance ради minor-only улучшений.
 
 ## Выход
 

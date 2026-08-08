@@ -216,22 +216,36 @@ finding: <what-is-wrong>
 evidence: <source-or-internal-contradiction>
 impact: <practical-consequence>
 proposed_change: <minimal-correction>
+remediation: edit | targeted-research | user-decision
 confidence: high | medium | low
 ```
 
 Вкусовые пожелания без последствия и доказательства не являются finding.
+`targeted-research` допустим только для `blocker|major` и дополняется
+`research_question`, `missing_evidence`, `target_sources` и `stop_condition` по
+`references/convergence-contract.md`. `minor` не переоткрывает research.
 
 Режимы reviewer:
 
 - `block` — локальная логика и полнота одного блока;
 - `integration` — конфликты и разрывы между блоками после сборки;
 - `global` — итоговая цель, scope, трассировка, тестируемость и проектные правила.
+- `project-conformance` — только применимые локальные соглашения и форматы.
 
 ## Decision log
 
 Координатор для каждого finding фиксирует `accepted | rejected | user-decision`
-и основание. Отклонённое замечание не записывается в историю изменений
-постановки, если проектный профиль прямо не требует обратного.
+и основание. Для accepted finding добавляет resolution `open | corrected |
+residual`. `residual` допустим только для `minor` и не блокирует gate. Отклонённое
+замечание не записывается в историю изменений постановки, если проектный профиль прямо
+не требует обратного.
+
+Каждый review report завершается counts
+`reported_blocker/reported_major/reported_minor`, `research_reopen: no|targeted`
+и `gate_recommendation: pass|revise|user-decision`. После disposition
+координатор отдельно записывает `open_blocker/open_major/open_minor` и
+`gate_decision`. `pass` требует нулевые open counts только для принятых
+`blocker/major`; residual minor не запускают новый полный цикл.
 
 ## Handoff во внешнюю поставку
 

@@ -90,8 +90,17 @@
 ## Локальное ревью
 
 `reviews/Bxx.md` содержит findings по handoff-контракту или явный `PASS` с
-перечнем проверенных критериев. Review не переписывает block artifact и не
-содержит скрытых новых требований.
+перечнем проверенных критериев. Отчёт завершает counts
+`reported_blocker/reported_major/reported_minor`, `research_reopen` и
+`gate_recommendation`. После disposition координатор отдельно фиксирует open
+counts и решение гейта. Review не переписывает block artifact и не содержит
+скрытых новых требований.
+
+Блок переходит в `reviewed`, когда открытых принятых `blocker/major` нет.
+Residual minor допустимы; для minor-only разрешён максимум один пакетный
+polish-pass на текущий gate. Повторное review после исправления должно быть
+точечным. Новый research открывается только для существенного finding с полями
+из `{baseDir}/references/convergence-contract.md`.
 
 ## Границы контекста
 

@@ -6,7 +6,8 @@ tools: Read, Grep, Glob
 
 Найди установленный пользовательский скилл `vigers`, полностью прочитай
 `agents/contracts/planner.md`, `references/planning-contract.md`,
-`references/prompt-contract.md`, `references/handoff-contract.md` и
+`references/prompt-contract.md`, `references/handoff-contract.md`,
+`references/convergence-contract.md` и
 `workflows/planning-pipeline.md` относительно его корня. Исполни контракт в
 одном явно переданном режиме `research-design`,
 `research-synthesis`, `plan` или `revision`.

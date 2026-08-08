@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -89,6 +90,31 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["contracts"], 5)
         self.assertEqual(counts["runtime_adapters"], 10)
         self.assertEqual(counts["workflows"], 3)
+        self.assertEqual(counts["prompt_evals"], 1)
+
+    def test_closed_coverage_prompt_eval_rejects_archaeological_restart(self) -> None:
+        eval_path = (
+            spec_pipeline.ROOT
+            / "evals"
+            / "prompt-cookbook"
+            / "convergence-closed-coverage.json"
+        )
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        expected = payload["expected"]
+        self.assertIn(
+            "открыть новый общий research cluster",
+            expected["forbidden_actions"],
+        )
+        self.assertIn("research_reopen: no", expected["required_output_signals"])
+        self.assertEqual(
+            expected["allowed_research_exception"]["required_fields"],
+            [
+                "research_question",
+                "missing_evidence",
+                "target_sources",
+                "stop_condition",
+            ],
+        )
 
     def test_generic_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
