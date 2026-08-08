@@ -13,10 +13,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from automation_timing import (
+    AutomationTimingError,
+    EXECUTION_USE,
+    build_automation_plan,
+    validate_automation_plan,
+    validate_plan_estimation,
+)
 from spec_pipeline import PipelineError, detect_profile, select_profile
 
 
 SCHEMA_VERSION = 1
+PLAN_SCHEMA_VERSION = 3
+TELEMETRY_PLAN_SCHEMA_VERSION = 2
+LEGACY_PLAN_SCHEMA_VERSION = 1
 HANDOFF_SCHEMA_VERSION = 1
 TODO_MARKER = "VIGERS_TODO"
 MANIFEST_FILENAME = "planning-manifest.json"
@@ -28,6 +38,9 @@ SOURCE_ID_RE = re.compile(r"^SRC-[0-9]{3,4}$")
 TARGET_ID_RE = re.compile(r"^EXT-[0-9]{3,4}$")
 STAGE_ID_RE = re.compile(r"^P[0-9]{2,3}$")
 CHECK_ID_RE = re.compile(r"^P[0-9]{2,3}-C[0-9]{2,3}$")
+PRELIMINARY_US_ID_RE = re.compile(r"^PUS-[0-9]{3,4}$")
+PRELIMINARY_DOD_ID_RE = re.compile(r"^PDOD-[0-9]{3,4}$")
+HYPOTHESIS_CONFIDENCE = {"low", "medium", "high"}
 PUBLISH_GATES = {"before_research", "before_review", "after_approval", "none"}
 
 STATES = {
@@ -229,7 +242,24 @@ def init_case(
     )
     atomic_json(
         root / "plan.json",
-        {"schema": SCHEMA_VERSION, "revision": 1, "stages": []},
+        {
+            "schema": PLAN_SCHEMA_VERSION,
+            "revision": 1,
+            "automation_estimation": {
+                "policy": "required",
+                "metric": "wall_clock",
+                "unit": "seconds",
+                "execution_use": EXECUTION_USE,
+            },
+            "preliminary_requirements": {
+                "status": "preliminary",
+                "validation_gate": "full_analysis",
+                "change_policy": "confirm_change_split_or_reject",
+                "user_stories": [],
+                "definition_of_done": [],
+            },
+            "stages": [],
+        },
     )
     atomic_json(
         root / "bindings.json",
@@ -431,10 +461,110 @@ def ensure_acyclic(stages: list[dict[str, Any]]) -> None:
         visit(identifier)
 
 
+def validate_preliminary_requirements(
+    payload: Any,
+    source_ids: set[str] | None = None,
+) -> list[str]:
+    """Validate planning hypotheses without treating them as final requirements."""
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return ["preliminary_requirements must be an object"]
+    if payload.get("status") != "preliminary":
+        errors.append("preliminary_requirements status must be preliminary")
+    if payload.get("validation_gate") != "full_analysis":
+        errors.append(
+            "preliminary_requirements validation_gate must be full_analysis"
+        )
+    if payload.get("change_policy") != "confirm_change_split_or_reject":
+        errors.append(
+            "preliminary_requirements change_policy must be "
+            "confirm_change_split_or_reject"
+        )
+
+    def validate_sources(item: dict[str, Any], item_id: str) -> None:
+        refs = item.get("source_refs")
+        if not isinstance(refs, list) or not refs or any(
+            not isinstance(ref, str) or not SOURCE_ID_RE.fullmatch(ref)
+            for ref in refs
+        ):
+            errors.append(f"{item_id}: source_refs must be a non-empty SRC array")
+        elif source_ids is not None:
+            unknown = sorted(set(refs) - source_ids)
+            if unknown:
+                errors.append(f"{item_id}: unknown source refs: {', '.join(unknown)}")
+
+    stories = payload.get("user_stories")
+    if not isinstance(stories, list) or not stories:
+        errors.append("preliminary_requirements user_stories must be non-empty")
+        stories = []
+    story_ids: set[str] = set()
+    for story in stories:
+        if not isinstance(story, dict):
+            errors.append("preliminary user stories must be objects")
+            continue
+        story_id = story.get("id")
+        if not isinstance(story_id, str) or not PRELIMINARY_US_ID_RE.fullmatch(story_id):
+            errors.append(f"invalid preliminary user story id: {story_id!r}")
+            story_id = "<unknown-PUS>"
+        elif story_id in story_ids:
+            errors.append(f"duplicate preliminary user story id: {story_id}")
+        else:
+            story_ids.add(story_id)
+        for field in ("actor", "goal", "benefit"):
+            if not isinstance(story.get(field), str) or not story[field].strip():
+                errors.append(f"{story_id}: missing {field}")
+        if story.get("confidence") not in HYPOTHESIS_CONFIDENCE:
+            errors.append(f"{story_id}: invalid confidence")
+        validate_sources(story, story_id)
+
+    dod_items = payload.get("definition_of_done")
+    if not isinstance(dod_items, list) or not dod_items:
+        errors.append(
+            "preliminary_requirements definition_of_done must be non-empty"
+        )
+        dod_items = []
+    dod_ids: set[str] = set()
+    for item in dod_items:
+        if not isinstance(item, dict):
+            errors.append("preliminary DoD items must be objects")
+            continue
+        item_id = item.get("id")
+        if not isinstance(item_id, str) or not PRELIMINARY_DOD_ID_RE.fullmatch(item_id):
+            errors.append(f"invalid preliminary DoD id: {item_id!r}")
+            item_id = "<unknown-PDOD>"
+        elif item_id in dod_ids:
+            errors.append(f"duplicate preliminary DoD id: {item_id}")
+        else:
+            dod_ids.add(item_id)
+        for field in ("criterion", "evidence"):
+            if not isinstance(item.get(field), str) or not item[field].strip():
+                errors.append(f"{item_id}: missing {field}")
+        if item.get("confidence") not in HYPOTHESIS_CONFIDENCE:
+            errors.append(f"{item_id}: invalid confidence")
+        validate_sources(item, item_id)
+    return errors
+
+
 def validate_plan(payload: Any, revision: int, source_ids: set[str]) -> list[str]:
     errors: list[str] = []
-    if not isinstance(payload, dict) or payload.get("schema") != SCHEMA_VERSION:
+    if not isinstance(payload, dict) or payload.get("schema") not in {
+        LEGACY_PLAN_SCHEMA_VERSION,
+        TELEMETRY_PLAN_SCHEMA_VERSION,
+        PLAN_SCHEMA_VERSION,
+    }:
         return ["plan.json has unsupported schema"]
+    if payload.get("schema") in {
+        TELEMETRY_PLAN_SCHEMA_VERSION,
+        PLAN_SCHEMA_VERSION,
+    }:
+        errors.extend(validate_plan_estimation(payload))
+    if payload.get("schema") == PLAN_SCHEMA_VERSION:
+        errors.extend(
+            validate_preliminary_requirements(
+                payload.get("preliminary_requirements"),
+                source_ids,
+            )
+        )
     if payload.get("revision") != revision:
         errors.append(f"plan revision must equal planning revision {revision}")
     stages = payload.get("stages")
@@ -461,6 +591,12 @@ def validate_plan(payload: Any, revision: int, source_ids: set[str]) -> list[str
         depends_on = stage.get("depends_on")
         if not isinstance(depends_on, list):
             errors.append(f"{stage_id}: depends_on must be an array")
+        external_target_id = stage.get("external_target_id")
+        if external_target_id is not None and (
+            not isinstance(external_target_id, str)
+            or not TARGET_ID_RE.fullmatch(external_target_id)
+        ):
+            errors.append(f"{stage_id}: invalid external_target_id {external_target_id!r}")
         source_refs = stage.get("source_refs", [])
         if not isinstance(source_refs, list):
             errors.append(f"{stage_id}: source_refs must be an array")
@@ -487,6 +623,9 @@ def validate_plan(payload: Any, revision: int, source_ids: set[str]) -> list[str
                 checklist_ids.add(item_id)
             if not isinstance(item.get("text"), str) or not item["text"].strip():
                 errors.append(f"{item_id}: missing text")
+            required = item.get("required", True)
+            if not isinstance(required, bool):
+                errors.append(f"{item_id}: required must be boolean")
             for optional_text in ("details", "done_when"):
                 value = item.get(optional_text)
                 if value is not None and (not isinstance(value, str) or not value.strip()):
@@ -693,6 +832,20 @@ def validate_artifacts(root: Path, manifest: dict[str, Any], *, for_review: bool
         if isinstance(source, dict) and isinstance(source.get("id"), str)
     }
     errors.extend(validate_plan(plan_graph, manifest["revision"], source_ids))
+    target_ids = {
+        target.get("id")
+        for target in artifact_plan.get("targets", [])
+        if isinstance(target, dict) and isinstance(target.get("id"), str)
+    }
+    for stage in plan_graph.get("stages", []):
+        if not isinstance(stage, dict):
+            continue
+        external_target_id = stage.get("external_target_id")
+        if external_target_id is not None and external_target_id not in target_ids:
+            errors.append(
+                f"{stage.get('id', '<unknown>')}: external_target_id "
+                f"{external_target_id} is absent from artifact-plan.json"
+            )
     errors.extend(
         validate_bindings(
             bindings,
@@ -799,6 +952,73 @@ def transition(
             new_state=new_state,
             revision=manifest["revision"],
             note=note,
+        )
+    )
+    save_case(root, manifest)
+
+
+def open_replanning(
+    root: Path,
+    manifest: dict[str, Any],
+    *,
+    reason: str,
+    evidence_refs: list[str],
+    impact: str,
+) -> None:
+    """Interrupt analysis and open a new revision from its current evidence."""
+    if manifest["state"] not in {"approved", "handed_to_vigers"}:
+        raise PlanningError(
+            "In-analysis replanning requires an approved or handed planning case"
+        )
+    if impact not in {"local", "material"}:
+        raise PlanningError("Replanning impact must be local or material")
+    normalized_refs = list(
+        dict.fromkeys(ref.strip() for ref in evidence_refs if ref.strip())
+    )
+    if not reason.strip() or not normalized_refs:
+        raise PlanningError("Replanning requires a reason and current analysis evidence refs")
+    errors = validate_approved_artifacts(
+        root,
+        manifest,
+        require_after_approval=manifest["state"] == "handed_to_vigers",
+    )
+    if errors:
+        raise PlanningError("Cannot replan from an invalid approved revision: " + "; ".join(errors))
+    previous_state = manifest["state"]
+    previous_revision = manifest["revision"]
+    previous_approval = manifest.get("approval")
+    previous_handoff = manifest.get("handoff")
+    manifest.setdefault("replanning", []).append(
+        {
+            "from_revision": previous_revision,
+            "to_revision": previous_revision + 1,
+            "origin": "full_analysis",
+            "impact": impact,
+            "approval_required": impact == "material",
+            "reason": reason.strip(),
+            "evidence_refs": normalized_refs,
+            "previous_state": previous_state,
+            "previous_approval": previous_approval,
+            "previous_handoff": previous_handoff,
+            "opened_at": now_utc(),
+        }
+    )
+    manifest["revision"] = previous_revision + 1
+    manifest["state"] = "researching"
+    manifest["approval"] = None
+    manifest["handoff"] = None
+    write_template(
+        root / "reviews" / f"revision-{manifest['revision']:03d}.md",
+        f"# Planning review: revision {manifest['revision']}\n\n{TODO_MARKER}\n",
+    )
+    manifest["events"].append(
+        event(
+            "full_analysis_replanning_opened",
+            from_revision=previous_revision,
+            to_revision=manifest["revision"],
+            impact=impact,
+            reason=reason.strip(),
+            evidence_refs=normalized_refs,
         )
     )
     save_case(root, manifest)
@@ -912,6 +1132,7 @@ def record_review(
     verdict: str,
     actor: str,
     note: str,
+    approval_kind: str = "user",
 ) -> None:
     if manifest["state"] != "published_for_review":
         raise PlanningError("Review can be recorded only from published_for_review")
@@ -919,6 +1140,8 @@ def record_review(
         raise PlanningError(f"Invalid review verdict: {verdict}")
     if not actor.strip() or not note.strip():
         raise PlanningError("Review actor and note are required")
+    if approval_kind not in {"user", "coordinator_local_replan"}:
+        raise PlanningError(f"Invalid approval kind: {approval_kind}")
     review_path = root / "reviews" / f"revision-{manifest['revision']:03d}.md"
     existing = review_path.read_text(encoding="utf-8") if review_path.exists() else ""
     if TODO_MARKER not in existing and existing.strip():
@@ -947,6 +1170,7 @@ def record_review(
             "at": recorded_at,
             "note": note.strip(),
             "subject_sha256": subject,
+            "kind": approval_kind,
         }
     review_text = (
         f"# Planning review: revision {manifest['revision']}\n\n"
@@ -959,6 +1183,37 @@ def record_review(
     if approval is not None:
         manifest["approval"] = approval
     transition(root, manifest, new_state=verdict, note=note.strip(), via_review=True)
+
+
+def approve_local_replanning(
+    root: Path,
+    manifest: dict[str, Any],
+    *,
+    actor: str,
+    note: str,
+) -> None:
+    """Accept a non-critical in-analysis plan delta without a user review gate."""
+    current_revision = manifest.get("revision")
+    replanning = next(
+        (
+            item
+            for item in reversed(manifest.get("replanning", []))
+            if isinstance(item, dict) and item.get("to_revision") == current_revision
+        ),
+        None,
+    )
+    if not isinstance(replanning, dict):
+        raise PlanningError("Current revision is not an in-analysis replanning revision")
+    if replanning.get("impact") != "local" or replanning.get("approval_required") is not False:
+        raise PlanningError("Only a non-critical local replanning revision can skip user review")
+    record_review(
+        root,
+        manifest,
+        verdict="approved",
+        actor=actor,
+        note=note,
+        approval_kind="coordinator_local_replan",
+    )
 
 
 def build_handoff(root: Path, manifest: dict[str, Any]) -> tuple[dict[str, Any], str]:
@@ -980,6 +1235,16 @@ def build_handoff(root: Path, manifest: dict[str, Any]) -> tuple[dict[str, Any],
         raise PlanningError("Approved revision has no immutable snapshot")
     markdown = paths["handoff"].read_text(encoding="utf-8")
     bindings = read_json(paths["bindings"])
+    plan_graph = read_json(paths["plan_graph"])
+    automation_plan = None
+    if plan_graph.get("schema") in {
+        TELEMETRY_PLAN_SCHEMA_VERSION,
+        PLAN_SCHEMA_VERSION,
+    }:
+        try:
+            automation_plan = build_automation_plan(plan_graph)
+        except AutomationTimingError as exc:
+            raise PlanningError(f"Invalid automation estimation plan: {exc}") from exc
     payload: dict[str, Any] = {
         "schema": HANDOFF_SCHEMA_VERSION,
         "planning_case_id": manifest["case_id"],
@@ -988,6 +1253,12 @@ def build_handoff(root: Path, manifest: dict[str, Any]) -> tuple[dict[str, Any],
         "project_root": canonical_project_root(manifest.get("project_root")),
         "required_anchor_systems": manifest.get("required_anchor_systems", []),
         "passport": bindings["passport"],
+        "automation_plan": automation_plan,
+        "preliminary_requirements": (
+            plan_graph.get("preliminary_requirements")
+            if plan_graph.get("schema") == PLAN_SCHEMA_VERSION
+            else None
+        ),
         "external_bindings": bindings["external"],
         "approval": manifest["approval"],
         "artifact_hashes": snapshot,
@@ -1023,9 +1294,26 @@ def validate_handoff(
         raise PlanningError("planning handoff fingerprint mismatch")
     if payload.get("content_sha256") != hashlib.sha256(markdown.encode("utf-8")).hexdigest():
         raise PlanningError("planning handoff content hash mismatch")
+    automation_plan = payload.get("automation_plan")
+    if automation_plan is not None:
+        automation_errors = validate_automation_plan(automation_plan)
+        if automation_errors:
+            raise PlanningError("planning handoff automation plan invalid: " + "; ".join(automation_errors))
+    preliminary_requirements = payload.get("preliminary_requirements")
+    if preliminary_requirements is not None:
+        preliminary_errors = validate_preliminary_requirements(
+            preliminary_requirements
+        )
+        if preliminary_errors:
+            raise PlanningError(
+                "planning handoff preliminary requirements invalid: "
+                + "; ".join(preliminary_errors)
+            )
     approval = payload.get("approval")
     if not isinstance(approval, dict) or approval.get("revision") != payload.get("planning_revision"):
         raise PlanningError("planning handoff approval is missing or stale")
+    if approval.get("kind", "user") not in {"user", "coordinator_local_replan"}:
+        raise PlanningError("planning handoff approval kind is invalid")
     required_anchors = payload.get("required_anchor_systems")
     if not isinstance(required_anchors, list) or any(
         not isinstance(system, str) or not system.strip() for system in required_anchors
@@ -1117,8 +1405,31 @@ def validate_case(root: Path, manifest: dict[str, Any], *, final: bool) -> list[
                     require_after_approval=state == "handed_to_vigers",
                 )
             )
-    if state in {"approved", "handed_to_vigers"} and not isinstance(manifest.get("approval"), dict):
-        errors.append("approved planning case has no approval record")
+    if state in {"approved", "handed_to_vigers"}:
+        approval = manifest.get("approval")
+        if not isinstance(approval, dict):
+            errors.append("approved planning case has no approval record")
+        else:
+            approval_kind = approval.get("kind", "user")
+            if approval_kind not in {"user", "coordinator_local_replan"}:
+                errors.append("approved planning case has invalid approval kind")
+            if approval_kind == "coordinator_local_replan":
+                matching_replan = next(
+                    (
+                        item
+                        for item in reversed(manifest.get("replanning", []))
+                        if isinstance(item, dict)
+                        and item.get("to_revision") == manifest.get("revision")
+                    ),
+                    None,
+                )
+                if not isinstance(matching_replan, dict) or (
+                    matching_replan.get("impact") != "local"
+                    or matching_replan.get("approval_required") is not False
+                ):
+                    errors.append(
+                        "coordinator local approval requires a non-critical local replanning revision"
+                    )
     if state == "handed_to_vigers":
         handoff = manifest.get("handoff")
         if not isinstance(handoff, dict):
@@ -1178,7 +1489,13 @@ def render_status(root: Path, manifest: dict[str, Any]) -> None:
         f"- [{'x' if manifest['state'] in {'researched', 'artifacts_planned', 'published_for_review', 'changes_requested', 'approved', 'handed_to_vigers'} else ' '}] source research completed",
         f"- [{'x' if manifest['state'] in {'artifacts_planned', 'published_for_review', 'approved', 'handed_to_vigers'} else ' '}] dependent stages and checklists planned",
         f"- [{'x' if manifest['state'] in {'published_for_review', 'approved', 'handed_to_vigers'} else ' '}] required external drafts created and read back",
-        f"- [{'x' if manifest.get('approval') else ' '}] user review recorded",
+        "- "
+        f"[{'x' if manifest.get('approval') else ' '}] approval recorded"
+        + (
+            f" ({manifest['approval'].get('kind', 'user')})"
+            if isinstance(manifest.get("approval"), dict)
+            else ""
+        ),
         f"- [{'x' if manifest['state'] == 'handed_to_vigers' else ' '}] approved snapshot handed to Vigers",
         "",
         "Machine truth: `planning-manifest.json`; do not edit it manually.",
@@ -1232,11 +1549,28 @@ def build_parser() -> argparse.ArgumentParser:
     bind_parser.add_argument("--action", choices=("create", "update", "link"))
     bind_parser.add_argument("--replace", action="store_true")
 
+    replan_parser = subparsers.add_parser(
+        "replan",
+        help="Interrupt analysis and open a revision from current evidence",
+    )
+    replan_parser.add_argument("--case-root", required=True)
+    replan_parser.add_argument("--reason", required=True)
+    replan_parser.add_argument("--evidence-ref", action="append", required=True)
+    replan_parser.add_argument("--impact", choices=("local", "material"), required=True)
+
     review_parser = subparsers.add_parser("review", help="Record user review")
     review_parser.add_argument("--case-root", required=True)
     review_parser.add_argument("--verdict", choices=("changes_requested", "approved"), required=True)
     review_parser.add_argument("--actor", required=True)
     review_parser.add_argument("--note", required=True)
+
+    local_approval_parser = subparsers.add_parser(
+        "approve-local-replan",
+        help="Accept a non-critical local replanning revision without user review",
+    )
+    local_approval_parser.add_argument("--case-root", required=True)
+    local_approval_parser.add_argument("--actor", default="vigers-coordinator")
+    local_approval_parser.add_argument("--note", required=True)
 
     export_parser = subparsers.add_parser("export", help="Export approved Vigers handoff")
     export_parser.add_argument("--case-root", required=True)
@@ -1298,6 +1632,19 @@ def main() -> int:
             )
             print(f"PASS binding={args.target_id}")
             return 0
+        if args.command == "replan":
+            open_replanning(
+                root,
+                manifest,
+                reason=args.reason,
+                evidence_refs=args.evidence_ref,
+                impact=args.impact,
+            )
+            print(
+                f"PASS state=researching revision={manifest['revision']} "
+                f"origin=full_analysis"
+            )
+            return 0
         if args.command == "review":
             record_review(
                 root,
@@ -1307,6 +1654,15 @@ def main() -> int:
                 note=args.note,
             )
             print(f"PASS verdict={args.verdict} revision={manifest['revision']}")
+            return 0
+        if args.command == "approve-local-replan":
+            approve_local_replanning(
+                root,
+                manifest,
+                actor=args.actor,
+                note=args.note,
+            )
+            print(f"PASS verdict=approved revision={manifest['revision']} kind=local-replan")
             return 0
         if args.command == "export":
             export_handoff(root, manifest, Path(args.write))

@@ -8,15 +8,17 @@
 
 ## Вход
 
-- case manifest;
+- `role-manifest.json`, производный от case manifest без timing-полей;
 - закреплённые `method-context.json` и `method-context.md` с fingerprint из
-  manifest;
+  role manifest;
 - kernel и, в block-mode, карточка целевого блока;
 - проектный профиль;
 - intake/evidence pack;
+- `planning-role-context.json` без ETA/runtime и предварительные `PUS-*`/`PDOD-*`
+  из него, если они есть;
 - существующая постановка при режиме `update` или `review`.
 
-Если одного входа нет или method context не связан с manifest, верни
+Если одного входа нет или method context не связан с role manifest, верни
 `input-error`. Не восстанавливай метод или факт по памяти.
 
 ## Business-context lens
@@ -45,6 +47,22 @@
 6. Построй AC и DoD без смешения поведения продукта и работ поставки.
 7. Оцени архитектурное влияние по гейту, не проектируя решение.
 8. Построй трассировку цель → сценарий → требование → AC.
+9. Для каждого preliminary `PUS-*`/`PDOD-*` зафиксируй disposition
+   `confirmed|changed|split|rejected` и ссылки на итоговые элементы либо причину
+   отклонения. Найденные в полном анализе новые US/DoD добавляй независимо от
+   planning-гипотез.
+10. Как только во время анализа evidence показывает, что approved planning DAG,
+    scope, exit criteria или checklist неверны, останови текущий проход и верни
+    `status: replan` с отдельным `planning_delta`: причина, evidence refs,
+    затронутые `Pxx/Pxx-Cxx`, предлагаемая правка и impact `local|material`.
+    Не заканчивай модель требований на заведомо неверной основе и не исправляй
+    planning snapshot самостоятельно.
+
+`local` допустим только для некритичной коррекции порядка, evidence-step или
+технической детализации, которая не меняет цель, scope, требования/приёмку,
+внешний контракт, архитектуру, риск, обязательства, владельца решения или
+полномочия. Любое такое изменение классифицируй как `material` и передай на
+отдельный user approval.
 
 ## Block-mode
 
@@ -66,7 +84,12 @@
 
 ## Выход
 
-В compact-mode верни модель требований строго по handoff-контракту. В
+Всегда верни общий envelope из handoff-контракта. Поле `status` принимает только
+`ok|replan|gap|input-error`; не используй `complete`, `pass` или произвольный
+синоним. В compact-mode при `status: ok` верни модель требований строго по
+handoff-контракту. При
+`status: replan` верни только доказанный `planning_delta` и границу уже
+проверенного evidence; частичную модель требований не выдавай за завершённую. В
 block-mode верни block artifact и semantic index. В конце укажи:
 
 - `architecture_gate: required | not-required | uncertain`;

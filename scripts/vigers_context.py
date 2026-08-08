@@ -36,6 +36,9 @@ MAX_METHOD_CONTEXT_CHARS = 120_000
 METHOD_CONTEXT_SCHEMA = 1
 METHOD_CONTEXT_JSON = "method-context.json"
 METHOD_CONTEXT_MARKDOWN = "method-context.md"
+OPERATIONAL_REFERENCE_FILES = {
+    "references/automation-timing.md",
+}
 SHORT_TERMS = {
     "api",
     "crud",
@@ -638,7 +641,21 @@ def validate() -> dict[str, int]:
         for path in (ROOT / "references").glob("*.md")
         if path.name != "knowledge-map.md"
     }
-    uncovered = all_reference_files - referenced_files
+    missing_operational = OPERATIONAL_REFERENCE_FILES - all_reference_files
+    if missing_operational:
+        errors.append(
+            "Declared operational reference files are missing: "
+            + ", ".join(sorted(missing_operational))
+        )
+    routed_operational = OPERATIONAL_REFERENCE_FILES & referenced_files
+    if routed_operational:
+        errors.append(
+            "Operational reference files must not be injected through method routes: "
+            + ", ".join(sorted(routed_operational))
+        )
+    uncovered = (
+        all_reference_files - referenced_files - OPERATIONAL_REFERENCE_FILES
+    )
     if uncovered:
         errors.append(
             "Reference files absent from routes: " + ", ".join(sorted(uncovered))
@@ -670,6 +687,7 @@ def validate() -> dict[str, int]:
         "blocks": len(markers),
         "native_ids": len(native),
         "reference_files": len(all_reference_files),
+        "operational_reference_files": len(OPERATIONAL_REFERENCE_FILES),
     }
 
 

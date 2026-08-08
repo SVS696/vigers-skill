@@ -8,7 +8,8 @@ tools: Read, Grep, Glob
 `agents/contracts/system-analyst.md`, `references/prompt-contract.md` и
 `references/handoff-contract.md` относительно его корня и исполни контракт
 в переданном compact- или block-mode. До анализа потребуй закреплённые
-`method-context.json/md` и их связь с manifest; без них верни `input-error`.
-Работай только с переданными profile, kernel, manifest и разрешёнными case artifacts. Не используй историю
+`method-context.json/md` и их связь с `role-manifest.json`; без них верни
+`input-error`. Работай только с переданными profile, kernel, timing-free role
+manifest и разрешёнными case artifacts. Не используй историю
 родительского рассуждения и не изменяй case-state, проект или внешние системы.
-Верни структурированный результат родителю.
+Верни общий envelope со status только `ok|replan|gap|input-error`.

@@ -17,9 +17,12 @@
 ├── method-context.json        # маршрут, состав выжимки, hashes, fingerprint
 ├── method-context.md          # ограниченный методический контекст ролей
 ├── planning-handoff.json      # approved planning revision и fingerprints
-├── planning-handoff.md        # bounded research/plan basis для ролей
+├── planning-handoff.md        # полный approved basis для оркестратора
+├── planning-role-context.json # planning basis без ETA/runtime для ролей
 ├── manifest.json              # режим, kernel revision, gates, event log
+├── role-manifest.json         # bounded manifest ролей без timing-derived полей
 ├── ledger.json                # блоки, DAG, состояния, пути артефактов
+├── automation-timing.json     # прогноз и wall-clock факт approved этапов
 ├── status.md                  # генерируемый человекочитаемый DoD
 ├── kernel.md                  # общие цель, scope, словарь и инварианты
 ├── evidence.md                # источники, факты, gaps и актуальность
@@ -37,8 +40,9 @@
 ```
 
 Machine truth — связка `planning-handoff.json/md`, `mode-decision.json`,
-`method-context.json/md`, `manifest.json` и `ledger.json`. Не редактируй их
-вручную. `status.md` можно в любой момент пересобрать командой `status`.
+`method-context.json/md`, `manifest.json`, `ledger.json` и
+`automation-timing.json`. Не редактируй их вручную. `status.md` можно в любой
+момент пересобрать командой `status`.
 
 ## Решение о режиме
 
@@ -111,6 +115,16 @@ python3 {baseDir}/scripts/case_pipeline.py refresh-kernel \
 python3 {baseDir}/scripts/case_pipeline.py check \
   --case-root "<path>" --final-trace
 
+python3 {baseDir}/scripts/automation_timing.py start \
+  --case-root "<path>" --stage P01
+
+python3 {baseDir}/scripts/automation_timing.py check \
+  --case-root "<path>" --stage P01 --item P01-C01 \
+  --evidence "<evidence-ref>"
+
+python3 {baseDir}/scripts/automation_timing.py stop \
+  --case-root "<path>" --stage P01 --status completed
+
 python3 {baseDir}/scripts/case_pipeline.py validate \
   --case-root "<path>" --final
 ```
@@ -123,6 +137,17 @@ python3 {baseDir}/scripts/case_pipeline.py validate \
 работают с уже полученной моделью требований и своими контрактами.
 В compact-mode вызывай `context` без `--block`; в block-mode `--block Bxx`
 обязателен.
+
+Role context содержит `role-manifest.json` и `planning-role-context.json`, но не
+coordinator manifest, raw planning JSON, automation estimates или runtime
+ledger. ETA остаётся человекочитаемой информацией для plan review и не
+становится скрытым бюджетом роли; role projections инвариантны к самим значениям
+оценок.
+
+Planning stages `Pxx` и semantic blocks `Bxx` — разные DAG. Первый измеряет
+исполнение approved плана, второй управляет смысловой сборкой постановки. Не
+создавай отдельный timing stage для каждого блока, если planning plan этого не
+объявляет. Полный контракт — `{baseDir}/references/automation-timing.md`.
 
 ## Правила хранения
 

@@ -95,15 +95,54 @@ class PlanningCaseTests(unittest.TestCase):
         write_json(
             root / "plan.json",
             {
-                "schema": 1,
+                "schema": planning_case.PLAN_SCHEMA_VERSION,
                 "revision": 1,
+                "automation_estimation": {
+                    "policy": "required",
+                    "metric": "wall_clock",
+                    "unit": "seconds",
+                    "execution_use": "human_information_only",
+                },
+                "preliminary_requirements": {
+                    "status": "preliminary",
+                    "validation_gate": "full_analysis",
+                    "change_policy": "confirm_change_split_or_reject",
+                    "user_stories": [
+                        {
+                            "id": "PUS-001",
+                            "actor": "Operator",
+                            "goal": "receive a verified change",
+                            "benefit": "the intended result can be accepted",
+                            "source_refs": ["SRC-001"],
+                            "confidence": "medium",
+                        }
+                    ],
+                    "definition_of_done": [
+                        {
+                            "id": "PDOD-001",
+                            "criterion": "The result is verified against its sources",
+                            "evidence": "Source-linked review evidence exists",
+                            "source_refs": ["SRC-001"],
+                            "confidence": "medium",
+                        }
+                    ],
+                },
                 "stages": [
                     {
                         "id": "P01",
                         "title": "Research basis",
                         "outcome": "Sources are sufficient for specification work",
                         "depends_on": [],
+                        "external_target_id": "EXT-001" if external else None,
                         "source_refs": ["SRC-001"],
+                        "automation_estimate": {
+                            "optimistic_seconds": 60,
+                            "likely_seconds": 90,
+                            "pessimistic_seconds": 120,
+                            "basis": "heuristic",
+                            "confidence": "low",
+                            "sample_size": 0,
+                        },
                         "exit_criteria": ["Coverage verdict is sufficient"],
                         "checklist": [
                             {"id": "P01-C01", "text": "Verify canonical sources"}
@@ -114,7 +153,16 @@ class PlanningCaseTests(unittest.TestCase):
                         "title": "Vigers specification",
                         "outcome": "Approved planning handoff enters Vigers",
                         "depends_on": ["P01"],
+                        "external_target_id": "EXT-001" if external else None,
                         "source_refs": ["SRC-001"],
+                        "automation_estimate": {
+                            "optimistic_seconds": 120,
+                            "likely_seconds": 180,
+                            "pessimistic_seconds": 300,
+                            "basis": "heuristic",
+                            "confidence": "low",
+                            "sample_size": 0,
+                        },
                         "exit_criteria": ["Planning review is approved"],
                         "checklist": [
                             {"id": "P02-C01", "text": "Run Vigers pipeline"}
@@ -169,6 +217,16 @@ class PlanningCaseTests(unittest.TestCase):
             payload = json.loads((output / planning_case.HANDOFF_JSON).read_text(encoding="utf-8"))
             markdown = (output / planning_case.HANDOFF_MARKDOWN).read_text(encoding="utf-8")
             planning_case.validate_handoff(payload, markdown, expected_profile_id="generic")
+            self.assertEqual(payload["automation_plan"]["policy"], "required")
+            self.assertEqual(len(payload["automation_plan"]["stages"]), 2)
+            self.assertEqual(
+                payload["preliminary_requirements"]["status"],
+                "preliminary",
+            )
+            self.assertEqual(
+                payload["preliminary_requirements"]["user_stories"][0]["id"],
+                "PUS-001",
+            )
             decision = mode_decision.build_mode_decision(
                 task="Approved planning handoff",
                 profile_id="generic",
@@ -201,6 +259,34 @@ class PlanningCaseTests(unittest.TestCase):
             )
             _, spec_manifest, spec_ledger = case_pipeline.load_case(output)
             self.assertEqual(spec_manifest["planning_handoff"]["planning_case_id"], "demo-plan")
+            role_context = json.loads(
+                (output / case_pipeline.PLANNING_ROLE_CONTEXT_JSON).read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(role_context["timing_visibility"], "human_information_only")
+            self.assertNotIn("automation_plan", role_context)
+            role_bundle = case_pipeline.context_bundle(
+                spec_manifest,
+                spec_ledger,
+                block_id=None,
+                role="system-analyst",
+            )
+            self.assertIn(
+                case_pipeline.PLANNING_ROLE_CONTEXT_JSON,
+                role_bundle["case_inputs"],
+            )
+            self.assertIn(case_pipeline.ROLE_MANIFEST_JSON, role_bundle["case_inputs"])
+            self.assertNotIn("manifest.json", role_bundle["case_inputs"])
+            self.assertNotIn(planning_case.HANDOFF_JSON, role_bundle["case_inputs"])
+            self.assertNotIn(planning_case.HANDOFF_MARKDOWN, role_bundle["case_inputs"])
+            self.assertTrue((output / "automation-timing.json").is_file())
+            timing = json.loads((output / "automation-timing.json").read_text(encoding="utf-8"))
+            self.assertEqual(timing["planning"]["case_id"], "demo-plan")
+            self.assertEqual(
+                [stage["status"] for stage in timing["stages"]],
+                ["pending", "pending"],
+            )
             self.assertEqual(
                 case_pipeline.validate_case(output, spec_manifest, spec_ledger, final=False),
                 [],
@@ -208,6 +294,123 @@ class PlanningCaseTests(unittest.TestCase):
             _, final_manifest = planning_case.load_case(root)
             self.assertEqual(final_manifest["state"], "handed_to_vigers")
             self.assertEqual(planning_case.validate_case(root, final_manifest, final=True), [])
+
+    def test_in_analysis_material_replanning_preserves_approved_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = self.init(base)
+            self.complete_research(root)
+            self.complete_plan(root, external=False)
+            self.publish(root)
+            _, manifest = planning_case.load_case(root)
+            planning_case.record_review(
+                root,
+                manifest,
+                verdict="approved",
+                actor="owner",
+                note="Approved revision one",
+            )
+            output = base / "spec"
+            _, manifest = planning_case.load_case(root)
+            planning_case.export_handoff(root, manifest, output)
+
+            _, manifest = planning_case.load_case(root)
+            planning_case.open_replanning(
+                root,
+                manifest,
+                reason="Full analysis found a missing error path",
+                evidence_refs=["analysis:REQ-B01-004"],
+                impact="material",
+            )
+
+            _, revised = planning_case.load_case(root)
+            self.assertEqual(revised["state"], "researching")
+            self.assertEqual(revised["revision"], 2)
+            self.assertIsNone(revised["approval"])
+            self.assertIsNone(revised["handoff"])
+            self.assertIn("1", revised["snapshots"])
+            self.assertEqual(revised["replanning"][0]["from_revision"], 1)
+            self.assertEqual(revised["replanning"][0]["evidence_refs"], ["analysis:REQ-B01-004"])
+            self.assertTrue(revised["replanning"][0]["approval_required"])
+
+    def test_local_replanning_can_continue_without_user_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.complete_research(root)
+            self.complete_plan(root, external=False)
+            self.publish(root)
+            _, manifest = planning_case.load_case(root)
+            planning_case.record_review(
+                root,
+                manifest,
+                verdict="approved",
+                actor="owner",
+                note="Approved revision one",
+            )
+
+            _, manifest = planning_case.load_case(root)
+            planning_case.open_replanning(
+                root,
+                manifest,
+                reason="Analysis needs one extra evidence check",
+                evidence_refs=["analysis:SRC-001#detail"],
+                impact="local",
+            )
+            _, manifest = planning_case.load_case(root)
+            self.assertFalse(manifest["replanning"][-1]["approval_required"])
+            planning_case.transition(root, manifest, new_state="researched", note=None)
+            plan = json.loads((root / "plan.json").read_text(encoding="utf-8"))
+            plan["revision"] = 2
+            plan["stages"][0]["checklist"].append(
+                {"id": "P01-C02", "text": "Confirm the additional evidence"}
+            )
+            write_json(root / "plan.json", plan)
+            _, manifest = planning_case.load_case(root)
+            planning_case.transition(root, manifest, new_state="artifacts_planned", note=None)
+            self.publish(root)
+            _, manifest = planning_case.load_case(root)
+            planning_case.approve_local_replanning(
+                root,
+                manifest,
+                actor="vigers-coordinator",
+                note="Local evidence step only; goal, scope, contracts, and risk are unchanged",
+            )
+
+            _, approved = planning_case.load_case(root)
+            self.assertEqual(approved["state"], "approved")
+            self.assertEqual(approved["approval"]["kind"], "coordinator_local_replan")
+            self.assertEqual(planning_case.validate_case(root, approved, final=False), [])
+
+    def test_material_replanning_cannot_skip_user_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.complete_research(root)
+            self.complete_plan(root, external=False)
+            self.publish(root)
+            _, manifest = planning_case.load_case(root)
+            planning_case.record_review(
+                root,
+                manifest,
+                verdict="approved",
+                actor="owner",
+                note="Approved revision one",
+            )
+            _, manifest = planning_case.load_case(root)
+            planning_case.open_replanning(
+                root,
+                manifest,
+                reason="Analysis changes the external contract",
+                evidence_refs=["analysis:CONTRACT-001"],
+                impact="material",
+            )
+            manifest["state"] = "published_for_review"
+            with self.assertRaises(planning_case.PlanningError):
+                planning_case.approve_local_replanning(
+                    root,
+                    manifest,
+                    actor="vigers-coordinator",
+                    note="Must not bypass the user gate",
+                )
 
     def test_research_is_a_required_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -662,6 +865,64 @@ class PlanningCaseTests(unittest.TestCase):
         }
         errors = planning_case.validate_plan(payload, 1, {"SRC-001"})
         self.assertTrue(any("cycle" in error.lower() for error in errors))
+
+    def test_plan_schema_two_requires_stage_estimate(self) -> None:
+        payload = {
+            "schema": planning_case.TELEMETRY_PLAN_SCHEMA_VERSION,
+            "revision": 1,
+            "automation_estimation": {
+                "policy": "required",
+                "metric": "wall_clock",
+                "unit": "seconds",
+                "execution_use": "human_information_only",
+            },
+            "stages": [
+                {
+                    "id": "P01",
+                    "title": "One",
+                    "outcome": "One",
+                    "depends_on": [],
+                    "source_refs": ["SRC-001"],
+                    "exit_criteria": ["done"],
+                    "checklist": [{"id": "P01-C01", "text": "one"}],
+                }
+            ],
+        }
+        errors = planning_case.validate_plan(payload, 1, {"SRC-001"})
+        self.assertTrue(any("automation_estimate" in error for error in errors))
+
+    def test_plan_schema_three_requires_preliminary_requirements(self) -> None:
+        payload = {
+            "schema": planning_case.PLAN_SCHEMA_VERSION,
+            "revision": 1,
+            "automation_estimation": {
+                "policy": "required",
+                "metric": "wall_clock",
+                "unit": "seconds",
+                "execution_use": "human_information_only",
+            },
+            "stages": [
+                {
+                    "id": "P01",
+                    "title": "One",
+                    "outcome": "One",
+                    "depends_on": [],
+                    "source_refs": ["SRC-001"],
+                    "automation_estimate": {
+                        "optimistic_seconds": 60,
+                        "likely_seconds": 90,
+                        "pessimistic_seconds": 120,
+                        "basis": "heuristic",
+                        "confidence": "low",
+                        "sample_size": 0,
+                    },
+                    "exit_criteria": ["done"],
+                    "checklist": [{"id": "P01-C01", "text": "one"}],
+                }
+            ],
+        }
+        errors = planning_case.validate_plan(payload, 1, {"SRC-001"})
+        self.assertTrue(any("preliminary_requirements" in error for error in errors))
 
 
 if __name__ == "__main__":

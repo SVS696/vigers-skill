@@ -1,7 +1,8 @@
 # Block pipeline постановки
 
 Этот workflow обрабатывает крупную постановку по семантическим контрактам. Его
-машинная истина — закреплённый method context, `manifest.json` и `ledger.json`;
+машинная истина координатора — закреплённый method context, `manifest.json` и
+`ledger.json`; роль получает timing-free `role-manifest.json`;
 `status.md` только человекочитаемое представление.
 
 ## Фаза 1. Инициализация или возобновление
@@ -15,27 +16,53 @@ approved planning handoff либо явно выбранный `--intent review`
    `--cwd`. Несовпадение режима, профиля, маршрута или выжимки — ошибка входа,
    а не повод переписать файлы вручную.
 2. Если case существует, выполни `status`, затем `validate` и продолжай с
-   первого незавершённого блока или гейта.
+   первого незавершённого блока или гейта. Прочитай `automation-timing.json`:
+   running stage продолжается с исходным `started_at`, terminal stage не
+   запускается повторно без новой planning revision.
 3. Не перезапускай готовую роль, пока её результат свеж относительно kernel.
 4. Не размещай runtime case в каноническом каталоге публикации и не коммить его,
    если профиль прямо не требует обратного.
 
-**Выход:** состояние читается без истории чата; известен следующий шаг.
+**Выход:** состояние читается без истории чата; известны следующий шаг и active
+automation stage.
+
+Сквозное правило выполнения: planning stages `Pxx` и semantic blocks `Bxx` —
+разные DAG. Перед фактическим входом в approved `Pxx` запусти
+`automation_timing.py start`; после exit criteria и проверки — `stop --status
+completed`. Не создавай отдельный таймер на каждый `Bxx`, если planning stage не
+делит их явно. При terminal failure используй `failed|blocked|cancelled` с
+причиной. Полный контракт: `{baseDir}/references/automation-timing.md`.
+
+После каждого выполненного `Pxx-Cxx` сразу проверь `done_when`. Внешнюю галку
+сначала обнови через project adapter и прочитай обратно, затем вызови
+`automation_timing.py check`. Пакетное проставление галок в конце этапа
+запрещено; completed stage не может содержать pending обязательный пункт.
 
 ## Фаза 2. Evidence pack и kernel
 
 **Вход:** профиль и источники задачи.
 
 1. Собери evidence по правилам compact pipeline.
-2. Запиши в `kernel.md` только общие для всех блоков факты:
+2. Перенеси preliminary `PUS-*`/`PDOD-*` из planning handoff в evidence как
+   гипотезы для проверки, а не как факты kernel. Назначь каждому затронутые
+   semantic blocks; итоговая интеграция должна дать disposition
+   `confirmed|changed|split|rejected`.
+3. Запиши в `kernel.md` только общие для всех блоков факты:
    цель, scope, словарь, инварианты, подтверждённые решения, ограничения и
    открытые решения.
-3. Не превращай kernel в сокращённую постановку. Детали одного блока остаются
+4. Не превращай kernel в сокращённую постановку. Детали одного блока остаются
    в его артефакте.
-4. После любого изменения kernel выполни `refresh-kernel`. Без `--affects`
+5. После любого изменения kernel выполни `refresh-kernel`. Без `--affects`
    безопасно устаревают все начатые блоки; с `--affects Bxx` — выбранные и их
    транзитивные потребители.
-5. Зафиксируй гейт `evidence` только после проверки источников.
+6. Зафиксируй гейт `evidence` только после проверки источников.
+
+Если любой аналитический block во время прохода возвращает доказанный
+`status: replan` с `planning_delta`, немедленно останови его и не проталкивай как
+kernel edit. Останови active `Pxx` как `blocked` с причиной `replanning required`
+и выполни replanning workflow. Material delta требует повторного user approval;
+local delta проходит coordinator gate. В обоих случаях продолжай в новом
+case-root и свежих block contexts.
 
 **Выход:** свежие `evidence.md` и `kernel.md`, revision зарегистрирован.
 
@@ -191,7 +218,8 @@ approved planning handoff либо явно выбранный `--intent review`
 
 **Вход:** все гейты закрыты.
 
-1. Выполни `case_pipeline.py validate --final`.
+1. Закрой последний active `Pxx`, выполни `automation_timing.py validate --final`,
+   затем `case_pipeline.py validate --final`.
 2. Выдай готовый текст, существенные допущения, решения и остаточный риск.
 3. Публикуй или меняй внешние системы только по явной просьбе и правилам
    профиля; после записи выполни read-back.

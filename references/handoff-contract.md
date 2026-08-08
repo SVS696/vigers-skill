@@ -20,7 +20,9 @@ package и передаёт каждой роли только перечисл�
     "planning_case_id": "stable-planning-id",
     "planning_revision": 2,
     "fingerprint": "...",
-    "content_sha256": "..."
+    "content_sha256": "...",
+    "role_context_path": "planning-role-context.json",
+    "role_context_fingerprint": "..."
   },
   "mode_decision": {"path": "mode-decision.json", "fingerprint": "..."},
   "method_context": {
@@ -30,7 +32,10 @@ package и передаёт каждой роли только перечисл�
     "content_sha256": "..."
   },
   "kernel": {"path": "kernel.md", "revision": 1, "sha256": "..."},
-  "artifacts": {},
+  "artifacts": {
+    "automation_timing": "automation-timing.json",
+    "planning_role_context": "planning-role-context.json"
+  },
   "gates": {},
   "events": []
 }
@@ -44,25 +49,45 @@ package и передаёт каждой роли только перечисл�
 двух файлов ломает валидацию. `manifest.json` не содержит пароли, токены,
 cookies, приватные ключи и дампы БД. В block-mode `ledger.json` хранит DAG и
 состояния блоков; формат и переходы задаёт `case_pipeline.py`.
+`automation-timing.json` хранит отдельный runtime ledger approved planning stages
+и не передаётся ролям как источник требований.
+
+`planning-role-context.json` — производный bounded input для исполнительных
+ролей. Он содержит planning linkage и preliminary requirements, но машинно
+исключает `automation_plan`, ETA и runtime facts. Raw `planning-handoff.json`
+доступен оркестратору для валидации, но не входит в `case_pipeline.py context`.
+Аналогично `role-manifest.json` проецирует только mode/profile/method/kernel,
+семантические paths и gates; coordinator `manifest.json`, timing path, event log
+и fingerprint raw handoff ролям не передаются.
 
 ## Planning handoff
 
 `planning-handoff.json/md` — immutable approved snapshot, а не новый источник
 требований. Он содержит цель и scope planning, research basis/gaps, зависимые
 этапы, passport/external bindings и открытые риски. `case_pipeline.py init`
-проверяет profile, approval revision, fingerprint и content hash.
+проверяет profile, approval revision, fingerprint и content hash. Для plan schema
+2+ handoff также содержит immutable `automation_plan`; init создаёт из него ledger
+и связывает с теми же planning revision и passport. Schema 3 дополнительно
+передаёт `preliminary_requirements` с `PUS-*` и `PDOD-*` как planning-гипотезы.
 
 Системный аналитик использует handoff как bounded intake и всё равно строит
-модель требований. Редактор не превращает checklist в требования автоматически.
-Reviewer проверяет, что итоговая постановка не потеряла approved scope и явно
-объясняет обоснованные отклонения.
+модель требований. Для каждого `PUS-*`/`PDOD-*` он фиксирует disposition
+`confirmed|changed|split|rejected` и итоговую трассировку; полный анализ может
+добавить новые истории и критерии. Редактор не превращает checklist или
+planning-гипотезу в требование автоматически. Reviewer проверяет, что итоговая
+постановка не потеряла approved scope и явно объясняет обоснованные отклонения.
+Как только во время полного анализа требуется изменить сам approved plan,
+аналитик останавливает текущий проход и возвращает `status: replan` с
+`planning_delta`; координатор сразу открывает новую revision, не переписывая
+handoff. Локальная некритичная delta может быть принята координатором, material
+delta требует решения пользователя.
 
 ## Общий envelope результата роли
 
 Каждая роль возвращает один верхнеуровневый envelope:
 
 ```yaml
-status: ok | gap | input-error
+status: ok | replan | gap | input-error
 mode: <assigned-mode>
 target: <assigned-target>
 reason: <required-for-gap-or-input-error>
@@ -77,6 +102,11 @@ mode/target, отсутствующий обязательный файл, stale
 границ assignment. Пустой ответ, refusal и оборванный output не являются `ok`:
 координатор классифицирует их как `input-error` либо `gap` и не сохраняет
 частичный payload как результат роли.
+
+`replan` разрешён только системному аналитику, который во время прохода доказал,
+что approved plan больше нельзя безопасно исполнять. Payload содержит только
+`planning_delta`, evidence refs, impact `local|material` и границу выполненной
+проверки; незавершённая модель требований не принимается как результат.
 
 ## Kernel
 
@@ -127,6 +157,7 @@ revision и делает затронутые результаты stale.
 ## Ошибки и восстановление
 ## Acceptance criteria
 ## Definition of Done
+## Разрешение planning-гипотез PUS/PDOD
 ## Архитектурное влияние
 ## Предположения
 ## Открытые вопросы

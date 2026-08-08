@@ -16,29 +16,46 @@ approved planning handoff либо явно выбранный `--intent review`
    каноническом каталоге проекта. Если decision выбирает `block`, перейди в
    block pipeline.
 3. Если есть частичный прогон, проверь свежесть источников и продолжай с первой
-   незавершённой фазы. Не запускай готовые роли повторно без причины.
+   незавершённой фазы. Одновременно прочитай `automation-timing.json`: running
+   stage продолжается с исходным `started_at`, terminal stage не запускается
+   повторно без новой planning revision. Не запускай готовые роли повторно без
+   причины.
 4. Определи режим: `create`, `update`, `review`, `decompose` или `architecture`.
 
 **Выход:** decision и method context связаны с manifest; `ledger.json`,
-`kernel.md` и следующая фаза определены.
+`automation-timing.json`, `kernel.md` и следующая фаза определены.
+
+Сквозное правило выполнения: перед входом в каждый approved `Pxx` запусти
+`automation_timing.py start`; после его exit criteria и проверки — `stop --status
+completed`. При terminal failure закрой этап `failed|blocked|cancelled` с причиной.
+Не запускай task-manager timer и не переноси эти данные в checklist: точный
+контракт задан в `{baseDir}/references/automation-timing.md`.
+
+После выполнения каждого `Pxx-Cxx` немедленно проверь `done_when`. Для внешнего
+checklist сначала поставь галку через project adapter и выполни read-back, затем
+вызови `automation_timing.py check`. Не откладывай обновление до конца этапа;
+`stop --status completed` не пройдёт при pending обязательном пункте.
 
 ## Фаза 2. Сбор evidence pack
 
-**Вход:** manifest и проектный профиль.
+**Вход:** coordinator manifest у оркестратора, `role-manifest.json` у роли и
+проектный профиль.
 
 1. Прочитай ближайшие проектные инструкции и профиль.
 2. Собери только источники, нужные текущей задаче. Объединяй поисковые паттерны;
    не делай N×M обход файлов.
 3. Для изменчивых фактов используй актуальный read-back канонического источника.
 4. Отдели факты от старых постановок, сообщений, гипотез и примеров.
-5. Не выполняй внешние записи. Недоступность источника фиксируй как gap.
+5. Прочитай preliminary `PUS-*`/`PDOD-*` из planning handoff только как
+   гипотезы: они направляют проверку, но не подменяют evidence.
+6. Не выполняй внешние записи. Недоступность источника фиксируй как gap.
 
 **Выход:** intake/evidence pack достаточен для анализа либо назван один
 блокирующий пробел.
 
 ## Фаза 3. Системный анализ
 
-**Вход:** manifest, профиль, закреплённые `method-context.json/md` и evidence
+**Вход:** `role-manifest.json`, профиль, закреплённые `method-context.json/md` и evidence
 pack.
 
 1. Получи bounded package командой `case_pipeline.py context --role
@@ -50,7 +67,15 @@ pack.
    эффект или владелец решения.
 4. Проверь, что аналитик не выдал предположение за факт и не принял решение за
    бизнес-владельца.
-5. Сохрани возвращённую модель требований в case package.
+5. Проверь disposition каждого planning `PUS-*`/`PDOD-*`; разрешены
+   `confirmed|changed|split|rejected` и новые элементы, найденные полным анализом.
+6. Сохрани возвращённую модель требований в case package.
+
+Если аналитик во время прохода вернул доказанный `status: replan` с
+`planning_delta`, немедленно останови текущий pipeline и перейди в фазу
+replanning из `planning-pipeline.md`. Не сохраняй частичную модель требований и
+не исправляй approved plan внутри текущего case. Отдельный user approval нужен
+для material delta; local delta проходит coordinator gate по строгим критериям.
 
 **Выход:** требования, AC, DoD, пробелы и архитектурное влияние трассируются к
 источникам и цели.
@@ -161,5 +186,7 @@ architecture design note с ограничениями для редактора
 **Выход:** пользователь получил проверенный результат; состояние внешних
 систем описано фактически.
 
-Перед выдачей выполни `case_pipeline.py validate --final`. Гейты, которые
-обоснованно не применимы, должны иметь состояние `not_required`, а не `pending`.
+Перед выдачей закрой последний active `Pxx`, затем выполни
+`automation_timing.py validate --final` и `case_pipeline.py validate --final`.
+Гейты, которые обоснованно не применимы, должны иметь состояние `not_required`,
+а не `pending`.

@@ -12,6 +12,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from automation_timing import (
+    FILENAME as AUTOMATION_TIMING_FILENAME,
+    AutomationTimingError,
+    initialize_ledger as initialize_automation_timing,
+    summarize as summarize_automation_timing,
+    validate_ledger as validate_automation_timing,
+)
 from mode_decision import (
     MODE_DECISION_FILENAME,
     ModeDecisionError,
@@ -34,6 +41,10 @@ from vigers_context import (
 
 SCHEMA_VERSION = 2
 TODO_MARKER = "VIGERS_TODO"
+PLANNING_ROLE_CONTEXT_JSON = "planning-role-context.json"
+PLANNING_ROLE_CONTEXT_SCHEMA = 1
+ROLE_MANIFEST_JSON = "role-manifest.json"
+ROLE_MANIFEST_SCHEMA = 1
 CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BLOCK_ID_RE = re.compile(r"^B[0-9]{2,3}$")
 SEMANTIC_ID_RE = re.compile(
@@ -202,6 +213,86 @@ def event(kind: str, **details: Any) -> dict[str, Any]:
     return {"at": now_utc(), "kind": kind, **details}
 
 
+def planning_role_context(payload: dict[str, Any]) -> dict[str, Any]:
+    """Build the bounded planning input for roles without human ETA fields."""
+    result: dict[str, Any] = {
+        "schema": PLANNING_ROLE_CONTEXT_SCHEMA,
+        "planning_case_id": payload.get("planning_case_id"),
+        "planning_revision": payload.get("planning_revision"),
+        "profile_id": payload.get("profile_id"),
+        "project_root": payload.get("project_root"),
+        "passport": payload.get("passport"),
+        "required_anchor_systems": payload.get("required_anchor_systems", []),
+        "external_bindings": payload.get("external_bindings", []),
+        "preliminary_requirements": payload.get("preliminary_requirements"),
+        "approval": payload.get("approval"),
+        "timing_visibility": "human_information_only",
+        "excluded_fields": ["automation_plan", "automation_estimation", "estimates"],
+    }
+    encoded = json.dumps(
+        result,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    result["fingerprint"] = hashlib.sha256(encoded).hexdigest()
+    return result
+
+
+def role_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Project the coordinator manifest without timing-derived fields."""
+    planning = manifest.get("planning_handoff")
+    planning_context = None
+    if isinstance(planning, dict):
+        planning_context = {
+            "planning_case_id": planning.get("planning_case_id"),
+            "planning_revision": planning.get("planning_revision"),
+            "project_root": planning.get("project_root"),
+            "role_context_path": planning.get("role_context_path"),
+            "role_context_fingerprint": planning.get("role_context_fingerprint"),
+        }
+    artifacts = manifest.get("artifacts", {})
+    allowed_artifacts = (
+        "planning_role_context",
+        "evidence",
+        "decisions",
+        "draft",
+        "integration_review",
+        "global_review",
+        "project_conformance",
+        "architecture_conformance",
+        "consistency_report",
+    )
+    result: dict[str, Any] = {
+        "schema": ROLE_MANIFEST_SCHEMA,
+        "case_id": manifest.get("case_id"),
+        "mode": manifest.get("mode"),
+        "intent": manifest.get("intent"),
+        "profile_id": manifest.get("profile_id"),
+        "route_id": manifest.get("route_id"),
+        "project_root": manifest.get("project_root"),
+        "mode_decision": manifest.get("mode_decision"),
+        "method_context": manifest.get("method_context"),
+        "planning_context": planning_context,
+        "kernel": manifest.get("kernel"),
+        "artifacts": {
+            key: artifacts.get(key)
+            for key in allowed_artifacts
+            if artifacts.get(key) is not None
+        },
+        "gates": manifest.get("gates"),
+        "timing_visibility": "excluded",
+    }
+    encoded = json.dumps(
+        result,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    result["fingerprint"] = hashlib.sha256(encoded).hexdigest()
+    return result
+
+
 def initial_gates(mode: str) -> dict[str, dict[str, Any]]:
     """Create gate state, skipping block-only gates in compact mode."""
     gates = {
@@ -319,6 +410,7 @@ def init_case(
         )
 
     planning_binding: dict[str, str | int] | None = None
+    planning_payload: dict[str, Any] | None = None
     planning_metadata_path = root / PLANNING_HANDOFF_JSON
     planning_content_path = root / PLANNING_HANDOFF_MARKDOWN
     planning_entries_exist = (
@@ -353,6 +445,10 @@ def init_case(
             "fingerprint": planning_payload["fingerprint"],
             "content_sha256": planning_payload["content_sha256"],
         }
+        role_context_payload = planning_role_context(planning_payload)
+        atomic_json(root / PLANNING_ROLE_CONTEXT_JSON, role_context_payload)
+        planning_binding["role_context_path"] = PLANNING_ROLE_CONTEXT_JSON
+        planning_binding["role_context_fingerprint"] = role_context_payload["fingerprint"]
     elif intent != "review" and not allow_unplanned:
         raise CaseError(
             f"Missing {PLANNING_HANDOFF_JSON} and {PLANNING_HANDOFF_MARKDOWN}; "
@@ -404,6 +500,11 @@ def init_case(
             "sha256": sha256(root / "kernel.md"),
         },
         "artifacts": {
+            "automation_timing": AUTOMATION_TIMING_FILENAME,
+            "role_manifest": ROLE_MANIFEST_JSON,
+            "planning_role_context": (
+                PLANNING_ROLE_CONTEXT_JSON if planning_binding is not None else None
+            ),
             "evidence": "evidence.md",
             "decisions": "decisions.md",
             "draft": "draft.md",
@@ -432,8 +533,17 @@ def init_case(
         ],
     }
     ledger = {"schema": SCHEMA_VERSION, "blocks": []}
+    automation_ledger = initialize_automation_timing(
+        case_id=case_id,
+        automation_plan=(planning_payload or {}).get("automation_plan"),
+        planning_case_id=(planning_payload or {}).get("planning_case_id"),
+        planning_revision=(planning_payload or {}).get("planning_revision"),
+        passport=(planning_payload or {}).get("passport"),
+    )
     atomic_json(manifest_path, manifest)
+    atomic_json(root / ROLE_MANIFEST_JSON, role_manifest(manifest))
     atomic_json(root / "ledger.json", ledger)
+    atomic_json(root / AUTOMATION_TIMING_FILENAME, automation_ledger)
     render_status(root, manifest, ledger)
 
 
@@ -453,6 +563,7 @@ def save_case(root: Path, manifest: dict[str, Any], ledger: dict[str, Any]) -> N
     """Persist state and refresh the human-readable dashboard."""
     manifest["updated_at"] = now_utc()
     atomic_json(root / "manifest.json", manifest)
+    atomic_json(root / ROLE_MANIFEST_JSON, role_manifest(manifest))
     atomic_json(root / "ledger.json", ledger)
     render_status(root, manifest, ledger)
 
@@ -928,6 +1039,7 @@ def validate_case(
                     errors.append("manifest method_context content hash mismatch")
             except (OSError, CaseError, RouterError) as exc:
                 errors.append(f"Invalid method context: {exc}")
+    planning_payload: dict[str, Any] | None = None
     planning_binding = manifest.get("planning_handoff")
     if planning_binding is not None:
         if not isinstance(planning_binding, dict):
@@ -954,8 +1066,51 @@ def validate_case(
                     errors.append("manifest planning_handoff fingerprint mismatch")
                 if planning_binding.get("content_sha256") != planning_payload["content_sha256"]:
                     errors.append("manifest planning_handoff content hash mismatch")
+                role_context_path = planning_binding.get("role_context_path")
+                if role_context_path != PLANNING_ROLE_CONTEXT_JSON:
+                    errors.append("manifest planning role-context path is invalid")
+                else:
+                    stored_role_context = read_json(
+                        case_file(root, PLANNING_ROLE_CONTEXT_JSON)
+                    )
+                    expected_role_context = planning_role_context(planning_payload)
+                    if stored_role_context != expected_role_context:
+                        errors.append("planning role-context differs from approved handoff")
+                    if planning_binding.get("role_context_fingerprint") != expected_role_context[
+                        "fingerprint"
+                    ]:
+                        errors.append("manifest planning role-context fingerprint mismatch")
             except (OSError, CaseError, PlanningError) as exc:
                 errors.append(f"Invalid planning handoff: {exc}")
+    timing_relative = manifest.get("artifacts", {}).get("automation_timing")
+    if timing_relative is not None:
+        if not isinstance(timing_relative, str) or timing_relative != AUTOMATION_TIMING_FILENAME:
+            errors.append("manifest automation_timing path is invalid")
+        else:
+            try:
+                timing_payload = read_json(case_file(root, timing_relative))
+                timing_errors = validate_automation_timing(
+                    timing_payload,
+                    final=final,
+                    expected_case_id=manifest.get("case_id"),
+                    expected_plan=(planning_payload or {}).get("automation_plan"),
+                    expected_planning_case_id=(planning_payload or {}).get("planning_case_id"),
+                    expected_planning_revision=(planning_payload or {}).get("planning_revision"),
+                )
+                errors.extend(timing_errors)
+            except (CaseError, AutomationTimingError) as exc:
+                errors.append(f"Invalid automation timing: {exc}")
+    role_manifest_relative = manifest.get("artifacts", {}).get("role_manifest")
+    if role_manifest_relative != ROLE_MANIFEST_JSON:
+        errors.append("manifest role_manifest path is invalid")
+    else:
+        try:
+            stored_role_manifest = read_json(case_file(root, ROLE_MANIFEST_JSON))
+            expected_role_manifest = role_manifest(manifest)
+            if stored_role_manifest != expected_role_manifest:
+                errors.append("role-manifest.json differs from coordinator manifest projection")
+        except CaseError as exc:
+            errors.append(f"Invalid role manifest: {exc}")
     try:
         ensure_acyclic(ledger)
     except CaseError as exc:
@@ -1132,9 +1287,9 @@ def context_bundle(
     role: str,
 ) -> dict[str, Any]:
     """Build a bounded, role-specific list of case inputs."""
-    common = ["manifest.json", "kernel.md", "evidence.md", "decisions.md"]
+    common = [ROLE_MANIFEST_JSON, "kernel.md", "evidence.md", "decisions.md"]
     if manifest.get("planning_handoff") is not None:
-        common[1:1] = [PLANNING_HANDOFF_JSON, PLANNING_HANDOFF_MARKDOWN]
+        common.insert(1, PLANNING_ROLE_CONTEXT_JSON)
     if manifest.get("mode_decision") is not None:
         common.insert(1, MODE_DECISION_FILENAME)
     method_inputs: list[str] = []
@@ -1243,6 +1398,31 @@ def render_status(root: Path, manifest: dict[str, Any], ledger: dict[str, Any]) 
         checked = "x" if gate["status"] in {"pass", "not_required"} else " "
         suffix = f" — {gate['note']}" if gate.get("note") else ""
         lines.append(f"- [{checked}] `{name}`: {gate['status']}{suffix}")
+    timing_relative = manifest.get("artifacts", {}).get("automation_timing")
+    if isinstance(timing_relative, str):
+        lines.extend(["", "## Automation timing", ""])
+        try:
+            timing = read_json(case_file(root, timing_relative))
+            timing_summary = summarize_automation_timing(timing)
+            forecast = timing_summary["forecast"]
+            actual = timing_summary["actual"]
+            lines.extend(
+                [
+                    f"- policy: `{timing_summary['policy']}`",
+                    "- critical-path forecast: "
+                    f"`{forecast['optimistic_critical_path_seconds']} / "
+                    f"{forecast['likely_critical_path_seconds']} / "
+                    f"{forecast['pessimistic_critical_path_seconds']}` seconds",
+                    f"- actual elapsed: `{actual['elapsed_seconds']}` seconds",
+                    "- terminal stages: "
+                    f"`{timing_summary['terminal_stage_count']}/{timing_summary['stage_count']}`",
+                    "- checklist completed: "
+                    f"`{timing_summary['completed_checklist_item_count']}/"
+                    f"{timing_summary['checklist_item_count']}`",
+                ]
+            )
+        except (CaseError, AutomationTimingError):
+            lines.append("- timing ledger is invalid; run `automation_timing.py validate`")
     lines.extend(
         [
             "",

@@ -82,18 +82,30 @@ python3 {baseDir}/scripts/planning_case.py context --case-root "<planning-root>"
 **Вход:** state `researched`.
 
 1. Передай planner режим `plan` в новом контексте.
-2. Построй `plan.json` как DAG этапов с outcome, `depends_on`, exit criteria,
-   source refs и checklist. Не копируй структуру будущей постановки механически.
-3. Сформируй `plan.md`, `artifact-plan.json` и `handoff.md`.
-4. Сохрани уже связанные `before_research` targets; не создавай их повторно.
-5. Для checklist примени правила `{baseDir}/references/planning-contract.md`:
+2. Построй `plan.json` schema 3 как DAG этапов с outcome, `depends_on`, exit
+   criteria, source refs и checklist. Для каждого этапа добавь трёхточечный
+   `automation_estimate` по `{baseDir}/references/automation-timing.md`. Общий
+   автоматизированный срок считай по critical path, а не суммой параллельных
+   этапов. Обязательно задай `execution_use: human_information_only`: цифры
+   показываются человеку, не входят в ролевой context и не управляют темпом,
+   порядком, scope, остановкой, покрытием или проверками модели. Не копируй
+   структуру будущей постановки
+   механически.
+3. Выяви предварительные `PUS-*` и `PDOD-*` по research basis. Добавь их в
+   `preliminary_requirements` со статусом `preliminary`, source refs, confidence
+   и обязательным `validation_gate: full_analysis`. Не считай planning approval
+   утверждением US/DoD: полный анализ может подтвердить, изменить, разделить,
+   отклонить или дополнить их.
+4. Сформируй `plan.md`, `artifact-plan.json` и `handoff.md`.
+5. Сохрани уже связанные `before_research` targets; не создавай их повторно.
+6. Для checklist примени правила `{baseDir}/references/planning-contract.md`:
    содержательный title, optional details/done_when в task note и subtask только
    при самостоятельном результате/dependency/owner.
-6. Выполни проходы `copywriting` (только ясность) → `simplicity-spec` →
-   `humanizer`. Не вызывай отдельного агента для каждого пункта; обрабатывай
-   checklist целиком. Подробный пункт допустим, если сокращение теряет условие
-   или критерий готовности.
-7. Переведи case в `artifacts_planned`.
+7. Проверь ясность формулировок, затем выполни `simplicity-spec` → `humanizer`
+   без пользовательского voice profile. Не вызывай отдельного агента для
+   каждого пункта; обрабатывай checklist целиком. Подробный пункт допустим, если
+   сокращение теряет условие или критерий готовности.
+8. Переведи case в `artifacts_planned`.
 
 **Выход:** план минимален, зависим, основан на источниках и готов к проектной
 публикации.
@@ -161,14 +173,63 @@ python3 {baseDir}/scripts/planning_case.py export \
 3. Материализуй `mode-decision.json` и `method-context.json/md` в тот же root.
 4. Запусти `case_pipeline.py init` с точными `--intent`, `--cwd`, profile и
    `--route-id "<route_id>"`, без `--allow-unplanned`. Он проверит planning
-   approval, project root и fingerprints.
-5. Продолжи compact/block workflow. Planning handoff входит в bounded role
-   context, но не заменяет requirement analysis.
+   approval, project root и fingerprints, затем создаст связанный
+   `automation-timing.json`.
+5. Продолжи compact/block workflow. Planning basis входит в bounded role context
+   через `planning-role-context.json` без ETA; raw automation plan остаётся
+   только у оркестратора и не заменяет requirement analysis.
 
 **Выход:** planning-case имеет state `handed_to_vigers`; полноценный Vigers case
 создан только из approved snapshot.
 
-## Фаза 8. Проверка
+Обычные пункты approved plan выполняй без повторного согласования каждого
+`Pxx-Cxx`. Немедленная отметка completion, evidence и внешний read-back — это
+фиксация факта исполнения, а не новый approval gate.
+
+## Фаза 8. Replanning во время полного анализа
+
+**Вход:** системный аналитик остановил текущий проход и вернул доказанный
+`status: replan` с `planning_delta`.
+
+1. Реагируй сразу: не дожидайся окончания полного анализа, не сохраняй его
+   частичный результат как модель требований и не продолжай заведомо неверный
+   DAG.
+2. Закрой active runtime stage как `blocked` с причиной `replanning required`.
+3. Открой новую revision:
+
+```text
+python3 {baseDir}/scripts/planning_case.py replan \
+  --case-root "<planning-root>" --impact "local|material" \
+  --reason "<why plan must change>" --evidence-ref "<analysis-ref>"
+```
+
+4. Выполни только необходимый research/plan delta. Старые snapshots, approval,
+   handoff и runtime ledger не удаляй.
+5. Синхронизируй изменённый внешний checklist. Уже выполненные неизменившиеся
+   пункты сохраняют stable ID и галку; удалённые/заменённые явно пометь в delta.
+   Каждую запись прочитай обратно.
+6. Для `local` delta проверь, что не изменились цель, scope,
+   требования/приёмка, внешний контракт, архитектура, риск, обязательства,
+   владелец решения и полномочия. После публикации revision зафиксируй её без
+   отдельного user review:
+
+```text
+python3 {baseDir}/scripts/planning_case.py approve-local-replan \
+  --case-root "<planning-root>" \
+  --note "<why this delta is non-critical>"
+```
+
+7. Для `material` delta снова покажи revision пользователю и получи явный
+   approval. Если классификация сомнительна, считай delta material.
+8. Экспортируй новый handoff в новый Vigers case-root. Переноси completion только
+   после повторной проверки evidence и внешнего checked state.
+9. Возобнови прерванный полный анализ в свежем контексте на новой revision; не
+   продолжай прежний частичный role output.
+
+**Выход:** анализ возобновлён по новой принятой revision без потери истории и
+выполненного прогресса; user review выполнен только для критичной delta.
+
+## Фаза 9. Проверка
 
 **Вход:** Vigers case и все bindings созданы.
 
@@ -177,9 +238,11 @@ python3 {baseDir}/scripts/planning_case.py export \
 ```text
 python3 {baseDir}/scripts/planning_case.py validate --case-root "<planning-root>" --final
 python3 {baseDir}/scripts/case_pipeline.py validate --case-root "<vigers-case-root>"
+python3 {baseDir}/scripts/automation_timing.py validate --case-root "<vigers-case-root>"
 ```
 
 2. Проверь, что passport один, external IDs прочитаны обратно, profile совпадает,
-   source refs разрешаются, а approval относится к экспортированному revision.
+   source refs разрешаются, approval относится к экспортированному revision, а
+   timing ledger содержит тот же plan fingerprint и passport linkage.
 
 **Выход:** planning и Vigers packages согласованы и возобновляемы.

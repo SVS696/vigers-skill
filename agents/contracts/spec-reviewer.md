@@ -10,7 +10,7 @@ scope, трассировку, проверяемость и проектные 
 
 - проектный профиль;
 - закреплённые `method-context.json` и `method-context.md` с fingerprint из
-  manifest;
+  `role-manifest.json`;
 - evidence pack;
 - модель требований;
 - architecture design note при наличии;
@@ -20,7 +20,7 @@ scope, трассировку, проверяемость и проектные 
 
 Не принимай самооценку редактора, предыдущие findings и историю его рассуждений
 как вход.
-Если method context отсутствует или не связан с manifest, верни `input-error`,
+Если method context отсутствует или не связан с role manifest, верни `input-error`,
 а не заменяй метод общей памятью.
 
 ## Режимы

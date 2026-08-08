@@ -32,6 +32,19 @@ Research включает поиск по применимым источник�
 комментарий создаёт новую immutable revision. Полноценный Vigers case принимает
 только approved `planning-handoff.json/md`.
 
+План хранит трёхточечную оценку wall-clock времени только для информации
+человека. После approval оркестратор ведёт `automation-timing.json`: фиксирует
+фактическое время, `evidence` и немедленную отметку каждого `Pxx-Cxx`. Для внешней
+галки обязателен read-back с `checked=true`. ETA не попадает в контекст роли и не
+управляет её темпом, областью работ или проверками.
+
+Если во время полного анализа обнаружена ошибка в принятом плане, аналитик
+сразу возвращает `status: replan`. Некритичную коррекцию принимает координатор;
+изменение цели, области работ, требований, приёмки, внешнего контракта, архитектуры,
+существенного риска, обязательств или полномочий требует повторного согласования
+пользователя.
+Неизменившиеся пункты принятого плана поштучно не согласовываются.
+
 `compact` обслуживает один связный смысловой контур. `block` делит крупную
 постановку на 3–8 семантических contracts с явным DAG, стабильными IDs и
 сохраняемым состоянием:
@@ -143,7 +156,7 @@ workflows, проектные overlays и отсутствие приватны�
 ├── agents/{contracts,codex,claude}
 ├── profiles
 ├── references
-├── scripts/{vigers_context,spec_pipeline,mode_decision,planning_case,case_pipeline}.py
+├── scripts/{vigers_context,spec_pipeline,mode_decision,planning_case,case_pipeline,automation_timing}.py
 └── workflows/{planning-pipeline,specification-pipeline,block-pipeline}.md
 ```
 

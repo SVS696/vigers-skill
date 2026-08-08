@@ -35,7 +35,17 @@ description: "Оркестрирует предварительное иссле
 8. **Планирование начинается с исследования.** Декомпозиция без проверки
    проектных источников создаёт ложную определённость. Planning-case сначала
    фиксирует search coverage, противоречия и gaps, затем строит зависимые этапы,
-   внешние draft-артефакты и обязательный user-review gate.
+   внешние draft-артефакты и один user-review gate для первоначального plan
+   snapshot. Отдельные пункты принятого плана повторно не согласуются.
+9. **Прогноз нужен человеку, а не модели.** Planning-case хранит трёхточечный
+   wall-clock прогноз по этапам, а Vigers case — отдельный runtime ledger,
+   связанный с planning revision и passport. ETA не передаётся исполнительным
+   ролям и не влияет на глубину, порядок, качество, scope, остановку или
+   контекстный бюджет модели.
+10. **Прогресс отмечается по факту, а не в финальном recap.** После выполнения
+    каждого checklist item координатор сразу обновляет его во внешней системе,
+    читает состояние обратно и фиксирует evidence в runtime ledger. Этап нельзя
+    завершить при незакрытом обязательном пункте.
 
 ## Когда применять
 
@@ -92,7 +102,13 @@ description: "Оркестрирует предварительное иссле
 3. Пройди `researching → researched`: выполни read-only поиск по применимым
    источникам profile, зафиксируй запросы, freshness, противоречия и coverage.
 4. Построй зависимые этапы и checklists, подготовь разрешённые до review external
-   artifacts через project adapters и прочитай записи обратно.
+   artifacts через project adapters и прочитай записи обратно. Для каждого этапа
+   добавь automation estimate по `{baseDir}/references/automation-timing.md`.
+   Оценка — только предварительный baseline для последующей калибровки; агентам
+   запрещено учитывать её как runtime-бюджет, дедлайн или основание сокращать
+   покрытие и проверки. Дополнительно выяви preliminary `PUS-*` и `PDOD-*` со
+   ссылками на источники; они обязательны для проверки полным анализом, но не
+   являются утверждёнными требованиями или финальным DoD.
 5. Покажи пользователю plan, coverage/gaps и bindings. До явного approval не
    запускай полноценный Vigers case.
 6. После approval создай или свяжи объявленные profile post-approval artifacts,
@@ -247,8 +263,18 @@ specification workflow и выполни его:
 - `block` → `{baseDir}/workflows/block-pipeline.md`.
 
 Оба workflow задают входы, выходы, условные гейты, цикл исправлений и
-возобновление. Block-mode дополнительно следует
+возобновление. Выполнение approved этапов ведёт `automation-timing.json` по
+`{baseDir}/references/automation-timing.md`. Block-mode дополнительно следует
 `{baseDir}/references/case-state.md` и `{baseDir}/references/block-contract.md`.
+Как только во время полного анализа доказано, что approved plan неполон или
+неверен, останови текущий проход и не проталкивай старый DAG. Открой новую
+planning revision командой `replan`, сохрани старый snapshot и выполненные
+пункты, затем синхронизируй delta с read-back. Локальная некритичная коррекция
+может быть принята координатором без отдельного user review; критичная требует
+approval пользователя до продолжения изменённого scope.
+Внутри уже принятого плана выполняй обычные `Pxx-Cxx` без отдельного
+согласования каждого пункта: completion evidence и внешняя галка подтверждают
+выполнение, а не запрашивают новое решение пользователя.
 
 ## Быстрые режимы
 
@@ -278,9 +304,25 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 
 - Выбран ровно один ближайший project overlay либо generic и один маршрут метода.
 - Planning research покрывает применимые project sources либо честно фиксирует
-  partial/blocked coverage; план и checklists ссылаются на `SRC-NNN`.
+  partial/blocked coverage; план, checklists, preliminary US и preliminary DoD
+  ссылаются на `SRC-NNN`.
 - Полноценный non-review Vigers case связан с approved planning handoff; старые
   revisions, user comments и external read-back bindings не потеряны.
+- Для каждого нового planned stage есть трёхточечный automation estimate, а
+  runtime ledger связан с точными planning revision и passport; перед финалом
+  нет running или pending этапов required plan. Estimate имеет
+  `execution_use: human_information_only` и не влияет на runtime-решения.
+- Ролевой context содержит `planning-role-context.json`, но не automation plan,
+  ETA или runtime ledger.
+- Каждый выполненный обязательный checklist item немедленно имеет completion
+  evidence; внешняя галка подтверждена read-back, а completed stage не содержит
+  pending items.
+- Replanning срабатывает немедленно во время полного анализа: текущий проход
+  останавливается, новая revision/delta хранит причину и evidence, а старый
+  approved snapshot и уже выполненные пункты не исчезают. Отдельный user
+  approval требуется только для критичной коррекции.
+- Пункты принятого плана не требуют поштучного user approval; новый decision
+  gate появляется только при material delta или иной явно критичной развилке.
 - Методический маршрут материализован и привязан к case; аналитик и reviewer
   получают его автоматически, а редактор не получает книжный корпус.
 - Аналитик отделил факты, решения, предположения и открытые вопросы.
@@ -301,6 +343,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 |---|---|
 | `{baseDir}/references/requirements-method.md` | Канонический метод Вигерса |
 | `{baseDir}/references/planning-contract.md` | Research, plan DAG, passport, external drafts и approval contract |
+| `{baseDir}/references/automation-timing.md` | Прогноз, wall-clock ledger, команды и агрегация истории |
 | `{baseDir}/references/handoff-contract.md` | Контракт case package и результатов ролей |
 | `{baseDir}/references/prompt-contract.md` | Сборка ограниченного prompt для независимой роли |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
@@ -315,5 +358,6 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/scripts/spec_pipeline.py` | Детектирование и валидация профилей |
 | `{baseDir}/scripts/case_pipeline.py` | Детерминированный оркестратор case-state |
 | `{baseDir}/scripts/planning_case.py` | Planning state, revisions, external bindings и approved handoff |
+| `{baseDir}/scripts/automation_timing.py` | Stage start/stop, validation, summary и aggregation |
 | `{baseDir}/scripts/vigers_context.py` | Маршрутизация методического контекста |
 | `{baseDir}/scripts/install.py` | Безопасное подключение скилла и агентов к рантаймам |

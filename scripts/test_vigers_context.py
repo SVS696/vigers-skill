@@ -29,6 +29,7 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(counts["routes"], 23)
         self.assertEqual(counts["blocks"], 21)
         self.assertEqual(counts["native_ids"], 70)
+        self.assertEqual(counts["operational_reference_files"], 1)
 
     def test_representative_routing(self) -> None:
         cases = {

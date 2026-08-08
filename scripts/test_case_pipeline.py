@@ -34,6 +34,85 @@ def add_definition(root: Path, block_id: str, semantic_id: str, kind: str) -> No
 
 
 class CasePipelineTests(unittest.TestCase):
+    def test_role_context_is_invariant_to_human_timing_estimates(self) -> None:
+        common: dict[str, object] = {
+            "planning_case_id": "demo-plan",
+            "planning_revision": 2,
+            "profile_id": "generic",
+            "project_root": None,
+            "passport": None,
+            "required_anchor_systems": [],
+            "external_bindings": [],
+            "preliminary_requirements": None,
+            "approval": {"revision": 2, "kind": "user"},
+        }
+        short_estimate = {
+            **common,
+            "automation_plan": {"stages": [{"estimate": {"likely_seconds": 60}}]},
+            "fingerprint": "fingerprint-derived-from-short-estimate",
+        }
+        long_estimate = {
+            **common,
+            "automation_plan": {"stages": [{"estimate": {"likely_seconds": 36000}}]},
+            "fingerprint": "fingerprint-derived-from-long-estimate",
+        }
+
+        self.assertEqual(
+            case_pipeline.planning_role_context(short_estimate),
+            case_pipeline.planning_role_context(long_estimate),
+        )
+        self.assertNotIn(
+            "source_handoff_fingerprint",
+            case_pipeline.planning_role_context(short_estimate),
+        )
+
+        manifest_common: dict[str, object] = {
+            "case_id": "demo",
+            "mode": "compact",
+            "intent": "create",
+            "profile_id": "generic",
+            "route_id": "core",
+            "project_root": None,
+            "mode_decision": None,
+            "method_context": None,
+            "kernel": {"path": "kernel.md", "revision": 1, "sha256": "kernel"},
+            "artifacts": {
+                "automation_timing": "automation-timing.json",
+                "planning_role_context": "planning-role-context.json",
+                "evidence": "evidence.md",
+            },
+            "gates": {},
+        }
+        manifest_short = {
+            **manifest_common,
+            "planning_handoff": {
+                "fingerprint": "derived-from-short-estimate",
+                "planning_case_id": "demo-plan",
+                "planning_revision": 2,
+                "project_root": None,
+                "role_context_path": "planning-role-context.json",
+                "role_context_fingerprint": "timing-invariant-role-context",
+            },
+        }
+        manifest_long = {
+            **manifest_common,
+            "planning_handoff": {
+                "fingerprint": "derived-from-long-estimate",
+                "planning_case_id": "demo-plan",
+                "planning_revision": 2,
+                "project_root": None,
+                "role_context_path": "planning-role-context.json",
+                "role_context_fingerprint": "timing-invariant-role-context",
+            },
+        }
+        self.assertEqual(
+            case_pipeline.role_manifest(manifest_short),
+            case_pipeline.role_manifest(manifest_long),
+        )
+        projected = case_pipeline.role_manifest(manifest_short)
+        self.assertNotIn("automation_timing", projected["artifacts"])
+        self.assertNotIn("fingerprint", projected["planning_context"])
+
     def write_mode_decision(
         self,
         root: Path,
