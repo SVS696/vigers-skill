@@ -23,7 +23,7 @@ ESTIMATE_BASES = {"historical", "analogous", "heuristic"}
 CONFIDENCE_LEVELS = {"low", "medium", "high"}
 TERMINAL_STATUSES = {"completed", "failed", "blocked", "cancelled"}
 STAGE_STATUSES = {"pending", "running", *TERMINAL_STATUSES}
-CHECKLIST_STATUSES = {"pending", "completed"}
+CHECKLIST_STATUSES = {"pending", "in_progress", "completed"}
 
 
 class AutomationTimingError(RuntimeError):
@@ -340,6 +340,8 @@ def initialize_ledger(
                         "required": item["required"],
                         "done_when": item.get("done_when"),
                         "status": "pending",
+                        "started_at": None,
+                        "parallel_reason": None,
                         "completed_at": None,
                         "evidence_refs": [],
                         "external_read_back": None,
@@ -473,6 +475,8 @@ def validate_ledger(
             if item_status not in CHECKLIST_STATUSES:
                 errors.append(f"{item_id}: invalid checklist status {item_status!r}")
                 continue
+            item_started_at = item.get("started_at")
+            parallel_reason = item.get("parallel_reason")
             completed_at = item.get("completed_at")
             evidence_refs = item.get("evidence_refs")
             external_read_back = item.get("external_read_back")
@@ -482,9 +486,37 @@ def validate_ledger(
                 errors.append(f"{item_id}: evidence_refs must be a string array")
                 evidence_refs = []
             if item_status == "pending":
+                if (
+                    item_started_at is not None
+                    or parallel_reason is not None
+                    or completed_at is not None
+                    or evidence_refs
+                    or external_read_back is not None
+                ):
+                    errors.append(f"{item_id}: pending checklist item cannot have runtime facts")
+            elif item_status == "in_progress":
+                try:
+                    parse_timestamp(item_started_at, field=f"{item_id}.started_at")
+                except AutomationTimingError as exc:
+                    errors.append(str(exc))
+                if parallel_reason is not None and (
+                    not isinstance(parallel_reason, str) or not parallel_reason.strip()
+                ):
+                    errors.append(f"{item_id}: parallel_reason must be non-empty text or null")
                 if completed_at is not None or evidence_refs or external_read_back is not None:
-                    errors.append(f"{item_id}: pending checklist item cannot have completion facts")
+                    errors.append(
+                        f"{item_id}: in-progress checklist item cannot have completion facts"
+                    )
             else:
+                if item_started_at is not None:
+                    try:
+                        parse_timestamp(item_started_at, field=f"{item_id}.started_at")
+                    except AutomationTimingError as exc:
+                        errors.append(str(exc))
+                if parallel_reason is not None and (
+                    not isinstance(parallel_reason, str) or not parallel_reason.strip()
+                ):
+                    errors.append(f"{item_id}: parallel_reason must be non-empty text or null")
                 try:
                     parse_timestamp(completed_at, field=f"{item_id}.completed_at")
                 except AutomationTimingError as exc:
@@ -545,8 +577,13 @@ def validate_ledger(
                     str(item.get("id"))
                     for item in checklist
                     if isinstance(item, dict)
-                    and item.get("required") is True
-                    and item.get("status") != "completed"
+                    and (
+                        (
+                            item.get("required") is True
+                            and item.get("status") != "completed"
+                        )
+                        or item.get("status") == "in_progress"
+                    )
                 ]
                 if incomplete_items:
                     errors.append(
@@ -607,6 +644,68 @@ def find_checklist_item(stage: dict[str, Any], item_id: str) -> dict[str, Any]:
         if isinstance(item, dict) and item.get("id") == item_id:
             return item
     raise AutomationTimingError(f"Unknown checklist item {item_id} in {stage.get('id')}")
+
+
+def begin_checklist_item(
+    ledger: dict[str, Any],
+    stage_id: str,
+    item_id: str,
+    *,
+    parallel_reason: str | None = None,
+    at: str | None = None,
+) -> bool:
+    """Claim any pending item before work, with explicit concurrent-work evidence."""
+    errors = validate_ledger(ledger)
+    if errors:
+        raise AutomationTimingError("; ".join(errors))
+    stage = find_stage(ledger, stage_id)
+    if stage["status"] != "running":
+        raise AutomationTimingError(
+            f"Stage {stage_id} is {stage['status']}, checklist work requires running"
+        )
+    item = find_checklist_item(stage, item_id)
+    if item["status"] == "completed":
+        raise AutomationTimingError(f"Checklist item {item_id} is already completed")
+    if item["status"] == "in_progress":
+        return False
+
+    active = [
+        str(candidate.get("id"))
+        for candidate in stage.get("checklist", [])
+        if isinstance(candidate, dict) and candidate.get("status") == "in_progress"
+    ]
+    if parallel_reason is not None and (
+        not isinstance(parallel_reason, str) or not parallel_reason.strip()
+    ):
+        raise AutomationTimingError("parallel_reason must be non-empty text or null")
+    normalized_parallel_reason = parallel_reason.strip() if parallel_reason else None
+    if active and normalized_parallel_reason is None:
+        raise AutomationTimingError(
+            f"Stage {stage_id} already has in-progress checklist items: {', '.join(active)}; "
+            "complete their synchronization or provide --parallel-reason for genuinely "
+            "concurrent independent work"
+        )
+    if not active and normalized_parallel_reason is not None:
+        raise AutomationTimingError(
+            "parallel_reason requires another checklist item already in progress"
+        )
+
+    timestamp = normalized_timestamp(at)
+    item.update(
+        status="in_progress",
+        started_at=timestamp,
+        parallel_reason=normalized_parallel_reason,
+    )
+    ledger["events"].append(
+        {
+            "at": timestamp,
+            "kind": "checklist_started",
+            "stage_id": stage_id,
+            "item_id": item_id,
+            "parallel_reason": normalized_parallel_reason,
+        }
+    )
+    return True
 
 
 def complete_checklist_item(
@@ -678,6 +777,11 @@ def complete_checklist_item(
         raise AutomationTimingError(
             f"Checklist item {item_id} is already completed with different evidence"
         )
+    if item["status"] != "in_progress":
+        raise AutomationTimingError(
+            f"Checklist item {item_id} is {item['status']}; begin it before work and "
+            "synchronize it immediately after done_when is satisfied"
+        )
     item.update(status="completed", **desired)
     ledger["events"].append(
         {
@@ -736,7 +840,10 @@ def stop_stage(
         incomplete = [
             item["id"]
             for item in stage.get("checklist", [])
-            if item.get("required") is True and item.get("status") != "completed"
+            if (
+                item.get("required") is True and item.get("status") != "completed"
+            )
+            or item.get("status") == "in_progress"
         ]
         if incomplete:
             raise AutomationTimingError(
@@ -838,6 +945,9 @@ def summarize(ledger: dict[str, Any]) -> dict[str, Any]:
         "completed_checklist_item_count": sum(
             1 for item in checklist if item.get("status") == "completed"
         ),
+        "in_progress_checklist_item_count": sum(
+            1 for item in checklist if item.get("status") == "in_progress"
+        ),
         "complete": len(terminal) == len(stages),
     }
 
@@ -860,6 +970,7 @@ def render_summary(summary: dict[str, Any]) -> str:
         f"- stages terminal: `{summary['terminal_stage_count']}/{summary['stage_count']}`",
         "- checklist completed: "
         f"`{summary['completed_checklist_item_count']}/{summary['checklist_item_count']}`",
+        f"- checklist in progress: `{summary['in_progress_checklist_item_count']}`",
         f"- likely estimate ratio: `{actual['likely_estimate_ratio']}`",
     ]
     return "\n".join(lines) + "\n"
@@ -928,6 +1039,19 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser.add_argument("--stage", required=True)
     start_parser.add_argument("--at")
 
+    begin_parser = subparsers.add_parser(
+        "begin",
+        help="Claim any checklist item before starting its work",
+    )
+    begin_parser.add_argument("--case-root", required=True)
+    begin_parser.add_argument("--stage", required=True)
+    begin_parser.add_argument("--item", required=True)
+    begin_parser.add_argument(
+        "--parallel-reason",
+        help="Why another item may remain in progress concurrently",
+    )
+    begin_parser.add_argument("--at")
+
     stop_parser = subparsers.add_parser("stop", help="Stop one running stage")
     stop_parser.add_argument("--case-root", required=True)
     stop_parser.add_argument("--stage", required=True)
@@ -965,12 +1089,29 @@ def main() -> int:
     """Run CLI."""
     args = build_parser().parse_args()
     try:
-        if args.command in {"start", "check", "stop", "validate", "summary"}:
+        if args.command in {"start", "begin", "check", "stop", "validate", "summary"}:
             path, ledger = load_ledger(Path(args.case_root))
         if args.command == "start":
             start_stage(ledger, args.stage, at=args.at)
             save_ledger(path, ledger)
             print(f"PASS stage={args.stage} status=running")
+            return 0
+        if args.command == "begin":
+            changed = begin_checklist_item(
+                ledger,
+                args.stage,
+                args.item,
+                parallel_reason=args.parallel_reason,
+                at=args.at,
+            )
+            if changed:
+                save_ledger(path, ledger)
+            item = find_checklist_item(find_stage(ledger, args.stage), args.item)
+            print(
+                f"PASS stage={args.stage} item={args.item} status=in_progress "
+                f"text={json.dumps(item['text'], ensure_ascii=False)} "
+                f"done_when={json.dumps(item.get('done_when'), ensure_ascii=False)}"
+            )
             return 0
         if args.command == "check":
             changed = complete_checklist_item(

@@ -31,10 +31,15 @@ completed`. При terminal failure закрой этап `failed|blocked|cancel
 Не запускай task-manager timer и не переноси эти данные в checklist: точный
 контракт задан в `{baseDir}/references/automation-timing.md`.
 
-После выполнения каждого `Pxx-Cxx` немедленно проверь `done_when`. Для внешнего
-checklist сначала поставь галку через project adapter и выполни read-back, затем
-вызови `automation_timing.py check`. Не откладывай обновление до конца этапа;
-`stop --status completed` не пройдёт при pending обязательном пункте.
+Перед содержательной работой вызови `automation_timing.py begin` для выбранного
+`Pxx-Cxx`; выбирать пункты разрешено не по порядку списка. Если другой пункт уже
+`in_progress`, второй `begin` допустим только с честным `--parallel-reason` для
+реально одновременной независимой работы. Как только `done_when` начатого пункта
+выполнен, немедленно останови обычный переход: для внешнего checklist поставь
+галку через project adapter и выполни read-back, затем вызови
+`automation_timing.py check`. До успешного `check` не объявляй пункт или гейт
+закрытым и не запускай следующую последовательную роль. `stop --status completed`
+не пройдёт при pending или `in_progress` обязательном пункте.
 
 ## Фаза 2. Сбор evidence pack
 

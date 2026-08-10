@@ -164,6 +164,9 @@ python3 {baseDir}/scripts/case_pipeline.py check \
 python3 {baseDir}/scripts/automation_timing.py start \
   --case-root "<path>" --stage P01
 
+python3 {baseDir}/scripts/automation_timing.py begin \
+  --case-root "<path>" --stage P01 --item P01-C01
+
 python3 {baseDir}/scripts/automation_timing.py check \
   --case-root "<path>" --stage P01 --item P01-C01 \
   --evidence "<evidence-ref>"

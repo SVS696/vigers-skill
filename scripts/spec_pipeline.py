@@ -56,6 +56,7 @@ REQUIRED_WORKFLOWS = {
 REQUIRED_PROMPT_EVALS = (
     "evals/prompt-cookbook/convergence-closed-coverage.json",
     "evals/prompt-cookbook/early-working-projection.json",
+    "evals/prompt-cookbook/live-checklist-completion-barrier.json",
     "evals/prompt-cookbook/profile-owned-working-projection.json",
 )
 PUBLIC_FORBIDDEN_MARKERS = tuple(
@@ -406,6 +407,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/references/convergence-contract.md",
             "{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json",
             "{baseDir}/evals/prompt-cookbook/early-working-projection.json",
+            "{baseDir}/evals/prompt-cookbook/live-checklist-completion-barrier.json",
             "{baseDir}/evals/prompt-cookbook/profile-owned-working-projection.json",
             "{baseDir}/scripts/spec_pipeline.py",
             "{baseDir}/scripts/case_pipeline.py",

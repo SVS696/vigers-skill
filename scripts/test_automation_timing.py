@@ -93,6 +93,12 @@ class AutomationTimingTests(unittest.TestCase):
             "P01",
             at="2026-08-07T10:00:00+00:00",
         )
+        automation_timing.begin_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            at="2026-08-07T10:00:30+00:00",
+        )
         automation_timing.complete_checklist_item(
             ledger,
             "P01",
@@ -111,6 +117,12 @@ class AutomationTimingTests(unittest.TestCase):
             ledger,
             "P02",
             at="2026-08-07T10:02:00+00:00",
+        )
+        automation_timing.begin_checklist_item(
+            ledger,
+            "P02",
+            "P02-C01",
+            at="2026-08-07T10:02:30+00:00",
         )
         automation_timing.complete_checklist_item(
             ledger,
@@ -157,6 +169,12 @@ class AutomationTimingTests(unittest.TestCase):
             "P01",
             at="2026-08-07T10:00:00+00:00",
         )
+        automation_timing.begin_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            at="2026-08-07T10:00:30+00:00",
+        )
         self.assertTrue(
             automation_timing.complete_checklist_item(
                 ledger,
@@ -191,6 +209,12 @@ class AutomationTimingTests(unittest.TestCase):
             ledger,
             "P01",
             at="2026-08-07T10:00:00+00:00",
+        )
+        automation_timing.begin_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            at="2026-08-07T10:00:30+00:00",
         )
         with self.assertRaises(automation_timing.AutomationTimingError):
             automation_timing.complete_checklist_item(
@@ -235,6 +259,12 @@ class AutomationTimingTests(unittest.TestCase):
             "P01",
             at="2026-08-07T10:00:00+00:00",
         )
+        automation_timing.begin_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            at="2026-08-07T10:00:30+00:00",
+        )
         automation_timing.complete_checklist_item(
             ledger,
             "P01",
@@ -276,6 +306,12 @@ class AutomationTimingTests(unittest.TestCase):
             "P01",
             at="2026-08-07T10:00:00+00:00",
         )
+        automation_timing.begin_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            at="2026-08-07T10:00:30+00:00",
+        )
         automation_timing.complete_checklist_item(
             ledger,
             "P01",
@@ -297,6 +333,201 @@ class AutomationTimingTests(unittest.TestCase):
         self.assertEqual(result["case_count"], 1)
         self.assertEqual(result["cases"][0]["passport"]["id"], "PASS-1")
         self.assertEqual(result["by_stage_title"]["Research"]["sample_size"], 1)
+
+    def test_check_requires_an_explicit_begin(self) -> None:
+        ledger = self.ledger()
+        automation_timing.start_stage(
+            ledger,
+            "P01",
+            at="2026-08-07T10:00:00+00:00",
+        )
+        with self.assertRaisesRegex(
+            automation_timing.AutomationTimingError,
+            "begin it before work",
+        ):
+            automation_timing.complete_checklist_item(
+                ledger,
+                "P01",
+                "P01-C01",
+                evidence_refs=["evidence.md#research"],
+                at="2026-08-07T10:01:00+00:00",
+            )
+
+    def test_any_pending_item_can_begin_out_of_list_order(self) -> None:
+        plan = demo_plan()
+        plan["stages"][0]["checklist"].append(
+            {
+                "id": "P01-C02",
+                "text": "Review evidence",
+                "required": True,
+                "done_when": "Review exists",
+            }
+        )
+        plan["fingerprint"] = automation_timing.canonical_fingerprint(plan)
+        ledger = automation_timing.initialize_ledger(
+            case_id="out-of-order",
+            automation_plan=plan,
+            planning_case_id="demo-plan",
+            planning_revision=3,
+            passport=None,
+            created_at="2026-08-07T10:00:00+00:00",
+        )
+        automation_timing.start_stage(
+            ledger,
+            "P01",
+            at="2026-08-07T10:00:00+00:00",
+        )
+        self.assertTrue(
+            automation_timing.begin_checklist_item(
+                ledger,
+                "P01",
+                "P01-C02",
+                at="2026-08-07T10:00:30+00:00",
+            )
+        )
+        self.assertEqual(ledger["stages"][0]["checklist"][0]["status"], "pending")
+        self.assertEqual(ledger["stages"][0]["checklist"][1]["status"], "in_progress")
+
+    def test_second_active_item_requires_explicit_parallel_reason(self) -> None:
+        plan = demo_plan()
+        plan["stages"][0]["checklist"].append(
+            {
+                "id": "P01-C02",
+                "text": "Review evidence",
+                "required": True,
+                "done_when": "Review exists",
+            }
+        )
+        plan["fingerprint"] = automation_timing.canonical_fingerprint(plan)
+        ledger = automation_timing.initialize_ledger(
+            case_id="parallel-items",
+            automation_plan=plan,
+            planning_case_id="demo-plan",
+            planning_revision=3,
+            passport=None,
+            created_at="2026-08-07T10:00:00+00:00",
+        )
+        automation_timing.start_stage(
+            ledger,
+            "P01",
+            at="2026-08-07T10:00:00+00:00",
+        )
+        with self.assertRaisesRegex(
+            automation_timing.AutomationTimingError,
+            "requires another checklist item already in progress",
+        ):
+            automation_timing.begin_checklist_item(
+                ledger,
+                "P01",
+                "P01-C01",
+                parallel_reason="Nothing else is actually running",
+                at="2026-08-07T10:00:20+00:00",
+            )
+        automation_timing.begin_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            at="2026-08-07T10:00:30+00:00",
+        )
+        with self.assertRaisesRegex(
+            automation_timing.AutomationTimingError,
+            "already has in-progress checklist items",
+        ):
+            automation_timing.begin_checklist_item(
+                ledger,
+                "P01",
+                "P01-C02",
+                at="2026-08-07T10:00:40+00:00",
+            )
+        self.assertTrue(
+            automation_timing.begin_checklist_item(
+                ledger,
+                "P01",
+                "P01-C02",
+                parallel_reason="Independent reviewer is already running",
+                at="2026-08-07T10:00:40+00:00",
+            )
+        )
+
+    def test_completed_stage_rejects_an_optional_item_still_in_progress(self) -> None:
+        plan = demo_plan()
+        plan["stages"][0]["checklist"].append(
+            {
+                "id": "P01-C02",
+                "text": "Optional comparison",
+                "required": False,
+                "done_when": "Comparison exists",
+            }
+        )
+        plan["fingerprint"] = automation_timing.canonical_fingerprint(plan)
+        ledger = automation_timing.initialize_ledger(
+            case_id="optional-active",
+            automation_plan=plan,
+            planning_case_id="demo-plan",
+            planning_revision=3,
+            passport=None,
+            created_at="2026-08-07T10:00:00+00:00",
+        )
+        automation_timing.start_stage(
+            ledger,
+            "P01",
+            at="2026-08-07T10:00:00+00:00",
+        )
+        automation_timing.begin_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            at="2026-08-07T10:00:10+00:00",
+        )
+        automation_timing.complete_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            evidence_refs=["evidence.md#research"],
+            at="2026-08-07T10:00:20+00:00",
+        )
+        automation_timing.begin_checklist_item(
+            ledger,
+            "P01",
+            "P01-C02",
+            at="2026-08-07T10:00:30+00:00",
+        )
+        with self.assertRaisesRegex(
+            automation_timing.AutomationTimingError,
+            "unfinished checklist items: P01-C02",
+        ):
+            automation_timing.stop_stage(
+                ledger,
+                "P01",
+                status="completed",
+                reason=None,
+                at="2026-08-07T10:01:00+00:00",
+            )
+
+    def test_legacy_completed_item_without_begin_fields_remains_valid(self) -> None:
+        ledger = self.ledger()
+        automation_timing.start_stage(
+            ledger,
+            "P01",
+            at="2026-08-07T10:00:00+00:00",
+        )
+        automation_timing.begin_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            at="2026-08-07T10:00:30+00:00",
+        )
+        automation_timing.complete_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            evidence_refs=["evidence.md#research"],
+            at="2026-08-07T10:01:00+00:00",
+        )
+        item = ledger["stages"][0]["checklist"][0]
+        item.pop("started_at")
+        item.pop("parallel_reason")
+        self.assertEqual(automation_timing.validate_ledger(ledger), [])
 
 
 if __name__ == "__main__":

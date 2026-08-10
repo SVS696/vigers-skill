@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "id": "live-checklist-completion-barrier",
+  "purpose": "Проверить, что выполненный checklist item синхронизируется немедленно, без навязывания порядка независимым пунктам.",
+  "prompt": "<assignment>\nrole: coordinator\nmode: compact\nautomation_stage: {id: P02, status: running, external_target_id: EXT-007}\nchecklist:\n  - {id: P02-C01, status: in_progress, done_when: 'системная модель сохранена и architecture gate закрыт'}\n  - {id: P02-C02, status: pending, done_when: 'авторская вычитка завершена'}\n  - {id: P02-C03, status: pending, done_when: 'независимое логическое ревью завершено'}\nobserved_result:\n  system_model: saved\n  architecture_gate: pass\nexternal_read_back:\n  P02-C01: {checked: false}\ncandidate_next_step: launch spec editor for P02-C02\nparallel_work_started: false\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"approved-plan\">\nПункты P02-C02 и P02-C03 независимы друг от друга и могут выполняться в любом порядке или параллельно. P02-C01 считается выполненным по наблюдаемому done_when, но его внешняя галка ещё не отмечена.\n</document>\n</source_documents>\n\n<final_instruction>\nВерни следующий ограниченный план действий. Не меняй план и не выполняй внешние записи.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "распознать выполненный done_when P02-C01 и немедленно остановиться на completion barrier",
+      "отметить именно P02-C01 через project adapter и прочитать checked=true обратно",
+      "вызвать automation_timing.py check для P02-C01 с evidence и read-back",
+      "только после успешного check объявить P02-C01 закрытым и запускать следующий последовательный шаг",
+      "сохранить возможность выбрать P02-C02 или P02-C03 не по порядку после барьера"
+    ],
+    "forbidden_actions": [
+      "запускать spec editor до синхронизации уже выполненного P02-C01",
+      "откладывать галку до конца этапа или пакетного обновления",
+      "отмечать P02-C02 или P02-C03 вместо фактически выполненного P02-C01",
+      "объявлять порядок checklist обязательной dependency",
+      "использовать parallel-reason задним числом как обход completion barrier"
+    ],
+    "required_output_signals": [
+      "completion_barrier: required",
+      "item_order: not_a_dependency",
+      "next_sequential_step: blocked_until_read_back"
+    ],
+    "allowed_research_exception": {
+      "allowed": false,
+      "reason": "Completion evidence already exists; research is unrelated to synchronization."
+    }
+  }
+}

@@ -42,10 +42,14 @@ description: "Оркестрирует предварительное иссле
    связанный с planning revision и passport. ETA не передаётся исполнительным
    ролям и не влияет на глубину, порядок, качество, scope, остановку или
    контекстный бюджет модели.
-10. **Прогресс отмечается по факту, а не в финальном recap.** После выполнения
-    каждого checklist item координатор сразу обновляет его во внешней системе,
-    читает состояние обратно и фиксирует evidence в runtime ledger. Этап нельзя
-    завершить при незакрытом обязательном пункте.
+10. **Завершение пункта создаёт немедленный барьер синхронизации.** Перед работой
+    координатор переводит выбранный checklist item в `in_progress`; порядок
+    списка сам по себе не является зависимостью. Как только `done_when` пункта
+    выполнен, координатор до объявления результата или обычного перехода дальше
+    обновляет внешнюю галку, читает её обратно и фиксирует evidence в runtime
+    ledger. Одновременная работа над другим независимым пунктом требует явно
+    зафиксированной причины параллельности. Этап нельзя завершить при незакрытом
+    обязательном пункте.
 11. **Качество имеет критерий достаточности.** `blocker` и `major` закрываются
     обязательно; `minor` не блокируют следующий этап. Новый research после coverage
     gate разрешён только для доказанной существенной evidence-дыры. Minor-only polish
@@ -385,6 +389,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/references/prompt-contract.md` | Сборка ограниченного prompt для независимой роли |
 | `{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json` | Регрессия prompt: закрытый coverage не переоткрывается без существенной evidence-дыры |
 | `{baseDir}/evals/prompt-cookbook/early-working-projection.json` | Регрессия prompt: обязательный рабочий draft появляется и обновляется до финальной интеграции |
+| `{baseDir}/evals/prompt-cookbook/live-checklist-completion-barrier.json` | Регрессия prompt: выполненный пункт синхронизируется сразу без навязывания порядка независимым пунктам |
 | `{baseDir}/evals/prompt-cookbook/profile-owned-working-projection.json` | Регрессия prompt: форма видимой проекции берётся из project profile без универсального локального дубля |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/block-contract.md` | Контракт семантического блока и sidecar index |
