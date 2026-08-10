@@ -84,3 +84,10 @@ disposition отдельно считает `open_*` и принимает ре�
 
 В `project-conformance` дополнительно верни матрицу
 `surface → rule source → pass/finding/not-applicable`.
+Если role manifest содержит `project-conformance-contract.json`, прочитай его и
+сверь те же поверхности, но не выдавай свой `pass` за замену machine check.
+Координатор обязан сохранить report новой immutable revision и закрыть gate
+только после успешной детерминированной проверки.
+Если machine check ранее вернул документ на исправление, проверяй только новый
+read-back subject и создай новый report; прежний `PASS` к исправленному subject
+не относится.

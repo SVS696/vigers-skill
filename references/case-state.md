@@ -171,6 +171,13 @@ python3 {baseDir}/scripts/automation_timing.py check \
   --case-root "<path>" --stage P01 --item P01-C01 \
   --evidence "<evidence-ref>"
 
+# Только после того, как пользователь сам поставил ручную галку:
+python3 {baseDir}/scripts/automation_timing.py check \
+  --case-root "<path>" --stage P05 --item P05-C01 \
+  --user-confirmed --evidence "<user-confirmation-ref>" \
+  --external-system "<system>" --external-item-id "<item-id>" \
+  --read-back-at "<timestamp>"
+
 python3 {baseDir}/scripts/automation_timing.py stop \
   --case-root "<path>" --stage P01 --status completed
 
@@ -192,7 +199,9 @@ python3 {baseDir}/scripts/case_pipeline.py migrate-planning \
 manifest и semantic ledger, сохраняет текущие блоки, связывает новую revision и
 создаёт свежий runtime checklist. Уже выполненные пункты после этого повторно
 подтверждаются обычными `automation_timing.py check` с evidence и внешним
-read-back. Миграция запрещена, пока semantic block находится в `in_progress`.
+read-back; для `completion_owner: user` нужен новый пользовательский confirm и
+`--user-confirmed`. Миграция запрещена, пока semantic block находится в
+`in_progress`.
 Старый case без `working-projection.json` мигрирует с policy `optional`. Updates
 сохраняются только для target, чья identity
 `target_id+system+object_id+url+evidence_kind` не изменилась; при перенаправлении target

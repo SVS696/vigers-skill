@@ -40,6 +40,9 @@ completed`. При terminal failure закрой этап `failed|blocked|cancel
 `automation_timing.py check`. До успешного `check` не объявляй пункт или гейт
 закрытым и не запускай следующую последовательную роль. `stop --status completed`
 не пройдёт при pending или `in_progress` обязательном пункте.
+Пункт с `completion_owner: user` не начинай и не отмечай: подготовь handoff,
+дождись пользовательской галки, прочитай её обратно и только затем синхронизируй
+ledger через `check --user-confirmed`.
 
 ## Фаза 2. Сбор evidence pack
 

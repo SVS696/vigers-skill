@@ -160,6 +160,7 @@ def build_automation_plan(plan_payload: dict[str, Any]) -> dict[str, Any]:
                     "text": item["text"],
                     "required": item.get("required", True),
                     "done_when": item.get("done_when"),
+                    "completion_owner": item.get("completion_owner", "agent"),
                 }
                 for item in stage.get("checklist", [])
             ],
@@ -249,6 +250,10 @@ def validate_automation_plan(payload: Any) -> list[str]:
                 not isinstance(done_when, str) or not done_when.strip()
             ):
                 errors.append(f"{item_id}: automation plan checklist done_when is invalid")
+            if item.get("completion_owner", "agent") not in {"agent", "user"}:
+                errors.append(
+                    f"{item_id}: automation plan completion_owner must be agent or user"
+                )
 
     for stage_id, items in dependencies.items():
         for dependency in items:
@@ -339,12 +344,15 @@ def initialize_ledger(
                         "text": item["text"],
                         "required": item["required"],
                         "done_when": item.get("done_when"),
+                        "completion_owner": item.get("completion_owner", "agent"),
+                        "completion_owner_declared": "completion_owner" in item,
                         "status": "pending",
                         "started_at": None,
                         "parallel_reason": None,
                         "completed_at": None,
                         "evidence_refs": [],
                         "external_read_back": None,
+                        "completion_confirmation": None,
                     }
                     for item in stage["checklist"]
                 ],
@@ -381,6 +389,15 @@ def ledger_automation_plan(ledger: dict[str, Any]) -> dict[str, Any]:
                         "text": item.get("text"),
                         "required": item.get("required"),
                         "done_when": item.get("done_when"),
+                        **(
+                            {
+                                "completion_owner": item.get(
+                                    "completion_owner", "agent"
+                                )
+                            }
+                            if item.get("completion_owner_declared") is True
+                            else {}
+                        ),
                     }
                     for item in stage.get("checklist", [])
                     if isinstance(item, dict)
@@ -472,6 +489,9 @@ def validate_ledger(
                 continue
             item_id = item.get("id", "<unknown>")
             item_status = item.get("status")
+            completion_owner = item.get("completion_owner", "agent")
+            if completion_owner not in {"agent", "user"}:
+                errors.append(f"{item_id}: invalid completion_owner {completion_owner!r}")
             if item_status not in CHECKLIST_STATUSES:
                 errors.append(f"{item_id}: invalid checklist status {item_status!r}")
                 continue
@@ -480,6 +500,7 @@ def validate_ledger(
             completed_at = item.get("completed_at")
             evidence_refs = item.get("evidence_refs")
             external_read_back = item.get("external_read_back")
+            completion_confirmation = item.get("completion_confirmation")
             if not isinstance(evidence_refs, list) or any(
                 not isinstance(ref, str) or not ref.strip() for ref in evidence_refs
             ):
@@ -492,6 +513,7 @@ def validate_ledger(
                     or completed_at is not None
                     or evidence_refs
                     or external_read_back is not None
+                    or completion_confirmation is not None
                 ):
                     errors.append(f"{item_id}: pending checklist item cannot have runtime facts")
             elif item_status == "in_progress":
@@ -503,7 +525,12 @@ def validate_ledger(
                     not isinstance(parallel_reason, str) or not parallel_reason.strip()
                 ):
                     errors.append(f"{item_id}: parallel_reason must be non-empty text or null")
-                if completed_at is not None or evidence_refs or external_read_back is not None:
+                if (
+                    completed_at is not None
+                    or evidence_refs
+                    or external_read_back is not None
+                    or completion_confirmation is not None
+                ):
                     errors.append(
                         f"{item_id}: in-progress checklist item cannot have completion facts"
                     )
@@ -523,6 +550,15 @@ def validate_ledger(
                     errors.append(str(exc))
                 if not evidence_refs and external_read_back is None:
                     errors.append(f"{item_id}: completed checklist item requires evidence")
+                if completion_owner == "user" and completion_confirmation != "user":
+                    errors.append(
+                        f"{item_id}: user-owned checklist item requires user confirmation"
+                    )
+                if completion_owner == "agent" and completion_confirmation not in {
+                    None,
+                    "agent",
+                }:
+                    errors.append(f"{item_id}: agent-owned checklist has invalid confirmation")
                 target_id = stage.get("external_target_id")
                 if target_id is not None:
                     if not isinstance(external_read_back, dict):
@@ -664,6 +700,10 @@ def begin_checklist_item(
             f"Stage {stage_id} is {stage['status']}, checklist work requires running"
         )
     item = find_checklist_item(stage, item_id)
+    if item.get("completion_owner", "agent") == "user":
+        raise AutomationTimingError(
+            f"Checklist item {item_id} is user-owned; wait for explicit user confirmation"
+        )
     if item["status"] == "completed":
         raise AutomationTimingError(f"Checklist item {item_id} is already completed")
     if item["status"] == "in_progress":
@@ -717,6 +757,7 @@ def complete_checklist_item(
     external_system: str | None = None,
     external_item_id: str | None = None,
     read_back_at: str | None = None,
+    user_confirmed: bool = False,
     at: str | None = None,
 ) -> bool:
     """Mark one finished item immediately after evidence and external read-back."""
@@ -729,6 +770,15 @@ def complete_checklist_item(
             f"Stage {stage_id} is {stage['status']}, checklist updates require running"
         )
     item = find_checklist_item(stage, item_id)
+    completion_owner = item.get("completion_owner", "agent")
+    if completion_owner == "user" and not user_confirmed:
+        raise AutomationTimingError(
+            f"Checklist item {item_id} is user-owned; --user-confirmed is required"
+        )
+    if completion_owner == "agent" and user_confirmed:
+        raise AutomationTimingError(
+            f"Checklist item {item_id} is agent-owned; user confirmation is not applicable"
+        )
     normalized_evidence = list(dict.fromkeys(ref.strip() for ref in evidence_refs if ref.strip()))
     external_values = (external_system, external_item_id, read_back_at)
     if any(value is not None for value in external_values) and not all(
@@ -765,10 +815,23 @@ def complete_checklist_item(
         if item["status"] == "completed"
         else normalized_timestamp(at)
     )
+    if item["status"] == "pending" and completion_owner == "user":
+        item.update(status="in_progress", started_at=timestamp, parallel_reason=None)
+        ledger["events"].append(
+            {
+                "at": timestamp,
+                "kind": "checklist_started",
+                "stage_id": stage_id,
+                "item_id": item_id,
+                "parallel_reason": None,
+                "source": "user_confirmation",
+            }
+        )
     desired = {
         "completed_at": timestamp,
         "evidence_refs": normalized_evidence,
         "external_read_back": external_read_back,
+        "completion_confirmation": "user" if completion_owner == "user" else None,
     }
     if item["status"] == "completed":
         current = {key: item.get(key) for key in desired}
@@ -1070,6 +1133,11 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--external-system")
     check_parser.add_argument("--external-item-id")
     check_parser.add_argument("--read-back-at")
+    check_parser.add_argument(
+        "--user-confirmed",
+        action="store_true",
+        help="Record an explicit user-owned checklist confirmation after external read-back",
+    )
     check_parser.add_argument("--at")
 
     validate_parser = subparsers.add_parser("validate", help="Validate timing ledger")
@@ -1122,6 +1190,7 @@ def main() -> int:
                 external_system=args.external_system,
                 external_item_id=args.external_item_id,
                 read_back_at=args.read_back_at,
+                user_confirmed=args.user_confirmed,
                 at=args.at,
             )
             if changed:

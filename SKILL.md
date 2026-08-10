@@ -49,7 +49,9 @@ description: "Оркестрирует предварительное иссле
     обновляет внешнюю галку, читает её обратно и фиксирует evidence в runtime
     ledger. Одновременная работа над другим независимым пунктом требует явно
     зафиксированной причины параллельности. Этап нельзя завершить при незакрытом
-    обязательном пункте.
+    обязательном пункте. Для `completion_owner: user` агент только готовит
+    handoff: не начинает пункт и не ставит галку без явного подтверждения
+    пользователя и последующего read-back.
 11. **Качество имеет критерий достаточности.** `blocker` и `major` закрываются
     обязательно; `minor` не блокируют следующий этап. Новый research после coverage
     gate разрешён только для доказанной существенной evidence-дыры. Minor-only polish
@@ -62,6 +64,18 @@ description: "Оркестрирует предварительное иссле
     непроверенные части. Форму target определяет project profile: core не создаёт
     параллельный локальный файл рядом с объявленным tracker/wiki target. Рабочая
     проекция не является финальной публикацией.
+13. **Project-conformance имеет машинный барьер.** Если profile объявляет
+    `document_*` contract, core проверяет закреплённый draft и локальную рабочую
+    проекцию до `pass`; текстовый verdict ревьюера не перекрывает ошибку
+    обязательного раздела, оглавления или якоря. После исправления и нового
+    read-back нужен свежий project-conformance pass: старый report не может быть
+    переиспользован. Review evidence сохраняется отдельными неизменяемыми
+    ревизиями.
+14. **Готовая постановка не равна готовой поставке.** Закрытие постановочных
+    gates означает только готовность specification artifact. Внешние terminal
+    statuses, закрытие delivery task или инцидента разрешены только по lifecycle
+    policy проекта и подтверждённому delivery evidence; публикация текста сама
+    по себе таким evidence не является.
 
 ## Когда применять
 
@@ -367,6 +381,9 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 - Семантические ID уникальны, ссылки разрешаются, REQ трассируются к AC.
 - Интеграционное и глобальное ревью выполнены после сборки, а не до неё.
 - Project-conformance проверил только применимые локальные соглашения.
+- Объявленный profile document contract прошёл machine check по закреплённому
+  draft и актуальной видимой проекции; review evidence не перезаписало прежнюю
+  ревизию.
 - Business-context не присвоил пользователю ответственность бизнес-владельца.
 - Архитектор вызван только по гейту; `design` и `conformance` независимы.
 - Редактор не добавил новых требований и решений.
@@ -376,6 +393,8 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
   ссылается на конкретный `blocker|major`, target sources и stop condition.
 - AC трассируются к требованиям, требования — к цели.
 - Публикация и изменения внешних систем не выполнены без явной просьбы.
+- Specification-ready не выдан за delivery-complete; ручные handoff-пункты
+  закрыты только пользователем, а terminal status подтверждён delivery evidence.
 
 ## Индекс
 
@@ -388,6 +407,8 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/references/handoff-contract.md` | Контракт case package и результатов ролей |
 | `{baseDir}/references/prompt-contract.md` | Сборка ограниченного prompt для независимой роли |
 | `{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json` | Регрессия prompt: закрытый coverage не переоткрывается без существенной evidence-дыры |
+| `{baseDir}/evals/prompt-cookbook/delivery-completion-handoff-barrier.json` | Регрессия prompt: готовая постановка не закрывает delivery/incident, а ручной handoff остаётся за пользователем |
+| `{baseDir}/evals/prompt-cookbook/project-conformance-document-barrier.json` | Регрессия prompt: словесный pass не обходит машинный шаблон документа |
 | `{baseDir}/evals/prompt-cookbook/early-working-projection.json` | Регрессия prompt: обязательный рабочий draft появляется и обновляется до финальной интеграции |
 | `{baseDir}/evals/prompt-cookbook/live-checklist-completion-barrier.json` | Регрессия prompt: выполненный пункт синхронизируется сразу без навязывания порядка независимым пунктам |
 | `{baseDir}/evals/prompt-cookbook/profile-owned-working-projection.json` | Регрессия prompt: форма видимой проекции берётся из project profile без универсального локального дубля |

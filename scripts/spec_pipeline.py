@@ -11,6 +11,7 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from document_conformance import DocumentContractError, build_profile_contract
 from mode_decision import (
     MODE_DECISION_FILENAME,
     SURFACES,
@@ -55,8 +56,10 @@ REQUIRED_WORKFLOWS = {
 }
 REQUIRED_PROMPT_EVALS = (
     "evals/prompt-cookbook/convergence-closed-coverage.json",
+    "evals/prompt-cookbook/delivery-completion-handoff-barrier.json",
     "evals/prompt-cookbook/early-working-projection.json",
     "evals/prompt-cookbook/live-checklist-completion-barrier.json",
+    "evals/prompt-cookbook/project-conformance-document-barrier.json",
     "evals/prompt-cookbook/profile-owned-working-projection.json",
 )
 PUBLIC_FORBIDDEN_MARKERS = tuple(
@@ -77,6 +80,7 @@ class ProfileSelection:
     source: str
     planning_anchors: tuple[str, ...]
     working_projection: str
+    document_contract: dict[str, object] | None
 
 
 def safe_file(relative: str) -> Path:
@@ -167,6 +171,15 @@ def validate_profile_text(
         raise PipelineError(f"{source}: project profile cannot shadow generic")
     parse_planning_anchors(metadata, source)
     parse_working_projection(metadata, source)
+    try:
+        build_profile_contract(
+            metadata,
+            profile_id=profile_id,
+            profile_text=text,
+            source=source,
+        )
+    except DocumentContractError as exc:
+        raise PipelineError(str(exc)) from exc
     missing = [heading for heading in REQUIRED_PROFILE_HEADINGS if heading not in text]
     if missing:
         raise PipelineError(f"{source}: missing headings: {', '.join(missing)}")
@@ -195,6 +208,12 @@ def read_project_profile(root: Path) -> ProfileSelection | None:
         "project",
         parse_planning_anchors(metadata, candidate),
         parse_working_projection(metadata, candidate),
+        build_profile_contract(
+            metadata,
+            profile_id=profile_id,
+            profile_text=text,
+            source=candidate,
+        ),
     )
 
 
@@ -219,6 +238,12 @@ def detect_profile(cwd: Path) -> ProfileSelection:
         "generic",
         parse_planning_anchors(metadata, GENERIC_PROFILE_PATH),
         parse_working_projection(metadata, GENERIC_PROFILE_PATH),
+        build_profile_contract(
+            metadata,
+            profile_id=profile_id,
+            profile_text=generic_text,
+            source=GENERIC_PROFILE_PATH,
+        ),
     )
 
 
@@ -235,6 +260,12 @@ def select_profile(requested_id: str, cwd: Path) -> ProfileSelection:
             "generic",
             parse_planning_anchors(metadata, GENERIC_PROFILE_PATH),
             parse_working_projection(metadata, GENERIC_PROFILE_PATH),
+            build_profile_contract(
+                metadata,
+                profile_id=profile_id,
+                profile_text=text,
+                source=GENERIC_PROFILE_PATH,
+            ),
         )
 
     detected = detect_profile(cwd)
@@ -501,6 +532,7 @@ def main() -> int:
                 ),
                 "planning_anchors": list(selection.planning_anchors),
                 "working_projection": selection.working_projection,
+                "document_contract": selection.document_contract,
             }
             if args.json:
                 print(json.dumps(payload, ensure_ascii=False))

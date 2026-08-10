@@ -20,6 +20,7 @@ from automation_timing import (
     summarize as summarize_automation_timing,
     validate_ledger as validate_automation_timing,
 )
+from document_conformance import validate_contract, validate_markdown_file
 from mode_decision import (
     MODE_DECISION_FILENAME,
     ModeDecisionError,
@@ -55,6 +56,7 @@ ROLE_MANIFEST_JSON = "role-manifest.json"
 ROLE_MANIFEST_SCHEMA = 1
 WORKING_PROJECTION_JSON = "working-projection.json"
 WORKING_PROJECTION_SCHEMA = 1
+PROJECT_CONFORMANCE_CONTRACT_JSON = "project-conformance-contract.json"
 EXTERNAL_READBACK_RECEIPT_SCHEMA = 1
 CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BLOCK_ID_RE = re.compile(r"^B[0-9]{2,3}$")
@@ -128,6 +130,12 @@ GATE_NAMES = (
 )
 GATE_STATUSES = {"pending", "pass", "blocked", "not_required"}
 FINAL_GATES = GATE_NAMES
+REVISIONED_REVIEW_GATES = {
+    "integration_review",
+    "global_review",
+    "project_conformance",
+    "architecture_conformance",
+}
 
 
 class CaseError(RuntimeError):
@@ -282,6 +290,7 @@ def role_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     allowed_artifacts = (
         "planning_role_context",
         "working_projection",
+        "project_conformance_contract",
         "evidence",
         "decisions",
         "draft",
@@ -301,6 +310,7 @@ def role_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         "project_root": manifest.get("project_root"),
         "mode_decision": manifest.get("mode_decision"),
         "method_context": manifest.get("method_context"),
+        "project_conformance_contract": manifest.get("project_conformance_contract"),
         "planning_context": planning_context,
         "kernel": manifest.get("kernel"),
         "artifacts": {
@@ -653,6 +663,145 @@ def working_projection_errors(
     return errors
 
 
+def load_project_conformance_contract(
+    root: Path,
+    manifest: dict[str, Any],
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Load the immutable project document contract pinned at case init."""
+    binding = manifest.get("project_conformance_contract")
+    if binding is None:
+        return None, []
+    if not isinstance(binding, dict):
+        return None, ["project conformance contract binding must be an object"]
+    relative = binding.get("path")
+    if relative != PROJECT_CONFORMANCE_CONTRACT_JSON:
+        return None, ["project conformance contract path is invalid"]
+    path = case_file(root, relative)
+    if not path.is_file():
+        return None, ["project conformance contract file is missing"]
+    if sha256(path) != binding.get("sha256"):
+        return None, ["project conformance contract changed after case init"]
+    try:
+        payload = read_json(path)
+    except CaseError as exc:
+        return None, [str(exc)]
+    errors = validate_contract(payload)
+    if payload.get("profile_id") != manifest.get("profile_id"):
+        errors.append("project conformance contract profile_id mismatch")
+    return payload, errors
+
+
+def project_conformance_documents(
+    root: Path,
+    manifest: dict[str, Any],
+    contract: dict[str, Any],
+) -> tuple[list[tuple[str, Path]], list[str]]:
+    """Resolve the case and visible documents selected by the pinned contract."""
+    documents: list[tuple[str, Path]] = []
+    errors: list[str] = []
+    checks = set(contract.get("checks", []))
+    if "draft" in checks:
+        draft_relative = manifest.get("artifacts", {}).get("draft")
+        if not isinstance(draft_relative, str):
+            errors.append("document contract requires draft but manifest has none")
+        else:
+            documents.append(("draft", case_file(root, draft_relative)))
+
+    if "working_projection" in checks:
+        projection_relative = manifest.get("artifacts", {}).get("working_projection")
+        if not isinstance(projection_relative, str):
+            errors.append("document contract requires working projection but manifest has none")
+        else:
+            try:
+                projection = read_json(case_file(root, projection_relative))
+            except CaseError as exc:
+                errors.append(str(exc))
+                projection = {}
+            local_count = 0
+            for target in projection.get("targets", []):
+                if not isinstance(target, dict) or target.get("evidence_kind") != "local_file":
+                    continue
+                target_id = str(target.get("target_id", "unknown"))
+                object_id = target.get("object_id")
+                if not isinstance(object_id, str) or not object_id.strip():
+                    errors.append(f"{target_id}: local projection has no object_id")
+                    continue
+                try:
+                    path = projection_local_file(root, manifest, target, object_id)
+                except CaseError as exc:
+                    errors.append(f"{target_id}: {exc}")
+                    continue
+                documents.append((f"working_projection:{target_id}", path))
+                local_count += 1
+            if local_count == 0:
+                errors.append(
+                    "document contract requires at least one local_file working projection"
+                )
+    return documents, errors
+
+
+def project_conformance_errors(
+    root: Path,
+    manifest: dict[str, Any],
+) -> list[str]:
+    """Run deterministic profile-owned checks over the declared documents."""
+    contract, errors = load_project_conformance_contract(root, manifest)
+    if contract is None or errors:
+        return errors
+    documents, resolution_errors = project_conformance_documents(root, manifest, contract)
+    errors.extend(resolution_errors)
+    seen: set[Path] = set()
+    for label, path in documents:
+        resolved = path.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        errors.extend(validate_markdown_file(path, contract, label=label))
+    return errors
+
+
+def project_conformance_review_freshness_errors(
+    root: Path,
+    manifest: dict[str, Any],
+    evidence_path: Path,
+) -> list[str]:
+    """Reject a review report older than the subject or its latest read-back."""
+    contract, errors = load_project_conformance_contract(root, manifest)
+    if contract is None or errors:
+        return errors
+    documents, resolution_errors = project_conformance_documents(root, manifest, contract)
+    errors.extend(resolution_errors)
+    watched = [path for _, path in documents]
+    if "working_projection" in set(contract.get("checks", [])):
+        projection_relative = manifest.get("artifacts", {}).get("working_projection")
+        if isinstance(projection_relative, str):
+            watched.append(case_file(root, projection_relative))
+    if errors:
+        return errors
+    try:
+        evidence_mtime = evidence_path.stat().st_mtime_ns
+    except OSError as exc:
+        return [f"cannot stat project-conformance evidence: {exc}"]
+    newest_path: Path | None = None
+    newest_mtime = -1
+    for path in watched:
+        try:
+            modified = path.stat().st_mtime_ns
+        except OSError as exc:
+            errors.append(f"cannot stat project-conformance subject {path}: {exc}")
+            continue
+        if modified > newest_mtime:
+            newest_mtime = modified
+            newest_path = path
+    if not errors and evidence_mtime < newest_mtime:
+        label = newest_path.name if newest_path is not None else "subject"
+        errors.append(
+            "project-conformance evidence is older than the current document/read-back "
+            f"subject ({label}); run a fresh review"
+        )
+    return errors
+
+
 def initial_gates(mode: str) -> dict[str, dict[str, Any]]:
     """Create gate state, skipping block-only gates in compact mode."""
     gates = {
@@ -680,6 +829,7 @@ def init_case(
     profile_id: str,
     route_id: str,
     project_root: str | None,
+    document_contract: dict[str, Any] | None = None,
     allow_unrecorded_mode: bool = False,
     allow_unrecorded_method: bool = False,
     allow_unplanned: bool = False,
@@ -689,6 +839,12 @@ def init_case(
         raise CaseError(f"Invalid case id: {case_id!r}")
     if mode not in {"compact", "block"}:
         raise CaseError(f"Invalid mode: {mode}")
+    if document_contract is not None:
+        contract_errors = validate_contract(document_contract)
+        if contract_errors:
+            raise CaseError("Invalid project document contract: " + "; ".join(contract_errors))
+        if document_contract.get("profile_id") != profile_id:
+            raise CaseError("Project document contract belongs to another profile")
 
     root = root.expanduser().resolve()
     manifest_path = root / "manifest.json"
@@ -837,6 +993,14 @@ def init_case(
 
     (root / "blocks").mkdir(parents=True, exist_ok=True)
     (root / "reviews").mkdir(parents=True, exist_ok=True)
+    contract_binding: dict[str, str] | None = None
+    if document_contract is not None:
+        contract_path = root / PROJECT_CONFORMANCE_CONTRACT_JSON
+        atomic_json(contract_path, document_contract)
+        contract_binding = {
+            "path": PROJECT_CONFORMANCE_CONTRACT_JSON,
+            "sha256": sha256(contract_path),
+        }
     write_template(
         root / "kernel.md",
         "# Kernel\n\n"
@@ -872,6 +1036,7 @@ def init_case(
         "project_root": project_root,
         "mode_decision": decision_binding,
         "method_context": method_binding,
+        "project_conformance_contract": contract_binding,
         "planning_handoff": planning_binding,
         "created_at": now_utc(),
         "updated_at": now_utc(),
@@ -887,6 +1052,9 @@ def init_case(
                 PLANNING_ROLE_CONTEXT_JSON if planning_binding is not None else None
             ),
             "working_projection": WORKING_PROJECTION_JSON,
+            "project_conformance_contract": (
+                PROJECT_CONFORMANCE_CONTRACT_JSON if contract_binding is not None else None
+            ),
             "evidence": "evidence.md",
             "decisions": "decisions.md",
             "draft": "draft.md",
@@ -1699,11 +1867,44 @@ def gate_subject_hash(
     elif name == "consistency":
         report = case_file(root, manifest["artifacts"]["consistency_report"])
         digest.update(report.read_bytes() if report.is_file() else b"<missing>")
+    elif name == "project_conformance":
+        draft = case_file(root, manifest["artifacts"]["draft"])
+        digest.update(draft.read_bytes() if draft.is_file() else b"<missing>")
+        digest.update(manifest["kernel"]["sha256"].encode("ascii"))
+        contract, contract_errors = load_project_conformance_contract(root, manifest)
+        if contract is not None and not contract_errors:
+            binding = manifest["project_conformance_contract"]
+            digest.update(case_file(root, binding["path"]).read_bytes())
+            documents, resolution_errors = project_conformance_documents(
+                root, manifest, contract
+            )
+            for error in resolution_errors:
+                digest.update(error.encode("utf-8"))
+            for label, path in sorted(documents, key=lambda item: item[0]):
+                digest.update(label.encode("utf-8"))
+                digest.update(path.read_bytes() if path.is_file() else b"<missing>")
     else:
         draft = case_file(root, manifest["artifacts"]["draft"])
         digest.update(draft.read_bytes() if draft.is_file() else b"<missing>")
         digest.update(manifest["kernel"]["sha256"].encode("ascii"))
     return digest.hexdigest()
+
+
+def snapshot_review_evidence(root: Path, gate_name: str, source: Path) -> str:
+    """Persist one immutable review revision and return its case-relative path."""
+    history = root / "reviews" / "history"
+    history.mkdir(parents=True, exist_ok=True)
+    suffix = source.suffix or ".txt"
+    revision = 1
+    while True:
+        target = history / f"{gate_name}-r{revision:03d}{suffix}"
+        if not target.exists():
+            break
+        revision += 1
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    temporary.write_bytes(source.read_bytes())
+    temporary.replace(target)
+    return target.relative_to(root).as_posix()
 
 
 def set_gate(
@@ -1741,12 +1942,43 @@ def set_gate(
                 "Working projection must be visible before author passes: "
                 + "; ".join(projection_errors)
             )
+    if status == "pass" and name == "project_conformance":
+        projection_errors = working_projection_errors(
+            root,
+            manifest,
+            ledger,
+            require_any_update=True,
+        )
+        if projection_errors:
+            raise CaseError(
+                "Project conformance requires a current visible read-back: "
+                + "; ".join(projection_errors)
+            )
+        document_errors = project_conformance_errors(root, manifest)
+        if document_errors:
+            raise CaseError(
+                "Project document conformance failed: " + "; ".join(document_errors)
+            )
     evidence_hash = None
     subject_hash = None
     if status == "pass" and evidence:
         path = case_file(root, evidence)
         if not artifact_ready(path):
             raise CaseError(f"Gate evidence is missing or still a placeholder: {evidence}")
+        if name == "project_conformance":
+            freshness_errors = project_conformance_review_freshness_errors(
+                root,
+                manifest,
+                path,
+            )
+            if freshness_errors:
+                raise CaseError(
+                    "Project-conformance review is stale: "
+                    + "; ".join(freshness_errors)
+                )
+        if name in REVISIONED_REVIEW_GATES:
+            evidence = snapshot_review_evidence(root, name, path)
+            path = case_file(root, evidence)
         evidence_hash = sha256(path)
         subject_hash = gate_subject_hash(root, manifest, ledger, name)
 
@@ -1781,6 +2013,13 @@ def validate_case(
             require_any_update=final,
         )
     )
+    if final or manifest.get("gates", {}).get("project_conformance", {}).get(
+        "status"
+    ) == "pass":
+        errors.extend(
+            f"Project document conformance: {item}"
+            for item in project_conformance_errors(root, manifest)
+        )
     decision_binding = manifest.get("mode_decision")
     if decision_binding is not None:
         if not isinstance(decision_binding, dict):
@@ -2391,6 +2630,7 @@ def main() -> int:
                 profile_id=selection.profile_id,
                 route_id=args.route_id,
                 project_root=selected_project_root,
+                document_contract=selection.document_contract,
                 allow_unrecorded_mode=args.allow_unrecorded_mode,
                 allow_unrecorded_method=args.allow_unrecorded_method,
                 allow_unplanned=args.allow_unplanned,

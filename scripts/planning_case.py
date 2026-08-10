@@ -679,6 +679,8 @@ def validate_plan(payload: Any, revision: int, source_ids: set[str]) -> list[str
             required = item.get("required", True)
             if not isinstance(required, bool):
                 errors.append(f"{item_id}: required must be boolean")
+            if item.get("completion_owner", "agent") not in {"agent", "user"}:
+                errors.append(f"{item_id}: completion_owner must be agent or user")
             for optional_text in ("details", "done_when"):
                 value = item.get(optional_text)
                 if value is not None and (not isinstance(value, str) or not value.strip()):

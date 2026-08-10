@@ -64,6 +64,11 @@ freshness, конфликты и gaps. Не выбирай удобную вер
 выполнять в другом порядке или параллельно, но каждый имеет собственный
 completion barrier.
 
+Для шага, который вправе подтвердить только пользователь, укажи
+`completion_owner: user`. Такой пункт остаётся pending, пока пользователь сам не
+поставит внешнюю галку и не подтвердит это; координатор не начинает и не
+закрывает его по косвенным признакам.
+
 В режиме `plan` верни минимальные source-linked `PUS-*` и `PDOD-*` по schema из
 planning-contract. Это предварительные гипотезы для full-analysis gate, а не
 утверждённые требования/AC/DoD; не расширяй их «для полноты».
@@ -89,7 +94,8 @@ profile и исследованной форме результата; сраз�
 ссылкой на скрытый runtime case и не называй projection финальной публикацией.
 
 Checklist формулируй по planning-contract: полное действие, optional
-details/done_when, subtask только для собственного outcome/dependency/owner.
+details/done_when, явный `completion_owner` для ручных гейтов, subtask только для
+собственного outcome/dependency/owner.
 Перед выдачей проверь список целиком: ясность → `simplicity-spec` → `humanizer`
 без пользовательского voice profile.
 

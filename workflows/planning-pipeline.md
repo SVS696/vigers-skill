@@ -109,8 +109,9 @@ python3 {baseDir}/scripts/planning_case.py context --case-root "<planning-root>"
    `evidence_kind: local_file|external_readback`.
 5. Сохрани уже связанные `before_research` targets; не создавай их повторно.
 6. Для checklist примени правила `{baseDir}/references/planning-contract.md`:
-   содержательный title, optional details/done_when в task note и subtask только
-   при самостоятельном результате/dependency/owner.
+   содержательный title, optional details/done_when в task note,
+   `completion_owner: user` для ручных гейтов и subtask только при
+   самостоятельном результате/dependency/owner.
 7. Проверь ясность формулировок, затем выполни `simplicity-spec` → `humanizer`
    без пользовательского voice profile. Не вызывай отдельного агента для
    каждого пункта; обрабатывай checklist целиком. Подробный пункт допустим, если

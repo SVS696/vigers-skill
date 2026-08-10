@@ -31,6 +31,10 @@ package и передаёт каждой роли только перечисл�
     "fingerprint": "...",
     "content_sha256": "..."
   },
+  "project_conformance_contract": {
+    "path": "project-conformance-contract.json",
+    "sha256": "..."
+  },
   "kernel": {"path": "kernel.md", "revision": 1, "sha256": "..."},
   "artifacts": {
     "automation_timing": "automation-timing.json",
@@ -52,6 +56,16 @@ cookies, приватные ключи и дампы БД. В block-mode `ledger
 состояния блоков; формат и переходы задаёт `case_pipeline.py`.
 `automation-timing.json` хранит отдельный runtime ledger approved planning stages
 и не передаётся ролям как источник требований.
+
+`project-conformance-contract.json` — immutable snapshot machine-readable
+`document_*` правил выбранного profile. Если contract объявлен, перед
+`project_conformance: pass` core проверяет выбранные `draft`/`working_projection`,
+а subject hash связывает gate с их фактическим содержимым. Старый case без
+snapshot не ужесточается задним числом.
+После document-contract failure ограниченная правка, projection read-back и
+machine recheck предшествуют новому project-conformance review. Evidence report
+обязан быть создан после актуального draft/projection update; прежний report
+нельзя скопировать в новую revision как будто он проверял исправленный subject.
 
 `working-projection.json` связывает case с видимым человеку растущим черновиком.
 Он хранит policy profile, targets из approved artifact plan и append-only
@@ -270,6 +284,9 @@ residual`. `residual` допустим только для `minor` и не бл�
 координатор отдельно записывает `open_blocker/open_major/open_minor` и
 `gate_decision`. `pass` требует нулевые open counts только для принятых
 `blocker/major`; residual minor не запускают новый полный цикл.
+Evidence integration/global/project/architecture review при каждом `pass`
+копируется в новую immutable revision `reviews/history/*-rNNN`; рабочий файл
+review можно обновлять, но прежнее доказательство не перезаписывается.
 
 ## Handoff во внешнюю поставку
 
@@ -286,3 +303,6 @@ Vigers не реализует и не принимает поставку. Дл
 
 Этот handoff не разрешает правки кода, тестов, merge, deploy или изменение
 внешних статусов. Полномочия задаёт отдельный delivery-skill и проектный профиль.
+Завершённый Vigers case подтверждает `specification_ready`, а не
+`delivery_complete`; закрытие implementation task или incident требует отдельного
+delivery evidence и lifecycle gate проекта.

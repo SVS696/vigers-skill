@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,6 +36,26 @@ def add_definition(root: Path, block_id: str, semantic_id: str, kind: str) -> No
 
 
 class CasePipelineTests(unittest.TestCase):
+    def project_document_contract(self) -> dict[str, object]:
+        return {
+            "schema": 1,
+            "profile_id": "generic",
+            "profile_sha256": "a" * 64,
+            "checks": ["draft", "working_projection"],
+            "required_headings": [
+                "Оглавление",
+                "История изменений",
+                "Описание",
+                "User Story",
+                "Полезные ссылки",
+            ],
+            "toc": {
+                "policy": "obsidian-h2-exact",
+                "heading": "Оглавление",
+                "separators": "required",
+            },
+        }
+
     def test_role_context_is_invariant_to_human_timing_estimates(self) -> None:
         common: dict[str, object] = {
             "planning_case_id": "demo-plan",
@@ -937,7 +958,7 @@ class CasePipelineTests(unittest.TestCase):
             payload["task"] = "Tampered"
             path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
-            errors = case_pipeline.validate_case(loaded_root, manifest, ledger, final=False)
+            errors = case_pipeline.validate_case(loaded_root, manifest, ledger, final=True)
             self.assertTrue(any("fingerprint mismatch" in error for error in errors))
 
     def test_validation_detects_tampered_method_context(self) -> None:
@@ -1574,6 +1595,199 @@ class CasePipelineTests(unittest.TestCase):
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             errors = case_pipeline.validate_case(loaded_root, manifest, ledger, final=True)
             self.assertTrue(any("global_review subject changed" in item for item in errors))
+
+    def test_project_conformance_rejects_missing_profile_owned_toc(self) -> None:
+        valid = """# Specification
+
+---
+
+## Оглавление
+
+1. [[#История изменений]]
+2. [[#Описание]]
+3. [[#User Story]]
+4. [[#Полезные ссылки]]
+
+---
+
+## История изменений
+
+Text.
+
+## Описание
+
+Text.
+
+## User Story
+
+Text.
+
+## Полезные ссылки
+
+Text.
+"""
+        missing_toc = """# Specification
+
+## История изменений
+
+Text.
+
+## Описание
+
+Text.
+
+## User Story
+
+Text.
+
+## Полезные ссылки
+
+Text.
+"""
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp) / "project"
+            root = project / ".vigers" / "cases" / "demo"
+            self.write_method_context(root)
+            self.write_mode_decision(root, selected_mode="compact")
+            self.write_planning_handoff(
+                root,
+                project_root=str(project),
+                working_projection=True,
+            )
+            project.mkdir(parents=True, exist_ok=True)
+            visible = project / "specification.md"
+            visible.write_text(missing_toc, encoding="utf-8")
+            case_pipeline.init_case(
+                root,
+                case_id="demo-document-contract",
+                mode="compact",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=str(project),
+                document_contract=self.project_document_contract(),
+            )
+            replace_todo(root / "draft.md", missing_toc)
+            draft_hash = case_pipeline.sha256(root / "draft.md")
+            visible_hash = case_pipeline.sha256(visible)
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_working_projection_update(
+                loaded_root,
+                manifest,
+                ledger,
+                target_id="EXT-001",
+                source="draft",
+                source_sha256=draft_hash,
+                content_sha256=visible_hash,
+                evidence_kind="local_file",
+                evidence_ref="specification.md",
+                read_back_at="2026-08-10T20:00:00+00:00",
+            )
+            replace_todo(root / "reviews" / "project.md", "# Project review\n\nPASS")
+            os.utime(root / "reviews" / "project.md", ns=(1, 1))
+
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "missing required H2"):
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name="project_conformance",
+                    status="pass",
+                    evidence="reviews/project.md",
+                    note=None,
+                )
+
+            replace_todo(root / "draft.md", valid)
+            visible.write_text(valid, encoding="utf-8")
+            draft_hash = case_pipeline.sha256(root / "draft.md")
+            visible_hash = case_pipeline.sha256(visible)
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_working_projection_update(
+                loaded_root,
+                manifest,
+                ledger,
+                target_id="EXT-001",
+                source="draft",
+                source_sha256=draft_hash,
+                content_sha256=visible_hash,
+                evidence_kind="local_file",
+                evidence_ref="specification.md",
+                read_back_at="2026-08-10T20:05:00+00:00",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "older than"):
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name="project_conformance",
+                    status="pass",
+                    evidence="reviews/project.md",
+                    note=None,
+                )
+
+            replace_todo(
+                root / "reviews" / "project.md",
+                "# Project review\n\nFresh PASS after document correction",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="project_conformance",
+                status="pass",
+                evidence="reviews/project.md",
+                note=None,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(manifest["gates"]["project_conformance"]["status"], "pass")
+            self.assertTrue(
+                manifest["gates"]["project_conformance"]["evidence"].startswith(
+                    "reviews/history/project_conformance-r001"
+                )
+            )
+
+            visible.write_text(missing_toc, encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            errors = case_pipeline.validate_case(loaded_root, manifest, ledger, final=True)
+            self.assertTrue(any("missing required H2" in item for item in errors))
+            self.assertTrue(
+                any("project_conformance subject changed" in item for item in errors),
+                errors,
+            )
+
+    def test_review_gate_evidence_is_preserved_by_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp), mode="compact")
+            review = root / "reviews" / "global.md"
+            replace_todo(review, "# Global review\n\nFirst pass")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="global_review",
+                status="pass",
+                evidence="reviews/global.md",
+                note=None,
+            )
+            replace_todo(review, "# Global review\n\nSecond pass")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="global_review",
+                status="pass",
+                evidence="reviews/global.md",
+                note=None,
+            )
+            first = root / "reviews" / "history" / "global_review-r001.md"
+            second = root / "reviews" / "history" / "global_review-r002.md"
+            self.assertIn("First pass", first.read_text(encoding="utf-8"))
+            self.assertIn("Second pass", second.read_text(encoding="utf-8"))
 
     def test_complete_block_case_passes_final_validation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

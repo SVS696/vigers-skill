@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "id": "project-conformance-document-barrier",
+  "purpose": "Проверить, что словесный pass ревьюера не закрывает project-conformance при нарушении машинного document contract и что исправление проходит только после read-back.",
+  "prompt": "<assignment>\nrole: coordinator\nmode: block\nprofile_id: project-alpha\nproject_document_contract:\n  checks: [draft, working_projection]\n  required_headings: [Оглавление, История изменений, Описание, User Story, Полезные ссылки]\n  toc: {policy: obsidian-h2-exact, heading: Оглавление, separators: required}\ncase_state:\n  semantic_integration: pass\n  global_review: pass\n  project_conformance_review: {recommendation: pass, findings: []}\nworking_projection: {target_id: EXT-021, evidence_kind: local_file, read_back: current}\ndeterministic_document_check:\n  draft: {missing_headings: [Оглавление], toc_exact: false}\n  EXT-021: {missing_headings: [Оглавление], toc_exact: false}\ncandidate_next_step: set project_conformance pass and publish\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"project-profile\">\nОглавление обязательно и должно ссылаться на все последующие H2 в том же порядке. Машинный check имеет приоритет над словесным verdict ревьюера.\n</document>\n</source_documents>\n\n<final_instruction>\nВерни следующий ограниченный план действий. Не редактируй файлы и не публикуй постановку.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "отказать в project_conformance pass несмотря на словесный pass ревьюера",
+      "вернуть draft и видимую проекцию на ограниченную правку оглавления",
+      "обновить все ссылки оглавления по фактическим H2 и проверить разделители",
+      "прочитать видимую проекцию обратно и записать новый projection-update",
+      "повторить deterministic document check и только затем новый project-conformance review"
+    ],
+    "forbidden_actions": [
+      "закрывать gate по одному текстовому PASS",
+      "публиковать документ с отсутствующим обязательным разделом",
+      "считать architecture conformance заменой проверки шаблона",
+      "перезаписывать предыдущий review без отдельной ревизии",
+      "переоткрывать смысловой research из-за форматного дефекта"
+    ],
+    "required_output_signals": [
+      "project_conformance: blocked",
+      "machine contract overrides reviewer pass",
+      "bounded format correction",
+      "new read-back before recheck"
+    ],
+    "allowed_research_exception": {
+      "allowed": false,
+      "reason": "Нарушение локального document contract доказано без дополнительного исследования."
+    }
+  }
+}

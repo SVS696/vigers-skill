@@ -162,6 +162,53 @@ class AutomationTimingTests(unittest.TestCase):
                 at="2026-08-07T10:02:00+00:00",
             )
 
+    def test_user_owned_checklist_requires_explicit_confirmation(self) -> None:
+        plan = demo_plan()
+        plan["stages"][0]["checklist"][0]["completion_owner"] = "user"
+        plan["fingerprint"] = automation_timing.canonical_fingerprint(plan)
+        ledger = automation_timing.initialize_ledger(
+            case_id="manual-handoff",
+            automation_plan=plan,
+            planning_case_id="manual-plan",
+            planning_revision=1,
+            passport=None,
+            created_at="2026-08-10T20:00:00+00:00",
+        )
+        automation_timing.start_stage(
+            ledger,
+            "P01",
+            at="2026-08-10T20:00:00+00:00",
+        )
+        with self.assertRaisesRegex(
+            automation_timing.AutomationTimingError,
+            "user-owned",
+        ):
+            automation_timing.begin_checklist_item(ledger, "P01", "P01-C01")
+        with self.assertRaisesRegex(
+            automation_timing.AutomationTimingError,
+            "--user-confirmed",
+        ):
+            automation_timing.complete_checklist_item(
+                ledger,
+                "P01",
+                "P01-C01",
+                evidence_refs=["user said handed to BE"],
+            )
+        automation_timing.complete_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            evidence_refs=["user said handed to BE"],
+            user_confirmed=True,
+            at="2026-08-10T20:05:00+00:00",
+        )
+        item = automation_timing.find_checklist_item(
+            automation_timing.find_stage(ledger, "P01"),
+            "P01-C01",
+        )
+        self.assertEqual(item["completion_confirmation"], "user")
+        self.assertEqual(automation_timing.validate_ledger(ledger), [])
+
     def test_checklist_completion_is_idempotent_with_same_evidence(self) -> None:
         ledger = self.ledger()
         automation_timing.start_stage(

@@ -17,6 +17,7 @@ vigers_profile: 2
 profile_id: {profile_id}
 planning_anchors: {planning_anchors}
 working_projection: {working_projection}
+{extra_frontmatter}
 ---
 
 # Project profile
@@ -52,6 +53,7 @@ def write_profile(
     profile_id: str = "project-alpha",
     planning_anchors: str = "",
     working_projection: str = "optional",
+    extra_frontmatter: str = "",
 ) -> Path:
     profile = root / ".vigers" / "profile.md"
     profile.parent.mkdir(parents=True)
@@ -60,6 +62,7 @@ def write_profile(
             profile_id=profile_id,
             planning_anchors=planning_anchors,
             working_projection=working_projection,
+            extra_frontmatter=extra_frontmatter,
         ),
         encoding="utf-8",
     )
@@ -93,7 +96,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["contracts"], 5)
         self.assertEqual(counts["runtime_adapters"], 10)
         self.assertEqual(counts["workflows"], 3)
-        self.assertEqual(counts["prompt_evals"], 4)
+        self.assertEqual(counts["prompt_evals"], 6)
 
     def test_closed_coverage_prompt_eval_rejects_archaeological_restart(self) -> None:
         eval_path = (
@@ -232,6 +235,36 @@ class PipelineTests(unittest.TestCase):
             with self.assertRaises(spec_pipeline.PipelineError):
                 spec_pipeline.detect_profile(root)
 
+    def test_project_overlay_exposes_pinned_document_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            write_profile(
+                root,
+                extra_frontmatter=(
+                    "document_checks: draft, working_projection\n"
+                    "document_required_headings: Оглавление, Описание\n"
+                    "document_toc: obsidian-h2-exact\n"
+                    "document_toc_heading: Оглавление\n"
+                    "document_toc_separators: required"
+                ),
+            )
+            selection = spec_pipeline.detect_profile(root)
+            self.assertIsNotNone(selection.document_contract)
+            assert selection.document_contract is not None
+            self.assertEqual(
+                selection.document_contract["checks"],
+                ["draft", "working_projection"],
+            )
+
+    def test_partial_document_contract_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            write_profile(root, extra_frontmatter="document_toc: obsidian-h2-exact")
+            with self.assertRaises(spec_pipeline.PipelineError):
+                spec_pipeline.detect_profile(root)
+
     def test_nearest_project_overlay_wins(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             outer = Path(temp) / "outer"
@@ -287,6 +320,7 @@ class PipelineTests(unittest.TestCase):
                     profile_id="external",
                     planning_anchors="",
                     working_projection="optional",
+                    extra_frontmatter="",
                 ),
                 encoding="utf-8",
             )

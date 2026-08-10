@@ -3,6 +3,11 @@ vigers_profile: 2
 profile_id: example
 planning_anchors:
 working_projection: optional
+document_checks:
+document_required_headings:
+document_toc:
+document_toc_heading:
+document_toc_separators:
 ---
 
 # Профиль постановок проекта
@@ -88,9 +93,18 @@ working_projection: optional
 
 Шаблон результата и обязательный порядок авторских проверок.
 
+Если формат локального Markdown обязателен, объяви machine contract во
+frontmatter: `document_checks: draft, working_projection`, перечень
+`document_required_headings`, `document_toc: obsidian-h2-exact`, название
+раздела и политику разделителей. Не заполняй часть полей: либо объяви контракт
+целиком, либо оставь все `document_*` пустыми.
+
 Опиши отдельный `project-conformance`: применимые API/HTTP, identifier/casing,
 терминологию, frontmatter, шаблоны, ссылки, имена файлов и legacy-исключения.
 
 ## Жизненный цикл и публикация
 
 Канонический путь, условия внешних записей и обязательный read-back.
+Отдельно зафиксируй границу `specification_ready` / `delivery_complete`,
+evidence для terminal status и ручные handoff-пункты с
+`completion_owner: user`.

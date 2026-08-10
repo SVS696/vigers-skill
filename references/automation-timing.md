@@ -135,6 +135,18 @@ python3 {baseDir}/scripts/automation_timing.py begin \
   --case-root "<vigers-case-root>" --stage P03 --item P03-C02
 ```
 
+Исключение — пункт с `completion_owner: user`: агент его не начинает и не
+отмечает. Он готовит handoff и ждёт, пока пользователь сам поставит внешнюю
+галку. После явного подтверждения и read-back координатор синхронизирует ledger:
+
+```text
+python3 {baseDir}/scripts/automation_timing.py check \
+  --case-root "<vigers-case-root>" --stage P03 --item P03-C03 \
+  --user-confirmed --evidence "<user-confirmation-ref>" \
+  --external-system "<system>" --external-item-id "<item-id>" \
+  --read-back-at "<timestamp>"
+```
+
 Обычно новый item нельзя начать, пока другой item этого этапа остаётся
 `in_progress`: это ловит забытый completion barrier. Для реально одновременной
 независимой работы разрешён второй `begin --parallel-reason "<reason>"`; не
@@ -153,11 +165,12 @@ python3 {baseDir}/scripts/automation_timing.py check \
   --read-back-at "<timestamp>"
 ```
 
-Для внутреннего пункта достаточно `--evidence`. `check` принимает только item в
-`in_progress`. Не откладывай галки до конца этапа, следующей роли или финального
-ответа и не объявляй пункт/гейт закрытым до успешного `check`. Повтор с тем же
-evidence/read-back идемпотентен; другая попытка переписать уже завершённый item
-отклоняется.
+Для внутреннего агентского пункта достаточно `--evidence`. Обычный `check`
+принимает только item в `in_progress`; user-owned item допускает прямой переход
+из `pending` только с `--user-confirmed`. Не откладывай агентские галки до конца
+этапа, следующей роли или финального ответа и не объявляй пункт/гейт закрытым до
+успешного `check`. Повтор с тем же evidence/read-back идемпотентен; другая
+попытка переписать уже завершённый item отклоняется.
 
 После выхода и проверки результата:
 
