@@ -83,6 +83,10 @@ description: "Оркестрирует предварительное иссле
     `tactical|bounded-systemic|generalized-capability` строго по
     `{baseDir}/references/solution-boundary-contract.md`; финальное решение живёт
     в существующем `decisions.md`, а не в новом артефакте.
+16. **Человекочитаемая User Story не подменяется системной моделью.** Если
+    profile объявляет `user_story` contract, каждая история следует одной
+    project-owned форме role-goal-value. `RULE/DATA/IF/AC/DOD` остаются
+    отдельными трассируемыми слоями; таблицы `ACT` и списки `SCN` не заменяют US.
 
 ## Когда применять
 
@@ -407,6 +411,8 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 - Объявленный profile document contract прошёл machine check по закреплённому
   draft и актуальной видимой проекции; review evidence не перезаписало прежнюю
   ревизию.
+- Объявленная profile форма User Story едина во всём документе; системные
+  semantic IDs сохранены в собственных разделах и связаны трассировкой.
 - Business-context не присвоил пользователю ответственность бизнес-владельца.
 - Архитектор вызван только по гейту; `design` и `conformance` независимы.
 - Редактор не добавил новых требований и решений.
@@ -438,6 +444,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/evals/prompt-cookbook/profile-owned-working-projection.json` | Регрессия prompt: форма видимой проекции берётся из project profile без универсального локального дубля |
 | `{baseDir}/evals/prompt-cookbook/bounded-systemic-scope.json` | Регрессия prompt: общий класс выявлен без расширения поставки до спекулятивного конструктора |
 | `{baseDir}/evals/prompt-cookbook/solution-boundary-smells.json` | Регрессия prompt: reviewer симметрично ловит частный hardcode и преждевременную универсализацию |
+| `{baseDir}/evals/prompt-cookbook/user-story-format-barrier.json` | Регрессия prompt: системные IDs не подменяют единую project-owned форму User Story |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/block-contract.md` | Контракт семантического блока и sidecar index |
 | `{baseDir}/references/knowledge-map.md` | Детерминированная карта методических маршрутов |

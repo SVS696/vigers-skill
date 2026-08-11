@@ -96,7 +96,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["contracts"], 5)
         self.assertEqual(counts["runtime_adapters"], 10)
         self.assertEqual(counts["workflows"], 3)
-        self.assertEqual(counts["prompt_evals"], 8)
+        self.assertEqual(counts["prompt_evals"], 9)
 
     def test_closed_coverage_prompt_eval_rejects_archaeological_restart(self) -> None:
         eval_path = (
@@ -243,10 +243,17 @@ class PipelineTests(unittest.TestCase):
                 root,
                 extra_frontmatter=(
                     "document_checks: draft, working_projection\n"
-                    "document_required_headings: Оглавление, Описание\n"
+                    "document_required_headings: Оглавление, Описание, User Story\n"
                     "document_toc: obsidian-h2-exact\n"
                     "document_toc_heading: Оглавление\n"
-                    "document_toc_separators: required"
+                    "document_toc_separators: required\n"
+                    "document_user_story_policy: numbered-role-goal-value\n"
+                    "document_user_story_heading: User Story\n"
+                    "document_user_story_id_prefix: US\n"
+                    "document_user_story_title_separator: .\n"
+                    "document_user_story_role_label: As\n"
+                    "document_user_story_goal_label: I want\n"
+                    "document_user_story_value_label: so that"
                 ),
             )
             selection = spec_pipeline.detect_profile(root)
@@ -256,12 +263,42 @@ class PipelineTests(unittest.TestCase):
                 selection.document_contract["checks"],
                 ["draft", "working_projection"],
             )
+            self.assertEqual(
+                selection.document_contract["user_story"],
+                {
+                    "policy": "numbered-role-goal-value",
+                    "heading": "User Story",
+                    "id_prefix": "US",
+                    "title_separator": ".",
+                    "role_label": "As",
+                    "goal_label": "I want",
+                    "value_label": "so that",
+                },
+            )
 
     def test_partial_document_contract_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "project"
             root.mkdir()
             write_profile(root, extra_frontmatter="document_toc: obsidian-h2-exact")
+            with self.assertRaises(spec_pipeline.PipelineError):
+                spec_pipeline.detect_profile(root)
+
+    def test_partial_user_story_contract_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            write_profile(
+                root,
+                extra_frontmatter=(
+                    "document_checks: draft\n"
+                    "document_required_headings: Оглавление, User Story\n"
+                    "document_toc: obsidian-h2-exact\n"
+                    "document_toc_heading: Оглавление\n"
+                    "document_toc_separators: optional\n"
+                    "document_user_story_policy: numbered-role-goal-value"
+                ),
+            )
             with self.assertRaises(spec_pipeline.PipelineError):
                 spec_pipeline.detect_profile(root)
 

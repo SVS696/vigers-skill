@@ -13,7 +13,10 @@ CONTRACT_SCHEMA = 1
 CHECK_TARGETS = {"draft", "working_projection"}
 TOC_POLICIES = {"obsidian-h2-exact"}
 SEPARATOR_POLICIES = {"optional", "required"}
+USER_STORY_POLICIES = {"numbered-role-goal-value"}
+USER_STORY_TITLE_SEPARATORS = {".", ":"}
 H2_RE = re.compile(r"^##(?!#)\s+(.+?)\s*$")
+H3_RE = re.compile(r"^###(?!#)\s+(.+?)\s*$")
 OBSIDIAN_TOC_LINK_RE = re.compile(r"\[\[#([^\]|]+)(?:\|[^\]]+)?\]\]")
 
 
@@ -39,6 +42,13 @@ def build_profile_contract(
         "document_toc",
         "document_toc_heading",
         "document_toc_separators",
+        "document_user_story_policy",
+        "document_user_story_heading",
+        "document_user_story_id_prefix",
+        "document_user_story_title_separator",
+        "document_user_story_role_label",
+        "document_user_story_goal_label",
+        "document_user_story_value_label",
     }
     if not any(metadata.get(field, "").strip() for field in field_names):
         return None
@@ -60,6 +70,17 @@ def build_profile_contract(
             "separators": separators,
         },
     }
+    user_story_fields = {
+        "policy": metadata.get("document_user_story_policy", "").strip().casefold(),
+        "heading": metadata.get("document_user_story_heading", "").strip(),
+        "id_prefix": metadata.get("document_user_story_id_prefix", "").strip(),
+        "title_separator": metadata.get("document_user_story_title_separator", "").strip(),
+        "role_label": metadata.get("document_user_story_role_label", "").strip(),
+        "goal_label": metadata.get("document_user_story_goal_label", "").strip(),
+        "value_label": metadata.get("document_user_story_value_label", "").strip(),
+    }
+    if any(user_story_fields.values()):
+        contract["user_story"] = user_story_fields
     errors = validate_contract(contract)
     if errors:
         raise DocumentContractError(f"{source}: " + "; ".join(errors))
@@ -105,6 +126,28 @@ def validate_contract(payload: Any) -> list[str]:
             errors.append("document contract has an unsupported toc separator policy")
         if isinstance(headings, list) and toc.get("heading") not in headings:
             errors.append("toc heading must be included in required_headings")
+
+    user_story = payload.get("user_story")
+    if user_story is not None:
+        if not isinstance(user_story, dict):
+            errors.append("document contract user_story must be an object")
+        else:
+            if user_story.get("policy") not in USER_STORY_POLICIES:
+                errors.append("document contract has an unsupported user story policy")
+            heading = user_story.get("heading")
+            if not isinstance(heading, str) or not heading.strip():
+                errors.append("document contract has no user story heading")
+            elif isinstance(headings, list) and heading not in headings:
+                errors.append("user story heading must be included in required_headings")
+            prefix = user_story.get("id_prefix")
+            if not isinstance(prefix, str) or not re.fullmatch(r"[A-Z][A-Z0-9]*", prefix):
+                errors.append("document contract has an invalid user story id_prefix")
+            if user_story.get("title_separator") not in USER_STORY_TITLE_SEPARATORS:
+                errors.append("document contract has an unsupported user story title separator")
+            for field in ("role_label", "goal_label", "value_label"):
+                value = user_story.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"document contract has no user story {field}")
     return errors
 
 
@@ -138,6 +181,124 @@ def _previous_nonblank(lines: list[str], before: int) -> str | None:
         if lines[index].strip():
             return lines[index].strip()
     return None
+
+
+def _outside_fences(lines: list[str]) -> list[bool]:
+    outside: list[bool] = []
+    fence: str | None = None
+    for line in lines:
+        stripped = line.lstrip()
+        marker = stripped[:3]
+        if marker in {"```", "~~~"}:
+            outside.append(False)
+            if fence is None:
+                fence = marker
+            elif fence == marker:
+                fence = None
+            continue
+        outside.append(fence is None)
+    return outside
+
+
+def _paragraphs(lines: list[str], outside: list[bool]) -> list[str]:
+    paragraphs: list[str] = []
+    current: list[str] = []
+    for line, is_outside in zip(lines, outside, strict=True):
+        stripped = line.strip()
+        if not is_outside or not stripped:
+            if current:
+                paragraphs.append(" ".join(current))
+                current = []
+            continue
+        current.append(stripped)
+    if current:
+        paragraphs.append(" ".join(current))
+    return paragraphs
+
+
+def _validate_user_story_section(
+    lines: list[str],
+    headings: list[tuple[str, int]],
+    contract: dict[str, Any],
+    *,
+    label: str,
+) -> list[str]:
+    policy = contract["user_story"]
+    heading = policy["heading"]
+    section_matches = [(name, index) for name, index in headings if name == heading]
+    if len(section_matches) != 1:
+        return []
+
+    section_start = section_matches[0][1] + 1
+    section_end = next(
+        (index for _name, index in headings if index >= section_start),
+        len(lines),
+    )
+    section_lines = lines[section_start:section_end]
+    outside = _outside_fences(section_lines)
+    h3: list[tuple[str, int]] = []
+    for index, (line, is_outside) in enumerate(zip(section_lines, outside, strict=True)):
+        if not is_outside:
+            continue
+        match = H3_RE.match(line)
+        if match:
+            h3.append((_heading_text(match.group(1)), index))
+
+    prefix = policy["id_prefix"]
+    separator = policy["title_separator"]
+    story_heading_re = re.compile(
+        rf"^{re.escape(prefix)}-([1-9][0-9]*){re.escape(separator)}\s+(.+)$"
+    )
+    stories: list[tuple[int, int]] = []
+    errors: list[str] = []
+    for raw, index in h3:
+        match = story_heading_re.fullmatch(raw)
+        if not match:
+            errors.append(
+                f"{label}: unexpected H3 in {heading!r}: {raw!r}; "
+                f"expected '{prefix}-N{separator} <title>'"
+            )
+            continue
+        stories.append((int(match.group(1)), index))
+
+    if not stories:
+        errors.append(
+            f"{label}: {heading!r} must contain at least one "
+            f"'### {prefix}-N{separator} <title>' entry"
+        )
+        return errors
+
+    numbers = [number for number, _index in stories]
+    expected_numbers = list(range(1, len(numbers) + 1))
+    if numbers != expected_numbers:
+        errors.append(
+            f"{label}: {heading!r} IDs must be unique and sequential from "
+            f"{prefix}-1 (found: {', '.join(f'{prefix}-{number}' for number in numbers)})"
+        )
+
+    role_label = re.escape(policy["role_label"])
+    goal_label = re.escape(policy["goal_label"])
+    value_label = re.escape(policy["value_label"])
+    statement_re = re.compile(
+        rf"^\*\*{role_label}\s+.+?\*\*,\s+{goal_label}\s+.+?,\s+{value_label}\s+.+\.$"
+    )
+    h3_indexes = [index for _raw, index in h3]
+    for number, start in stories:
+        end = next((index for index in h3_indexes if index > start), len(section_lines))
+        body_lines = section_lines[start + 1 : end]
+        body_outside = outside[start + 1 : end]
+        statements = [
+            paragraph
+            for paragraph in _paragraphs(body_lines, body_outside)
+            if statement_re.fullmatch(paragraph)
+        ]
+        if len(statements) != 1:
+            errors.append(
+                f"{label}: {prefix}-{number} must contain exactly one "
+                f"'**{policy['role_label']} <role>**, {policy['goal_label']} <goal>, "
+                f"{policy['value_label']} <value>.' paragraph"
+            )
+    return errors
 
 
 def validate_markdown(text: str, contract: dict[str, Any], *, label: str) -> list[str]:
@@ -188,6 +349,8 @@ def validate_markdown(text: str, contract: dict[str, Any], *, label: str) -> lis
             errors.append(f"{label}: TOC must have a '---' separator before it")
         if later_headings and _previous_nonblank(lines, toc_end) != "---":
             errors.append(f"{label}: TOC must have a '---' separator after it")
+    if contract.get("user_story") is not None:
+        errors.extend(_validate_user_story_section(lines, headings, contract, label=label))
     return errors
 
 

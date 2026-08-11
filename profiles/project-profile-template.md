@@ -8,6 +8,13 @@ document_required_headings:
 document_toc:
 document_toc_heading:
 document_toc_separators:
+document_user_story_policy:
+document_user_story_heading:
+document_user_story_id_prefix:
+document_user_story_title_separator:
+document_user_story_role_label:
+document_user_story_goal_label:
+document_user_story_value_label:
 ---
 
 # Профиль постановок проекта
@@ -102,8 +109,11 @@ document_toc_separators:
 Если формат локального Markdown обязателен, объяви machine contract во
 frontmatter: `document_checks: draft, working_projection`, перечень
 `document_required_headings`, `document_toc: obsidian-h2-exact`, название
-раздела и политику разделителей. Не заполняй часть полей: либо объяви контракт
-целиком, либо оставь все `document_*` пустыми.
+раздела и политику разделителей. Если проект требует единую форму User Story,
+добавь policy `numbered-role-goal-value`, H2, ID prefix, разделитель заголовка и
+локальные метки role/goal/value. Общий core проверяет объявленную форму, но не
+знает язык и терминологию проекта. Не заполняй часть полей: либо объяви контракт
+целиком, либо оставь соответствующий набор `document_*` пустым.
 
 Опиши отдельный `project-conformance`: применимые API/HTTP, identifier/casing,
 терминологию, frontmatter, шаблоны, ссылки, имена файлов и legacy-исключения.

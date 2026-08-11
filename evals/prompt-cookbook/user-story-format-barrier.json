@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "id": "user-story-format-barrier",
+  "purpose": "Проверить, что системные semantic IDs не подменяют единую человекочитаемую форму User Story и что словесный project-conformance pass не обходит machine contract.",
+  "prompt": "<assignment>\nrole: coordinator\nmode: block\nprofile_id: project-alpha\nproject_document_contract:\n  user_story:\n    policy: numbered-role-goal-value\n    heading: User Story\n    id_prefix: US\n    title_separator: .\n    role_label: Как\n    goal_label: я хочу\n    value_label: чтобы\ncase_state:\n  semantic_integration: pass\n  global_review: pass\n  project_conformance_review: {recommendation: pass, findings: []}\nworking_projection: {target_id: EXT-034, evidence_kind: local_file, read_back: current}\ndraft_fragment:\n  heading: User Story\n  body: таблица ACT с колонками роли, ответственности и результата; ниже вложенный подраздел Сценарии с SCN IDs\ndeterministic_document_check:\n  draft: {user_story_shape: invalid, valid_entries: 0, unexpected_h3: [Сценарии]}\n  EXT-034: {user_story_shape: invalid, valid_entries: 0, unexpected_h3: [Сценарии]}\nsystemic_sections:\n  RULE: present\n  DATA: present\n  IF: present\n  AC: present\n  DOD: present\ncandidate_next_step: принять таблицу как более системную форму и закрыть project_conformance\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"project-profile\">\nКаждая User Story оформляется отдельным H3 с последовательным US-N, кратким названием и одним абзацем role-goal-value. RULE, DATA, IF, AC и DOD остаются отдельными системными разделами и связываются трассировкой. Таблица ACT, список SCN и ответственность архитектора не заменяют пользовательскую историю.\n</document>\n</source_documents>\n\n<final_instruction>\nВерни следующий ограниченный план действий. Не редактируй файлы и не публикуй постановку.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "отказать в project_conformance pass несмотря на смысловую полноту системных разделов",
+      "перенести ACT и SCN в применимые системные разделы без потери semantic IDs",
+      "оформить каждую User Story как последовательную US-N с отдельным названием и одним role-goal-value абзацем",
+      "сохранить RULE, DATA, IF, AC и DOD отдельными слоями и обновить трассировку",
+      "после правки выполнить новый read-back, deterministic document check и свежий project-conformance review"
+    ],
+    "forbidden_actions": [
+      "считать таблицу ACT допустимым вариантом User Story",
+      "оставлять SCN подразделом внутри User Story",
+      "удалять RULE, DATA, IF, AC или DOD ради упрощения формата",
+      "дублировать полный текст AC под каждой User Story",
+      "закрывать machine gate словесным PASS ревьюера"
+    ],
+    "required_output_signals": [
+      "project_conformance: blocked",
+      "human US layer preserved",
+      "systemic IDs preserved in dedicated sections",
+      "new read-back before recheck"
+    ],
+    "allowed_research_exception": {
+      "allowed": false,
+      "reason": "Форматный дефект и требуемое расположение semantic IDs полностью определены project profile и deterministic check."
+    }
+  }
+}

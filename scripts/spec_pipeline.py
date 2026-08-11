@@ -64,6 +64,7 @@ REQUIRED_PROMPT_EVALS = (
     "evals/prompt-cookbook/profile-owned-working-projection.json",
     "evals/prompt-cookbook/bounded-systemic-scope.json",
     "evals/prompt-cookbook/solution-boundary-smells.json",
+    "evals/prompt-cookbook/user-story-format-barrier.json",
 )
 PUBLIC_FORBIDDEN_MARKERS = tuple(
     "".join(parts) for parts in (("R", "TL"), ("H", "ÆZE"), ("HA", "EZE"))
@@ -443,6 +444,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/evals/prompt-cookbook/early-working-projection.json",
             "{baseDir}/evals/prompt-cookbook/live-checklist-completion-barrier.json",
             "{baseDir}/evals/prompt-cookbook/profile-owned-working-projection.json",
+            "{baseDir}/evals/prompt-cookbook/user-story-format-barrier.json",
             "{baseDir}/scripts/spec_pipeline.py",
             "{baseDir}/scripts/case_pipeline.py",
         ):
