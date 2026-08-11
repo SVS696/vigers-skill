@@ -83,7 +83,7 @@ source documents с ID, origin и датой чтения. Для большог
 
 ## План и checklist
 
-`plan.json` schema 3 содержит этапы `Pxx`. Каждый этап имеет outcome,
+`plan.json` schema 4 содержит этапы `Pxx`. Каждый этап имеет outcome,
 dependencies, exit criteria, source refs, checklist `Pxx-Cxx` и трёхточечный
 `automation_estimate`. Верхний `automation_estimation` фиксирует обязательные
 `wall_clock`, `seconds` и `execution_use: human_information_only`. Это
@@ -95,7 +95,7 @@ runtime-бюджет. Значения не включаются в role-context
 создаётся только если у него есть самостоятельный результат или dependency gate;
 иначе это checklist item.
 
-Schema 3 также требует `preliminary_requirements`. Это planning-гипотезы, а не
+Schema 4 также требует `preliminary_requirements`. Это planning-гипотезы, а не
 утверждённая модель требований:
 
 ```json
@@ -139,9 +139,17 @@ Approval planning revision согласует направление анали�
 DoD, найденные в полном анализе, разрешены. Planning snapshot при этом не
 переписывается: изменения живут в модели требований.
 
+Schema 4 дополнительно требует `solution_boundary_probe` по
+`{baseDir}/references/solution-boundary-contract.md`. Planner сохраняет
+наблюдаемый кейс, кандидат корневой способности, просмотренные поверхности,
+подтверждённые и предполагаемые варианты, roadmap/необратимость, источник
+срочности и кандидат горизонта. Отсутствие аналогов фиксируется явным
+отрицательным результатом. Probe остаётся гипотезой до полного анализа и не
+расширяет current scope.
+
 Schema 1 остаётся legacy-планом без telemetry; schema 2 — совместимым планом с
-telemetry, но без обязательных planning-гипотез. Все новые revisions используют
-schema 3.
+telemetry, но без обязательных planning-гипотез; schema 3 — совместимым планом
+с preliminary US/DoD. Все новые revisions используют schema 4.
 
 Checklist item — исполнимый шаг, а не односложный ярлык и не мини-ТЗ. `text`
 может быть полноценным предложением. Если существенное условие не помещается в

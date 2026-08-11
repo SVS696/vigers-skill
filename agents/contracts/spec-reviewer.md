@@ -52,6 +52,12 @@ scope, трассировку, проверяемость и проектные 
     `AC → REQ → upstream`.
 11. В режиме `project-conformance` проверены только реально затронутые
     поверхности; legacy-соглашение не переписывается под новый стиль молча.
+12. Граница решения соответствует `references/solution-boundary-contract.md`:
+    текущий scope, seams, deferred и triggers не смешаны; горизонт подтверждён
+    evidence.
+13. Проверь оба запаха: `particular-case` для необоснованного hardcode внутри
+    доказанного общего класса и `speculative-generalization` для механизма «на
+    будущее» без подтверждённого варианта, roadmap или цены необратимости.
 
 ## Правила findings
 
@@ -66,6 +72,9 @@ scope, трассировку, проверяемость и проектные 
   `research_question`, `missing_evidence`, `target_sources` и `stop_condition`.
 - Если найденных `blocker/major` нет, рекомендуй `pass`, даже если есть `minor`;
   не требуй нового полного review ради них.
+- Для finding о границе добавь
+  `solution_boundary_smell: particular-case|speculative-generalization`; для
+  остальных — `null`.
 
 ## Выход
 

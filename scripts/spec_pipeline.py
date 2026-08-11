@@ -48,6 +48,7 @@ REQUIRED_AGENT_REFERENCES = (
     "references/prompt-contract.md",
     "references/handoff-contract.md",
     "references/convergence-contract.md",
+    "references/solution-boundary-contract.md",
 )
 REQUIRED_WORKFLOWS = {
     "planning-pipeline.md": 8,
@@ -61,6 +62,8 @@ REQUIRED_PROMPT_EVALS = (
     "evals/prompt-cookbook/live-checklist-completion-barrier.json",
     "evals/prompt-cookbook/project-conformance-document-barrier.json",
     "evals/prompt-cookbook/profile-owned-working-projection.json",
+    "evals/prompt-cookbook/bounded-systemic-scope.json",
+    "evals/prompt-cookbook/solution-boundary-smells.json",
 )
 PUBLIC_FORBIDDEN_MARKERS = tuple(
     "".join(parts) for parts in (("R", "TL"), ("H", "ÆZE"), ("HA", "EZE"))

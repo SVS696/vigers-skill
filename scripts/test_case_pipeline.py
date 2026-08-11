@@ -189,6 +189,7 @@ class CasePipelineTests(unittest.TestCase):
         projection_object_id: str = "specification.md",
         projection_url: str | None = None,
         projection_evidence_kind: str = "local_file",
+        solution_boundary_probe: bool = False,
     ) -> dict[str, object]:
         markdown = "# Planning handoff\n\nVerified research and approved plan.\n"
         projection_binding = {
@@ -226,6 +227,26 @@ class CasePipelineTests(unittest.TestCase):
             "artifact_hashes": {},
             "content_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
         }
+        if solution_boundary_probe:
+            payload["solution_boundary_probe"] = {
+                "status": "preliminary",
+                "validation_gate": "full_analysis",
+                "candidate_horizon": "bounded-systemic",
+                "observed_case": "A current variant is requested",
+                "candidate_root_capability": "Handle the capability consistently",
+                "analogy_search": {
+                    "searched_surfaces": ["backlog"],
+                    "source_refs": ["SRC-001"],
+                    "confirmed_variants": [
+                        {"name": "Current variant", "source_refs": ["SRC-001"]}
+                    ],
+                    "hypothesized_variants": [],
+                    "roadmap_refs": [],
+                    "irreversibility_signals": [],
+                    "negative_result_recorded": False,
+                },
+                "urgent_fix": {"confirmed": False, "source_refs": []},
+            }
         payload["fingerprint"] = planning_case.canonical_fingerprint(payload)
         root.mkdir(parents=True, exist_ok=True)
         (root / planning_case.HANDOFF_JSON).write_text(
@@ -234,6 +255,59 @@ class CasePipelineTests(unittest.TestCase):
         )
         (root / planning_case.HANDOFF_MARKDOWN).write_text(markdown, encoding="utf-8")
         return payload
+
+    def write_solution_boundary(self, root: Path, horizon: str) -> None:
+        hotfix = (
+            {
+                "reason": "Urgent risk is confirmed",
+                "source_refs": ["SRC-001"],
+                "reversibility": "Remove the narrow rule",
+                "return_trigger": "A second confirmed variant appears",
+            }
+            if horizon == "tactical"
+            else None
+        )
+        confirmed = [
+            {"name": "Current variant", "evidence_refs": ["SRC-001"]}
+        ]
+        roadmap_refs: list[str] = []
+        if horizon == "generalized-capability":
+            confirmed.append(
+                {"name": "Second variant", "evidence_refs": ["SRC-002"]}
+            )
+        payload = {
+            "schema": 1,
+            "solution_horizon": horizon,
+            "observed_case": "A current variant is requested",
+            "root_capability": "Handle the capability consistently",
+            "invariants": ["Existing behavior remains compatible"],
+            "confirmed_variants": confirmed,
+            "hypothesized_variants": [],
+            "current_scope": ["Support confirmed behavior"],
+            "extension_seams": ["Keep the variant boundary neutral"],
+            "extension_seam_absence_reason": None,
+            "deferred_variants": [],
+            "expansion_triggers": ["A new variant is confirmed"],
+            "horizon_evidence": {
+                "analogy_search_refs": ["SRC-001"],
+                "roadmap_refs": roadmap_refs,
+                "irreversibility_signals": [],
+            },
+            "hotfix_exception": hotfix,
+            "planning_probe_disposition": {
+                "status": "confirmed",
+                "rationale": "Full analysis confirmed the boundary",
+            },
+        }
+        text = (
+            "# Decision log\n\n"
+            f"{case_pipeline.SOLUTION_BOUNDARY_START}\n"
+            "```json\n"
+            f"{json.dumps(payload, ensure_ascii=False, indent=2)}\n"
+            "```\n"
+            f"{case_pipeline.SOLUTION_BOUNDARY_END}\n"
+        )
+        (root / "decisions.md").write_text(text, encoding="utf-8")
 
     def write_external_receipt(
         self,
@@ -388,6 +462,270 @@ class CasePipelineTests(unittest.TestCase):
             _, manifest, ledger = case_pipeline.load_case(root)
             self.assertEqual(manifest["schema"], 2)
             self.assertEqual(ledger["blocks"], [])
+
+    def test_planning_probe_requires_boundary_before_author_passes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root, selected_mode="compact")
+            self.write_planning_handoff(root, solution_boundary_probe=True)
+            case_pipeline.init_case(
+                root,
+                case_id="boundary-required",
+                mode="compact",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+            )
+            replace_todo(root / "draft.md", "# Draft\n\nVerified scope")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(
+                case_pipeline.CaseError,
+                "no final solution-boundary block",
+            ):
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name="author_passes",
+                    status="pass",
+                    evidence="draft.md",
+                    note=None,
+                )
+
+            self.write_solution_boundary(root, "bounded-systemic")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="author_passes",
+                status="pass",
+                evidence="draft.md",
+                note=None,
+            )
+            _, manifest, _ = case_pipeline.load_case(root)
+            self.assertEqual(manifest["gates"]["author_passes"]["status"], "pass")
+
+    def test_tactical_boundary_requires_architecture_design(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root, selected_mode="compact")
+            self.write_planning_handoff(root, solution_boundary_probe=True)
+            case_pipeline.init_case(
+                root,
+                case_id="tactical-boundary",
+                mode="compact",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+            )
+            replace_todo(root / "draft.md", "# Draft\n\nNarrow reversible fix")
+            self.write_solution_boundary(root, "tactical")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(
+                case_pipeline.CaseError,
+                "requires a passed architecture_design gate",
+            ):
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name="author_passes",
+                    status="pass",
+                    evidence="draft.md",
+                    note=None,
+                )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="architecture_design",
+                status="pass",
+                evidence="decisions.md",
+                note=None,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="author_passes",
+                status="pass",
+                evidence="draft.md",
+                note=None,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(
+                case_pipeline.CaseError,
+                "architecture_conformance must pass",
+            ):
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name="architecture_conformance",
+                    status="not_required",
+                    evidence=None,
+                    note="No additional review",
+                )
+
+    def test_boundary_required_gates_cannot_be_marked_not_required(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root, selected_mode="compact")
+            self.write_planning_handoff(root, solution_boundary_probe=True)
+            case_pipeline.init_case(
+                root,
+                case_id="boundary-required-gates",
+                mode="compact",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+            )
+            self.write_solution_boundary(root, "bounded-systemic")
+            for gate_name in ("author_passes", "global_review"):
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                with self.assertRaisesRegex(
+                    case_pipeline.CaseError,
+                    f"{gate_name} must pass",
+                ):
+                    case_pipeline.set_gate(
+                        loaded_root,
+                        manifest,
+                        ledger,
+                        name=gate_name,
+                        status="not_required",
+                        evidence=None,
+                        note="Attempted bypass",
+                    )
+
+            manifest_path = root / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            manifest["gates"]["author_passes"]["status"] = "not_required"
+            manifest["gates"]["global_review"]["status"] = "not_required"
+            manifest_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            errors = case_pipeline.validate_case(
+                loaded_root, manifest, ledger, final=True
+            )
+            self.assertTrue(
+                any("Gate author_passes must pass" in item for item in errors)
+            )
+            self.assertTrue(
+                any("Gate global_review must pass" in item for item in errors)
+            )
+
+    def test_boundary_change_invalidates_author_pass_subject(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root, selected_mode="compact")
+            self.write_planning_handoff(root, solution_boundary_probe=True)
+            case_pipeline.init_case(
+                root,
+                case_id="boundary-tamper",
+                mode="compact",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+            )
+            replace_todo(root / "draft.md", "# Draft\n\nVerified scope")
+            self.write_solution_boundary(root, "bounded-systemic")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="author_passes",
+                status="pass",
+                evidence="draft.md",
+                note=None,
+            )
+            decisions = root / "decisions.md"
+            decisions.write_text(
+                decisions.read_text(encoding="utf-8").replace(
+                    "Handle the capability consistently",
+                    "Handle the capability with a changed boundary",
+                ),
+                encoding="utf-8",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            errors = case_pipeline.validate_case(
+                loaded_root, manifest, ledger, final=True
+            )
+            self.assertTrue(
+                any("Gate author_passes subject changed" in item for item in errors)
+            )
+
+    def test_boundary_change_invalidates_global_and_architecture_reviews(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root, selected_mode="compact")
+            self.write_planning_handoff(root, solution_boundary_probe=True)
+            case_pipeline.init_case(
+                root,
+                case_id="boundary-review-tamper",
+                mode="compact",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+            )
+            replace_todo(root / "draft.md", "# Draft\n\nVerified scope")
+            replace_todo(root / "reviews" / "global.md", "# Global\n\nPASS")
+            replace_todo(
+                root / "reviews" / "architecture.md",
+                "# Architecture conformance\n\nPASS",
+            )
+            self.write_solution_boundary(root, "bounded-systemic")
+            for name, evidence in (
+                ("author_passes", "draft.md"),
+                ("global_review", "reviews/global.md"),
+                ("architecture_conformance", "reviews/architecture.md"),
+            ):
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name=name,
+                    status="pass",
+                    evidence=evidence,
+                    note=None,
+                )
+            decisions = root / "decisions.md"
+            decisions.write_text(
+                decisions.read_text(encoding="utf-8").replace(
+                    "Handle the capability consistently",
+                    "Handle a newly changed capability boundary",
+                ),
+                encoding="utf-8",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            errors = case_pipeline.validate_case(
+                loaded_root, manifest, ledger, final=True
+            )
+            self.assertTrue(
+                any("Gate global_review subject changed" in item for item in errors)
+            )
+            self.assertTrue(
+                any(
+                    "Gate architecture_conformance subject changed" in item
+                    for item in errors
+                )
+            )
 
     def test_status_handles_non_object_working_projection_payload(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

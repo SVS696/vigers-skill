@@ -76,6 +76,13 @@ description: "Оркестрирует предварительное иссле
     statuses, закрытие delivery task или инцидента разрешены только по lifecycle
     policy проекта и подтверждённому delivery evidence; публикация текста сама
     по себе таким evidence не является.
+15. **Граница решения защищена с двух сторон.** Частный запрос — наблюдаемый
+    экземпляр потребности, а не автоматически весь класс задач. Анализируй
+    системно, реализуй подтверждённый scope и сохраняй обоснованный путь
+    расширения, но не строй механизм «на будущее» без evidence. Выбирай
+    `tactical|bounded-systemic|generalized-capability` строго по
+    `{baseDir}/references/solution-boundary-contract.md`; финальное решение живёт
+    в существующем `decisions.md`, а не в новом артефакте.
 
 ## Когда применять
 
@@ -122,8 +129,9 @@ description: "Оркестрирует предварительное иссле
 **Вход:** выбран профиль, задача не сводится к ревью готового артефакта или
 мелкой редакционной правке.
 
-1. Полностью прочитай `{baseDir}/workflows/planning-pipeline.md` и
-   `{baseDir}/references/planning-contract.md`.
+1. Полностью прочитай `{baseDir}/workflows/planning-pipeline.md`,
+   `{baseDir}/references/planning-contract.md` и
+   `{baseDir}/references/solution-boundary-contract.md`.
 2. Создай planning-case и один ранний passport. Команда `init --cwd "<cwd>"`
    автоматически подхватывает `planning_anchors` ближайшего profile. Найди
    существующие единицы результата, создай или свяжи обязательные пустые anchors
@@ -139,6 +147,9 @@ description: "Оркестрирует предварительное иссле
    покрытие и проверки. Дополнительно выяви preliminary `PUS-*` и `PDOD-*` со
    ссылками на источники; они обязательны для проверки полным анализом, но не
    являются утверждёнными требованиями или финальным DoD.
+   Также сохрани preliminary solution-boundary probe: найденные аналоги,
+   отрицательный результат, кандидат корневой способности и горизонта. Это не
+   финальный scope.
 5. Покажи пользователю plan, coverage/gaps и bindings. До явного approval не
    запускай полноценный Vigers case.
 6. После approval создай или свяжи объявленные profile post-approval artifacts.
@@ -259,6 +270,8 @@ Business analysis не является отдельной обязательн�
 
 Запусти архитектора, если затронуто хотя бы одно:
 
+- выбран `tactical` или `generalized-capability` по контракту границы решения;
+
 - границы сервисов, компонентов или владение данными;
 - новая интеграция, выбор sync/async или транспорт;
 - новый API-контракт либо обратная совместимость;
@@ -272,6 +285,8 @@ Business analysis не является отдельной обязательн�
 уточнения сообщения об ошибке или прямого расширения уже принятого решения без
 новой границы. Если системный аналитик или ревьюер обнаружил пропущенное
 архитектурное влияние, вернись к гейту.
+`bounded-systemic` — общий горизонт по умолчанию и сам по себе не является
+архитектурным trigger.
 
 ## Независимость контекстов
 
@@ -304,6 +319,10 @@ specification workflow и выполни его:
 Перед research/review полностью прочитай
 `{baseDir}/references/convergence-contract.md`: он определяет, когда поиск можно
 переоткрыть, какие findings блокируют gate и когда нужно идти дальше.
+Перед системным анализом, design, author passes и global review используй
+`{baseDir}/references/solution-boundary-contract.md`. Принятый boundary должен
+быть записан в `decisions.md` до `author_passes`; изменение decision или
+planning probe после pass делает гейт stale.
 Как только во время полного анализа доказано, что approved plan неполон или
 неверен, останови текущий проход и не проталкивай старый DAG. Открой новую
 planning revision командой `replan`, сохрани старый snapshot и выполненные
@@ -353,6 +372,10 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 - Planning research покрывает применимые project sources либо честно фиксирует
   partial/blocked coverage; план, checklists, preliminary US и preliminary DoD
   ссылаются на `SRC-NNN`.
+- Planning probe сохранил поиск аналогов и отрицательный результат; полный
+  анализ выбрал доказуемый горизонт и разделил current scope, extension seams,
+  deferred variants и expansion triggers. Reviewer проверил оба запаха:
+  `particular-case` и `speculative-generalization`.
 - Полноценный non-review Vigers case связан с approved planning handoff; старые
   revisions, user comments и external read-back bindings не потеряны.
 - Для каждого нового planned stage есть трёхточечный automation estimate, а
@@ -404,6 +427,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/references/planning-contract.md` | Research, plan DAG, passport, external drafts и approval contract |
 | `{baseDir}/references/automation-timing.md` | Прогноз, wall-clock ledger, команды и агрегация истории |
 | `{baseDir}/references/convergence-contract.md` | Порог качества, переоткрытие research и остановка minor-only циклов |
+| `{baseDir}/references/solution-boundary-contract.md` | Горизонты решения, границы scope и двусторонняя защита от hardcode/overengineering |
 | `{baseDir}/references/handoff-contract.md` | Контракт case package и результатов ролей |
 | `{baseDir}/references/prompt-contract.md` | Сборка ограниченного prompt для независимой роли |
 | `{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json` | Регрессия prompt: закрытый coverage не переоткрывается без существенной evidence-дыры |
@@ -412,6 +436,8 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/evals/prompt-cookbook/early-working-projection.json` | Регрессия prompt: обязательный рабочий draft появляется и обновляется до финальной интеграции |
 | `{baseDir}/evals/prompt-cookbook/live-checklist-completion-barrier.json` | Регрессия prompt: выполненный пункт синхронизируется сразу без навязывания порядка независимым пунктам |
 | `{baseDir}/evals/prompt-cookbook/profile-owned-working-projection.json` | Регрессия prompt: форма видимой проекции берётся из project profile без универсального локального дубля |
+| `{baseDir}/evals/prompt-cookbook/bounded-systemic-scope.json` | Регрессия prompt: общий класс выявлен без расширения поставки до спекулятивного конструктора |
+| `{baseDir}/evals/prompt-cookbook/solution-boundary-smells.json` | Регрессия prompt: reviewer симметрично ловит частный hardcode и преждевременную универсализацию |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/block-contract.md` | Контракт семантического блока и sidecar index |
 | `{baseDir}/references/knowledge-map.md` | Детерминированная карта методических маршрутов |

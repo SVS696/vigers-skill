@@ -96,7 +96,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["contracts"], 5)
         self.assertEqual(counts["runtime_adapters"], 10)
         self.assertEqual(counts["workflows"], 3)
-        self.assertEqual(counts["prompt_evals"], 6)
+        self.assertEqual(counts["prompt_evals"], 8)
 
     def test_closed_coverage_prompt_eval_rejects_archaeological_restart(self) -> None:
         eval_path = (

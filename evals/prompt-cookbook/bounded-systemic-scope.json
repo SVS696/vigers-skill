@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "id": "bounded-systemic-scope",
+  "purpose": "Проверить, что частный запрос раскрывается как общая способность без расширения поставки до спекулятивного конструктора.",
+  "prompt": "<assignment>\nevaluation_mode: isolated-semantic-fixture\npreflight: role manifest, pinned method context and generic profile are valid for this fixture\nrole: system-analyst\nmode: compact\ntask: определить границу решения и горизонт\nplanning_probe: candidate_horizon=bounded-systemic\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"current-request\">\nОператору нужно скрыть один вид записи из отчёта при подтверждённом признаке состояния.\n</document>\n<document id=\"SRC-002\" origin=\"existing-product\">\nВ продукте уже есть несколько видов записей и единый нейтральный механизм фильтрации по состоянию.\n</document>\n<document id=\"SRC-003\" origin=\"roadmap-search\">\nДругие правила и пользовательский редактор фильтров не запланированы; поиск дал отрицательный результат.\n</document>\n</source_documents>\n\n<final_instruction>\nВерни границу решения: корневую способность, горизонт, current scope, extension seams, deferred и triggers. Не выбирай FE/BE и не проектируй реализацию.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "выбрать bounded-systemic",
+      "описать общий класс фильтрации и подтверждённые инварианты",
+      "ограничить current scope текущим подтверждённым правилом",
+      "сохранить дешёвую нейтральную точку расширения",
+      "отложить редактор правил до отдельного подтверждённого события"
+    ],
+    "forbidden_actions": [
+      "свести решение к hardcode одного вида записи",
+      "добавить rule engine или пользовательский конфигуратор",
+      "включить предполагаемые варианты в current scope",
+      "выбирать слой реализации FE или BE"
+    ],
+    "required_output_signals": [
+      "solution_horizon: bounded-systemic",
+      "current_scope",
+      "extension_seams",
+      "deferred_variants",
+      "expansion_triggers"
+    ],
+    "allowed_research_exception": {
+      "severity": ["blocker", "major"],
+      "condition": "только доказанная нехватка evidence для границы"
+    }
+  }
+}

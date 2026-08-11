@@ -30,7 +30,8 @@ from spec_pipeline import (
 
 
 SCHEMA_VERSION = 1
-PLAN_SCHEMA_VERSION = 3
+PLAN_SCHEMA_VERSION = 4
+PRELIMINARY_REQUIREMENTS_PLAN_SCHEMA_VERSION = 3
 TELEMETRY_PLAN_SCHEMA_VERSION = 2
 LEGACY_PLAN_SCHEMA_VERSION = 1
 HANDOFF_SCHEMA_VERSION = 1
@@ -47,6 +48,12 @@ CHECK_ID_RE = re.compile(r"^P[0-9]{2,3}-C[0-9]{2,3}$")
 PRELIMINARY_US_ID_RE = re.compile(r"^PUS-[0-9]{3,4}$")
 PRELIMINARY_DOD_ID_RE = re.compile(r"^PDOD-[0-9]{3,4}$")
 HYPOTHESIS_CONFIDENCE = {"low", "medium", "high"}
+SOLUTION_HORIZONS = {
+    "undetermined",
+    "tactical",
+    "bounded-systemic",
+    "generalized-capability",
+}
 PUBLISH_GATES = {"before_research", "before_review", "after_approval", "none"}
 
 STATES = {
@@ -269,6 +276,23 @@ def init_case(
                 "user_stories": [],
                 "definition_of_done": [],
             },
+            "solution_boundary_probe": {
+                "status": "preliminary",
+                "validation_gate": "full_analysis",
+                "candidate_horizon": "undetermined",
+                "observed_case": "VIGERS_TODO",
+                "candidate_root_capability": "VIGERS_TODO",
+                "analogy_search": {
+                    "searched_surfaces": [],
+                    "source_refs": [],
+                    "confirmed_variants": [],
+                    "hypothesized_variants": [],
+                    "roadmap_refs": [],
+                    "irreversibility_signals": [],
+                    "negative_result_recorded": False,
+                },
+                "urgent_fix": {"confirmed": False, "source_refs": []},
+            },
             "stages": [],
         },
     )
@@ -296,6 +320,7 @@ def init_case(
         "project_root": project_root,
         "required_anchor_systems": normalized_anchor_systems,
         "working_projection_policy": working_projection_policy,
+        "minimum_plan_schema": PLAN_SCHEMA_VERSION,
         "state": "intake",
         "revision": 1,
         "created_at": now_utc(),
@@ -598,23 +623,142 @@ def validate_preliminary_requirements(
     return errors
 
 
-def validate_plan(payload: Any, revision: int, source_ids: set[str]) -> list[str]:
+def validate_solution_boundary_probe(
+    payload: Any,
+    source_ids: set[str] | None = None,
+) -> list[str]:
+    """Validate the planner's evidence-bound hypothesis about solution breadth."""
+    errors: list[str] = []
+    if not isinstance(payload, dict):
+        return ["solution_boundary_probe must be an object"]
+    if payload.get("status") != "preliminary":
+        errors.append("solution_boundary_probe status must be preliminary")
+    if payload.get("validation_gate") != "full_analysis":
+        errors.append("solution_boundary_probe validation_gate must be full_analysis")
+    horizon = payload.get("candidate_horizon")
+    if horizon not in SOLUTION_HORIZONS:
+        errors.append("solution_boundary_probe candidate_horizon is invalid")
+    for field in ("observed_case", "candidate_root_capability"):
+        if not isinstance(payload.get(field), str) or not payload[field].strip():
+            errors.append(f"solution_boundary_probe missing {field}")
+
+    def validate_refs(value: Any, label: str) -> list[str]:
+        if not isinstance(value, list) or any(
+            not isinstance(ref, str) or not SOURCE_ID_RE.fullmatch(ref)
+            for ref in value
+        ):
+            errors.append(f"{label} must be an SRC array")
+            return []
+        refs = list(dict.fromkeys(value))
+        if len(refs) != len(value):
+            errors.append(f"{label} must not contain duplicates")
+        if source_ids is not None:
+            unknown = sorted(set(refs) - source_ids)
+            if unknown:
+                errors.append(f"{label} has unknown source refs: {', '.join(unknown)}")
+        return refs
+
+    search = payload.get("analogy_search")
+    if not isinstance(search, dict):
+        errors.append("solution_boundary_probe analogy_search must be an object")
+        search = {}
+    surfaces = search.get("searched_surfaces")
+    if not isinstance(surfaces, list) or not surfaces or any(
+        not isinstance(item, str) or not item.strip() for item in surfaces
+    ):
+        errors.append("analogy_search searched_surfaces must be non-empty")
+    elif len({item.strip().casefold() for item in surfaces}) != len(surfaces):
+        errors.append("analogy_search searched_surfaces must be unique")
+    validate_refs(search.get("source_refs"), "analogy_search source_refs")
+    confirmed = search.get("confirmed_variants")
+    if not isinstance(confirmed, list):
+        errors.append("analogy_search confirmed_variants must be an array")
+        confirmed = []
+    for index, variant in enumerate(confirmed, start=1):
+        label = f"analogy_search confirmed_variants[{index}]"
+        if not isinstance(variant, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        if not isinstance(variant.get("name"), str) or not variant["name"].strip():
+            errors.append(f"{label} missing name")
+        refs = validate_refs(variant.get("source_refs"), f"{label} source_refs")
+        if not refs:
+            errors.append(f"{label} requires evidence")
+    for field in ("hypothesized_variants", "irreversibility_signals"):
+        values = search.get(field)
+        if not isinstance(values, list) or any(
+            not isinstance(item, str) or not item.strip() for item in values
+        ):
+            errors.append(f"analogy_search {field} must be an array of text")
+    roadmap_refs = validate_refs(search.get("roadmap_refs"), "analogy_search roadmap_refs")
+    negative_result = search.get("negative_result_recorded")
+    if not isinstance(negative_result, bool):
+        errors.append("analogy_search negative_result_recorded must be boolean")
+    if not confirmed and negative_result is not True:
+        errors.append("analogy search without confirmed variants must record a negative result")
+
+    urgent = payload.get("urgent_fix")
+    if not isinstance(urgent, dict) or not isinstance(urgent.get("confirmed"), bool):
+        errors.append("solution_boundary_probe urgent_fix is invalid")
+        urgent = {}
+    urgent_refs = validate_refs(urgent.get("source_refs"), "urgent_fix source_refs")
+    if urgent.get("confirmed") is True and not urgent_refs:
+        errors.append("confirmed urgent_fix requires evidence")
+    if horizon == "tactical" and (
+        urgent.get("confirmed") is not True or not urgent_refs
+    ):
+        errors.append("tactical candidate requires a confirmed urgent fix")
+    if horizon == "generalized-capability" and not (
+        len(confirmed) >= 2
+        or roadmap_refs
+        or search.get("irreversibility_signals")
+    ):
+        errors.append(
+            "generalized-capability candidate requires confirmed breadth, roadmap, "
+            "or irreversibility evidence"
+        )
+    return errors
+
+
+def validate_plan(
+    payload: Any,
+    revision: int,
+    source_ids: set[str],
+    *,
+    minimum_schema: int = LEGACY_PLAN_SCHEMA_VERSION,
+) -> list[str]:
     errors: list[str] = []
     if not isinstance(payload, dict) or payload.get("schema") not in {
         LEGACY_PLAN_SCHEMA_VERSION,
         TELEMETRY_PLAN_SCHEMA_VERSION,
+        PRELIMINARY_REQUIREMENTS_PLAN_SCHEMA_VERSION,
         PLAN_SCHEMA_VERSION,
     }:
         return ["plan.json has unsupported schema"]
+    if payload.get("schema", 0) < minimum_schema:
+        errors.append(
+            f"plan schema {payload.get('schema')} is below case minimum {minimum_schema}"
+        )
     if payload.get("schema") in {
         TELEMETRY_PLAN_SCHEMA_VERSION,
+        PRELIMINARY_REQUIREMENTS_PLAN_SCHEMA_VERSION,
         PLAN_SCHEMA_VERSION,
     }:
         errors.extend(validate_plan_estimation(payload))
-    if payload.get("schema") == PLAN_SCHEMA_VERSION:
+    if payload.get("schema") in {
+        PRELIMINARY_REQUIREMENTS_PLAN_SCHEMA_VERSION,
+        PLAN_SCHEMA_VERSION,
+    }:
         errors.extend(
             validate_preliminary_requirements(
                 payload.get("preliminary_requirements"),
+                source_ids,
+            )
+        )
+    if payload.get("schema") == PLAN_SCHEMA_VERSION:
+        errors.extend(
+            validate_solution_boundary_probe(
+                payload.get("solution_boundary_probe"),
                 source_ids,
             )
         )
@@ -893,7 +1037,16 @@ def validate_artifacts(root: Path, manifest: dict[str, Any], *, for_review: bool
         for source in source_map.get("sources", [])
         if isinstance(source, dict) and isinstance(source.get("id"), str)
     }
-    errors.extend(validate_plan(plan_graph, manifest["revision"], source_ids))
+    errors.extend(
+        validate_plan(
+            plan_graph,
+            manifest["revision"],
+            source_ids,
+            minimum_schema=manifest.get(
+                "minimum_plan_schema", LEGACY_PLAN_SCHEMA_VERSION
+            ),
+        )
+    )
     target_ids = {
         target.get("id")
         for target in artifact_plan.get("targets", [])
@@ -1337,6 +1490,7 @@ def build_handoff(root: Path, manifest: dict[str, Any]) -> tuple[dict[str, Any],
     automation_plan = None
     if plan_graph.get("schema") in {
         TELEMETRY_PLAN_SCHEMA_VERSION,
+        PRELIMINARY_REQUIREMENTS_PLAN_SCHEMA_VERSION,
         PLAN_SCHEMA_VERSION,
     }:
         try:
@@ -1354,6 +1508,14 @@ def build_handoff(root: Path, manifest: dict[str, Any]) -> tuple[dict[str, Any],
         "automation_plan": automation_plan,
         "preliminary_requirements": (
             plan_graph.get("preliminary_requirements")
+            if plan_graph.get("schema") in {
+                PRELIMINARY_REQUIREMENTS_PLAN_SCHEMA_VERSION,
+                PLAN_SCHEMA_VERSION,
+            }
+            else None
+        ),
+        "solution_boundary_probe": (
+            plan_graph.get("solution_boundary_probe")
             if plan_graph.get("schema") == PLAN_SCHEMA_VERSION
             else None
         ),
@@ -1410,6 +1572,14 @@ def validate_handoff(
             raise PlanningError(
                 "planning handoff preliminary requirements invalid: "
                 + "; ".join(preliminary_errors)
+            )
+    solution_boundary_probe = payload.get("solution_boundary_probe")
+    if solution_boundary_probe is not None:
+        probe_errors = validate_solution_boundary_probe(solution_boundary_probe)
+        if probe_errors:
+            raise PlanningError(
+                "planning handoff solution boundary probe invalid: "
+                + "; ".join(probe_errors)
             )
     approval = payload.get("approval")
     if not isinstance(approval, dict) or approval.get("revision") != payload.get("planning_revision"):

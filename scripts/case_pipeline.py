@@ -65,6 +65,13 @@ SEMANTIC_ID_RE = re.compile(
     r"(B[0-9]{2,3})-[0-9]{3}$"
 )
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+SOLUTION_BOUNDARY_START = "<!-- vigers:solution-boundary:start -->"
+SOLUTION_BOUNDARY_END = "<!-- vigers:solution-boundary:end -->"
+SOLUTION_HORIZONS = {
+    "tactical",
+    "bounded-systemic",
+    "generalized-capability",
+}
 
 BLOCK_KINDS = {
     "context",
@@ -259,8 +266,178 @@ def planning_role_context(payload: dict[str, Any]) -> dict[str, Any]:
         "timing_visibility": "human_information_only",
         "excluded_fields": ["automation_plan", "automation_estimation", "estimates"],
     }
+    if payload.get("solution_boundary_probe") is not None:
+        result["solution_boundary_probe"] = payload["solution_boundary_probe"]
     result["fingerprint"] = role_context_fingerprint(result)
     return result
+
+
+def solution_boundary_probe_present(root: Path, manifest: dict[str, Any]) -> bool:
+    """Return whether the approved planning context requires a final boundary decision."""
+    relative = manifest.get("artifacts", {}).get("planning_role_context")
+    if not isinstance(relative, str):
+        return False
+    payload = read_json(case_file(root, relative))
+    return isinstance(payload, dict) and isinstance(
+        payload.get("solution_boundary_probe"), dict
+    )
+
+
+def extract_solution_boundary(path: Path) -> dict[str, Any] | None:
+    """Extract the single structured boundary block embedded in decisions.md."""
+    if not path.is_file():
+        return None
+    text = path.read_text(encoding="utf-8")
+    starts = text.count(SOLUTION_BOUNDARY_START)
+    ends = text.count(SOLUTION_BOUNDARY_END)
+    if starts == 0 and ends == 0:
+        return None
+    if starts != 1 or ends != 1:
+        raise CaseError("decisions.md must contain exactly one solution-boundary block")
+    body = text.split(SOLUTION_BOUNDARY_START, 1)[1].split(SOLUTION_BOUNDARY_END, 1)[0]
+    body = body.strip()
+    fence = re.fullmatch(r"```json\s*(.*?)\s*```", body, flags=re.DOTALL)
+    if fence is None:
+        raise CaseError("solution-boundary block must contain one fenced JSON object")
+    try:
+        payload = json.loads(fence.group(1))
+    except json.JSONDecodeError as exc:
+        raise CaseError(f"solution-boundary JSON is invalid: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise CaseError("solution-boundary payload must be an object")
+    return payload
+
+
+def validate_solution_boundary(
+    payload: dict[str, Any],
+    *,
+    planning_probe_present: bool,
+) -> list[str]:
+    """Validate the final evidence-bound scope and extensibility decision."""
+    errors: list[str] = []
+    if payload.get("schema") != 1:
+        errors.append("solution boundary schema must be 1")
+    horizon = payload.get("solution_horizon")
+    if horizon not in SOLUTION_HORIZONS:
+        errors.append("solution_horizon is invalid")
+    for field in ("observed_case", "root_capability"):
+        if not isinstance(payload.get(field), str) or not payload[field].strip():
+            errors.append(f"solution boundary missing {field}")
+
+    def text_array(field: str, *, required: bool = False) -> list[str]:
+        value = payload.get(field)
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) or not item.strip() for item in value
+        ):
+            errors.append(f"solution boundary {field} must be an array of text")
+            return []
+        normalized = [item.strip() for item in value]
+        if len(set(normalized)) != len(normalized):
+            errors.append(f"solution boundary {field} must be unique")
+        if required and not normalized:
+            errors.append(f"solution boundary {field} must be non-empty")
+        return normalized
+
+    text_array("invariants", required=True)
+    text_array("hypothesized_variants")
+    text_array("current_scope", required=True)
+    seams = text_array("extension_seams")
+    text_array("deferred_variants")
+    text_array("expansion_triggers", required=True)
+    absence = payload.get("extension_seam_absence_reason")
+    if seams and absence is not None:
+        errors.append("extension_seam_absence_reason must be null when seams exist")
+    if not seams and (not isinstance(absence, str) or not absence.strip()):
+        errors.append("missing extension seam requires an explicit absence reason")
+
+    confirmed = payload.get("confirmed_variants")
+    if not isinstance(confirmed, list) or not confirmed:
+        errors.append("confirmed_variants must be non-empty")
+        confirmed = []
+    for index, variant in enumerate(confirmed, start=1):
+        label = f"confirmed_variants[{index}]"
+        if not isinstance(variant, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        if not isinstance(variant.get("name"), str) or not variant["name"].strip():
+            errors.append(f"{label} missing name")
+        refs = variant.get("evidence_refs")
+        if not isinstance(refs, list) or not refs or any(
+            not isinstance(ref, str) or not ref.strip() for ref in refs
+        ):
+            errors.append(f"{label} requires evidence_refs")
+
+    evidence = payload.get("horizon_evidence")
+    if not isinstance(evidence, dict):
+        errors.append("horizon_evidence must be an object")
+        evidence = {}
+    for field in ("analogy_search_refs", "roadmap_refs", "irreversibility_signals"):
+        values = evidence.get(field)
+        if not isinstance(values, list) or any(
+            not isinstance(item, str) or not item.strip() for item in values
+        ):
+            errors.append(f"horizon_evidence {field} must be an array of text")
+
+    hotfix = payload.get("hotfix_exception")
+    if horizon == "tactical":
+        if not isinstance(hotfix, dict):
+            errors.append("tactical horizon requires hotfix_exception")
+        else:
+            for field in ("reason", "reversibility", "return_trigger"):
+                if not isinstance(hotfix.get(field), str) or not hotfix[field].strip():
+                    errors.append(f"hotfix_exception missing {field}")
+            refs = hotfix.get("source_refs")
+            if not isinstance(refs, list) or not refs or any(
+                not isinstance(ref, str) or not ref.strip() for ref in refs
+            ):
+                errors.append("hotfix_exception requires source_refs")
+    elif hotfix is not None:
+        errors.append("hotfix_exception is allowed only for tactical horizon")
+
+    if horizon == "generalized-capability" and not (
+        len(confirmed) >= 2
+        or evidence.get("roadmap_refs")
+        or evidence.get("irreversibility_signals")
+    ):
+        errors.append(
+            "generalized-capability requires confirmed breadth, roadmap, or "
+            "irreversibility evidence"
+        )
+    disposition = payload.get("planning_probe_disposition")
+    if not isinstance(disposition, dict) or disposition.get("status") not in {
+        "confirmed",
+        "changed",
+        "rejected",
+        "not_available",
+    }:
+        errors.append("planning_probe_disposition is invalid")
+    else:
+        if not isinstance(disposition.get("rationale"), str) or not disposition[
+            "rationale"
+        ].strip():
+            errors.append("planning_probe_disposition requires rationale")
+        if planning_probe_present and disposition.get("status") == "not_available":
+            errors.append("an available planning probe cannot be marked not_available")
+    return errors
+
+
+def solution_boundary_errors(
+    root: Path,
+    manifest: dict[str, Any],
+    *,
+    required: bool,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    decisions = case_file(root, manifest["artifacts"]["decisions"])
+    try:
+        payload = extract_solution_boundary(decisions)
+    except CaseError as exc:
+        return None, [str(exc)]
+    if payload is None:
+        return None, (["decisions.md has no final solution-boundary block"] if required else [])
+    return payload, validate_solution_boundary(
+        payload,
+        planning_probe_present=solution_boundary_probe_present(root, manifest),
+    )
 
 
 def role_context_fingerprint(payload: dict[str, Any]) -> str:
@@ -1860,6 +2037,22 @@ def gate_subject_hash(
         digest.update(manifest["kernel"]["sha256"].encode("ascii"))
         decisions = case_file(root, manifest["artifacts"]["decisions"])
         digest.update(decisions.read_bytes() if decisions.is_file() else b"<missing>")
+    elif name == "author_passes":
+        draft = case_file(root, manifest["artifacts"]["draft"])
+        digest.update(draft.read_bytes() if draft.is_file() else b"<missing>")
+        digest.update(manifest["kernel"]["sha256"].encode("ascii"))
+        boundary, boundary_errors = solution_boundary_errors(
+            root,
+            manifest,
+            required=solution_boundary_probe_present(root, manifest),
+        )
+        if boundary is not None or boundary_errors:
+            decisions = case_file(root, manifest["artifacts"]["decisions"])
+            digest.update(decisions.read_bytes() if decisions.is_file() else b"<missing>")
+            role_context = manifest.get("artifacts", {}).get("planning_role_context")
+            if isinstance(role_context, str):
+                path = case_file(root, role_context)
+                digest.update(path.read_bytes() if path.is_file() else b"<missing>")
     elif name == "semantic_integration":
         draft = case_file(root, manifest["artifacts"]["draft"])
         digest.update(draft.read_bytes() if draft.is_file() else b"<missing>")
@@ -1887,6 +2080,23 @@ def gate_subject_hash(
         draft = case_file(root, manifest["artifacts"]["draft"])
         digest.update(draft.read_bytes() if draft.is_file() else b"<missing>")
         digest.update(manifest["kernel"]["sha256"].encode("ascii"))
+        if name in {"global_review", "architecture_conformance"}:
+            boundary, boundary_errors = solution_boundary_errors(
+                root,
+                manifest,
+                required=solution_boundary_probe_present(root, manifest),
+            )
+            if boundary is not None or boundary_errors:
+                decisions = case_file(root, manifest["artifacts"]["decisions"])
+                digest.update(
+                    decisions.read_bytes() if decisions.is_file() else b"<missing>"
+                )
+                role_context = manifest.get("artifacts", {}).get(
+                    "planning_role_context"
+                )
+                if isinstance(role_context, str):
+                    path = case_file(root, role_context)
+                    digest.update(path.read_bytes() if path.is_file() else b"<missing>")
     return digest.hexdigest()
 
 
@@ -1928,6 +2138,24 @@ def set_gate(
         raise CaseError("A blocked gate requires --note")
     if status == "not_required" and not note:
         raise CaseError("A not_required gate requires --note")
+    if status == "not_required":
+        boundary_required = solution_boundary_probe_present(root, manifest)
+        boundary, _ = solution_boundary_errors(root, manifest, required=False)
+        if name in {"author_passes", "global_review"} and (
+            boundary_required or boundary is not None
+        ):
+            raise CaseError(
+                f"{name} must pass when a solution boundary is required or present"
+            )
+        if (
+            name in {"architecture_design", "architecture_conformance"}
+            and boundary is not None
+            and boundary.get("solution_horizon")
+            in {"tactical", "generalized-capability"}
+        ):
+            raise CaseError(
+                f"{name} must pass for {boundary.get('solution_horizon')} horizon"
+            )
     if status == "pass" and not evidence:
         raise CaseError("A passed gate requires --evidence")
     if status == "pass" and name == "author_passes":
@@ -1942,6 +2170,36 @@ def set_gate(
                 "Working projection must be visible before author passes: "
                 + "; ".join(projection_errors)
             )
+        boundary_required = solution_boundary_probe_present(root, manifest)
+        boundary, boundary_errors = solution_boundary_errors(
+            root,
+            manifest,
+            required=boundary_required,
+        )
+        if boundary_errors:
+            raise CaseError(
+                "Author passes require a valid solution boundary: "
+                + "; ".join(boundary_errors)
+            )
+        if boundary is not None and boundary.get("solution_horizon") in {
+            "tactical",
+            "generalized-capability",
+        }:
+            architecture_gate = manifest.get("gates", {}).get(
+                "architecture_design", {}
+            )
+            if architecture_gate.get("status") != "pass":
+                raise CaseError(
+                    f"{boundary.get('solution_horizon')} horizon requires a passed "
+                    "architecture_design gate before author passes"
+                )
+            if architecture_gate.get("subject_sha256") != gate_subject_hash(
+                root, manifest, ledger, "architecture_design"
+            ):
+                raise CaseError(
+                    "architecture_design decision is stale for the current "
+                    "solution boundary"
+                )
     if status == "pass" and name == "project_conformance":
         projection_errors = working_projection_errors(
             root,
@@ -2005,6 +2263,31 @@ def validate_case(
 ) -> list[str]:
     """Return structural, freshness, traceability, and optional final errors."""
     errors: list[str] = []
+    boundary_required = solution_boundary_probe_present(root, manifest)
+    boundary, boundary_errors = solution_boundary_errors(
+        root,
+        manifest,
+        required=boundary_required and (
+            final
+            or manifest.get("gates", {}).get("author_passes", {}).get("status") == "pass"
+        ),
+    )
+    errors.extend(f"Solution boundary: {item}" for item in boundary_errors)
+    boundary_active = boundary_required or boundary is not None
+    if final and boundary_active:
+        for gate_name in ("author_passes", "global_review"):
+            if manifest.get("gates", {}).get(gate_name, {}).get("status") != "pass":
+                errors.append(f"Gate {gate_name} must pass for a solution boundary")
+        if boundary is not None and boundary.get("solution_horizon") in {
+            "tactical",
+            "generalized-capability",
+        }:
+            for gate_name in ("architecture_design", "architecture_conformance"):
+                if manifest.get("gates", {}).get(gate_name, {}).get("status") != "pass":
+                    errors.append(
+                        f"Gate {gate_name} must pass for "
+                        f"{boundary.get('solution_horizon')} horizon"
+                    )
     errors.extend(
         working_projection_errors(
             root,

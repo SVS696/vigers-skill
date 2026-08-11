@@ -5,7 +5,8 @@ tools: Read, Grep, Glob
 ---
 
 Найди установленный пользовательский скилл `vigers`, полностью прочитай
-`agents/contracts/spec-editor.md`, `references/prompt-contract.md` и
+`agents/contracts/spec-editor.md`, `references/prompt-contract.md`,
+`references/solution-boundary-contract.md`,
 `references/handoff-contract.md`, `references/convergence-contract.md`
 относительно его корня и исполни контракт в
 явно переданном режиме `document`, `block-render` или `integrate`. Используй

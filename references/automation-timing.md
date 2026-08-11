@@ -28,12 +28,12 @@ status, включая tool waits и технические блокировки
 
 ## Прогноз в planning-case
 
-Новый `plan.json` использует schema 3. Верхний уровень объявляет обязательную
+Новый `plan.json` использует schema 4. Верхний уровень объявляет обязательную
 метрику:
 
 ```json
 {
-  "schema": 3,
+  "schema": 4,
   "revision": 5,
   "automation_estimation": {
     "policy": "required",
@@ -97,8 +97,9 @@ terminal reason: pipeline продолжает работу, записывае�
 сравнивает его с baseline только после terminal status.
 
 Schema 1 читается как legacy plan без telemetry, schema 2 — как совместимый
-telemetry-plan без обязательных preliminary US/DoD. Новые revisions используют
-schema 3.
+telemetry-plan без обязательных preliminary US/DoD, schema 3 — как совместимый
+план с preliminary US/DoD. Новые revisions используют schema 4 с
+solution-boundary probe.
 
 ## Handoff и ledger
 

@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "id": "solution-boundary-smells",
+  "purpose": "Проверить симметричное ревью частного hardcode и спекулятивной универсализации.",
+  "prompt": "<assignment>\nevaluation_mode: isolated-semantic-fixture\npreflight: role manifest, pinned method context, generic profile and semantic indexes are valid for this fixture\nrole: spec-reviewer\nmode: global\ntarget: solution boundary\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"confirmed-requirements\">\nПодтверждены два канала уведомлений с одинаковым правилом отключения. Третий канал и самостоятельная настройка правил пользователем не подтверждены.\n</document>\n<document id=\"DRAFT\" origin=\"draft\">\nДля первого канала добавить отдельную проверку имени канала. Одновременно создать универсальный rule engine с UI-конструктором для будущих каналов.\n</document>\n</source_documents>\n\n<final_instruction>\nВерни общий envelope, а в payload — только доказуемые findings о границе решения с минимальной коррекцией. Не выбирай конкретную реализацию.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "выдать particular-case finding для отдельной проверки первого канала",
+      "выдать speculative-generalization finding для rule engine и UI-конструктора",
+      "предложить ограничить решение подтверждённым общим правилом двух каналов"
+    ],
+    "forbidden_actions": [
+      "одобрить любой из двух экстремумов",
+      "придумать третий канал",
+      "назначить технологию или слой реализации",
+      "переоткрыть общий research без blocker или major"
+    ],
+    "required_output_signals": [
+      "solution_boundary_smell: particular-case",
+      "solution_boundary_smell: speculative-generalization",
+      "evidence",
+      "impact",
+      "proposed_change"
+    ],
+    "allowed_research_exception": {
+      "severity": ["blocker", "major"],
+      "condition": "только если source не позволяет определить подтверждённые варианты"
+    }
+  }
+}

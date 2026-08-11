@@ -90,8 +90,8 @@ root. Его путь точно совпадает с `object_id` target и н�
 read-back evidence.
 
 `planning-role-context.json` — производный bounded input для исполнительных
-ролей. Он содержит planning linkage, preliminary requirements и контракт
-working projection, но машинно
+ролей. Он содержит planning linkage, preliminary requirements, preliminary
+`solution_boundary_probe` и контракт working projection, но машинно
 исключает `automation_plan`, ETA и runtime facts. Raw `planning-handoff.json`
 доступен оркестратору для валидации, но не входит в `case_pipeline.py context`.
 Аналогично `role-manifest.json` проецирует только mode/profile/method/kernel,
@@ -107,6 +107,8 @@ working projection, но машинно
 2+ handoff также содержит immutable `automation_plan`; init создаёт из него ledger
 и связывает с теми же planning revision и passport. Schema 3 дополнительно
 передаёт `preliminary_requirements` с `PUS-*` и `PDOD-*` как planning-гипотезы.
+Schema 4 добавляет `solution_boundary_probe`: предварительный поиск аналогов и
+кандидат горизонта. Он требует disposition в полном анализе, но не задаёт scope.
 
 Системный аналитик использует handoff как bounded intake и всё равно строит
 модель требований. Для каждого `PUS-*`/`PDOD-*` он фиксирует disposition
@@ -196,6 +198,7 @@ revision и делает затронутые результаты stale.
 ## Acceptance criteria
 ## Definition of Done
 ## Разрешение planning-гипотез PUS/PDOD
+## Граница решения и горизонт
 ## Архитектурное влияние
 ## Предположения
 ## Открытые вопросы
@@ -205,6 +208,12 @@ revision и делает затронутые результаты stale.
 Business context обязательно разделяет `подтверждено`, `предположение`,
 `неизвестно`, `владелец ответа`. Аналитик не утверждает решение за владельца
 бизнес-процесса.
+
+Раздел границы следует `references/solution-boundary-contract.md` и содержит
+наблюдаемый кейс, корневую способность, инварианты, подтверждённые и
+предполагаемые варианты, current scope, seams, deferred, expansion triggers и
+disposition planning probe. Координатор принимает финальный machine block в
+существующий `decisions.md`; отдельный boundary artifact не создаётся.
 
 В block-mode аналитик возвращает только модель целевого блока и отдельный
 semantic index по `{baseDir}/references/block-contract.md`. Общие факты
@@ -223,6 +232,8 @@ semantic index по `{baseDir}/references/block-contract.md`. Общие фак�
 - `conform | decision-required | conflict`;
 - обязательные ограничения для редактора;
 - вопросы, которые меняют решение.
+- подтверждённый `solution_horizon`, оценку рисков particular-case и
+  speculative-generalization, обязательные seams и evidence выбора.
 
 В режиме `conformance` архитектор не продолжает собственное прежнее
 рассуждение. Он получает чистый набор источников и готовый черновик и возвращает
@@ -248,7 +259,8 @@ findings по той же классификации.
 ```yaml
 id: REV-001
 severity: blocker | major | minor
-category: logic | scope | traceability | testability | project-rule | architecture
+category: logic | scope | traceability | testability | project-rule | architecture | solution-boundary
+solution_boundary_smell: particular-case | speculative-generalization | null
 location: <section-or-anchor>
 finding: <what-is-wrong>
 evidence: <source-or-internal-contradiction>
@@ -298,6 +310,9 @@ Vigers не реализует и не принимает поставку. Дл
 - выбранные `REQ/AC` и их semantic indexes;
 - impact map по компонентам без назначения реализации по догадке;
 - architecture/project-conformance constraints;
+- принятый `solution_horizon`, `current_scope`, `extension_seams`,
+  `deferred_variants` и `expansion_triggers` без права delivery-роли расширять
+  их самостоятельно;
 - матрицу `REQ → AC → required evidence`;
 - открытые решения, gaps и остаточный риск.
 

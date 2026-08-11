@@ -107,6 +107,9 @@ case-root и свежих block contexts.
 
 Независимые блоки можно запускать параллельно ограниченными пакетами. Блоки с
 зависимостями ждут состояния `reviewed` или `integrated` предшественников.
+Каждый блок может добавить evidence к общей границе решения, но не создаёт свой
+конкурирующий горизонт. Координатор сшивает финальный boundary-блок в
+`decisions.md` после достаточного полного анализа.
 
 **Выход:** каждый обработанный блок имеет нормализованную модель и semantic index.
 
@@ -117,6 +120,8 @@ case-root и свежих block contexts.
 1. Если блок вводит архитектурное решение, запусти отдельный architect `design`
    и внеси принятое ограничение в `decisions.md`; при глобальном инварианте
    обнови kernel и выполни `refresh-kernel`.
+   Горизонты `tactical` и `generalized-capability` также требуют этого gate;
+   обычный `bounded-systemic` без других triggers — нет.
 2. Запусти editor в режиме `block-render`: он оформляет только данный блок и не
    собирает финальный документ.
 3. Не позволяй редактору создавать определения, которых нет в semantic index.
@@ -204,11 +209,14 @@ case-root и свежих block contexts.
 **Вход:** интегрированный draft.
 
 1. Выполни профильные author gates в заданном порядке.
-2. После правок снова выполни consistency-check.
-3. Зафиксируй `author_passes`.
-4. Запусти новый reviewer в режиме `global` на готовом документе, kernel,
+2. До simplicity-pass проверь принятый boundary на `particular-case` и
+   `speculative-generalization`; не удаляй доказанную seam как «лишнюю».
+3. После правок снова выполни consistency-check.
+4. Зафиксируй `author_passes` только после machine validation единого
+   solution-boundary блока.
+5. Запусти новый reviewer в режиме `global` на готовом документе, kernel,
    evidence и indexes. Не передавай локальные review reports.
-5. Сохрани итог в `reviews/global.md`; зафиксируй `global_review` только после
+6. Сохрани итог в `reviews/global.md`; зафиксируй `global_review` только после
    закрытия открытых принятых `blocker/major`. Minor-only замечания не запускают
    второй полный global review после единственного polish-pass.
 

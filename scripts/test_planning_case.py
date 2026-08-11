@@ -134,6 +134,28 @@ class PlanningCaseTests(unittest.TestCase):
                         }
                     ],
                 },
+                "solution_boundary_probe": {
+                    "status": "preliminary",
+                    "validation_gate": "full_analysis",
+                    "candidate_horizon": "bounded-systemic",
+                    "observed_case": "A verified change is requested",
+                    "candidate_root_capability": "Deliver verified changes",
+                    "analogy_search": {
+                        "searched_surfaces": ["task intake", "project documentation"],
+                        "source_refs": ["SRC-001"],
+                        "confirmed_variants": [
+                            {
+                                "name": "Current verified change",
+                                "source_refs": ["SRC-001"],
+                            }
+                        ],
+                        "hypothesized_variants": [],
+                        "roadmap_refs": [],
+                        "irreversibility_signals": [],
+                        "negative_result_recorded": False,
+                    },
+                    "urgent_fix": {"confirmed": False, "source_refs": []},
+                },
                 "stages": [
                     {
                         "id": "P01",
@@ -233,6 +255,10 @@ class PlanningCaseTests(unittest.TestCase):
             self.assertEqual(
                 payload["preliminary_requirements"]["user_stories"][0]["id"],
                 "PUS-001",
+            )
+            self.assertEqual(
+                payload["solution_boundary_probe"]["candidate_horizon"],
+                "bounded-systemic",
             )
             decision = mode_decision.build_mode_decision(
                 task="Approved planning handoff",
@@ -1011,7 +1037,7 @@ class PlanningCaseTests(unittest.TestCase):
         errors = planning_case.validate_plan(payload, 1, {"SRC-001"})
         self.assertTrue(any("automation_estimate" in error for error in errors))
 
-    def test_plan_schema_three_requires_preliminary_requirements(self) -> None:
+    def test_current_plan_schema_requires_preliminary_requirements(self) -> None:
         payload = {
             "schema": planning_case.PLAN_SCHEMA_VERSION,
             "revision": 1,
@@ -1043,6 +1069,34 @@ class PlanningCaseTests(unittest.TestCase):
         }
         errors = planning_case.validate_plan(payload, 1, {"SRC-001"})
         self.assertTrue(any("preliminary_requirements" in error for error in errors))
+
+    def test_generalized_probe_requires_breadth_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.complete_research(root)
+            self.complete_plan(root, external=False)
+            payload = json.loads((root / "plan.json").read_text(encoding="utf-8"))
+            payload["solution_boundary_probe"]["candidate_horizon"] = (
+                "generalized-capability"
+            )
+            errors = planning_case.validate_plan(payload, 1, {"SRC-001"})
+            self.assertTrue(
+                any("generalized-capability candidate requires" in error for error in errors)
+            )
+
+    def test_new_case_rejects_plan_schema_downgrade(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.complete_research(root)
+            self.complete_plan(root, external=False)
+            plan_path = root / "plan.json"
+            payload = json.loads(plan_path.read_text(encoding="utf-8"))
+            payload["schema"] = planning_case.PRELIMINARY_REQUIREMENTS_PLAN_SCHEMA_VERSION
+            payload.pop("solution_boundary_probe")
+            write_json(plan_path, payload)
+            _, manifest = planning_case.load_case(root)
+            errors = planning_case.validate_artifacts(root, manifest, for_review=False)
+            self.assertTrue(any("below case minimum" in error for error in errors))
 
 
 if __name__ == "__main__":

@@ -52,9 +52,13 @@ python3 {baseDir}/scripts/planning_case.py context --case-root "<planning-root>"
 2. По profile построй search matrix: системы, запросы, authority, freshness и
    достаточность. Включи трекер, wiki, репозиторий, проектные заметки и
    переписку только когда они применимы к задаче.
-3. Выполни read-only поиск через project adapters. Фиксируй и найденные, и
+3. Добавь ограниченный solution-boundary search по
+   `{baseDir}/references/solution-boundary-contract.md`: аналогичные случаи в
+   backlog, коде, процессах, прошлых постановках и roadmap. Неприменимую или
+   недоступную поверхность зафиксируй, а не компенсируй догадкой.
+4. Выполни read-only поиск через project adapters. Фиксируй и найденные, и
    отрицательные/недоступные результаты.
-4. Для большого корпуса сгруппируй независимые источники по системе или
+5. Для большого корпуса сгруппируй независимые источники по системе или
    смысловой поверхности. Каждый cluster обрабатывай свежим planner context.
 
 **Выход:** собраны source documents со стабильными `SRC-NNN`; внешних записей нет.
@@ -86,7 +90,7 @@ python3 {baseDir}/scripts/planning_case.py context --case-root "<planning-root>"
 **Вход:** state `researched`.
 
 1. Передай planner режим `plan` в новом контексте.
-2. Построй `plan.json` schema 3 как DAG этапов с outcome, `depends_on`, exit
+2. Построй `plan.json` schema 4 как DAG этапов с outcome, `depends_on`, exit
    criteria, source refs и checklist. Для каждого этапа добавь трёхточечный
    `automation_estimate` по `{baseDir}/references/automation-timing.md`. Общий
    автоматизированный срок считай по critical path, а не суммой параллельных
@@ -100,23 +104,28 @@ python3 {baseDir}/scripts/planning_case.py context --case-root "<planning-root>"
    и обязательным `validation_gate: full_analysis`. Не считай planning approval
    утверждением US/DoD: полный анализ может подтвердить, изменить, разделить,
    отклонить или дополнить их.
-4. Сформируй `plan.md`, `artifact-plan.json` и `handoff.md`. Если profile
+4. Заполни `solution_boundary_probe`: наблюдаемый запрос, кандидат корневой
+   способности, просмотренные поверхности, подтверждённые и предполагаемые
+   варианты раздельно, roadmap/необратимость, source-linked срочность и
+   кандидат горизонта. Это planning-гипотеза; `undetermined` допустим, а
+   финальный выбор принадлежит full-analysis gate.
+5. Сформируй `plan.md`, `artifact-plan.json` и `handoff.md`. Если profile
    объявляет `working_projection: required`, добавь один или несколько
    согласованных targets с `working_projection: true`,
    `publish_gate: after_approval` и обязательным read-back. Канал выбирает
    профиль: обычный проектный файл, tracker, wiki либо их допустимая комбинация.
    Для каждого target сразу зафиксируй
    `evidence_kind: local_file|external_readback`.
-5. Сохрани уже связанные `before_research` targets; не создавай их повторно.
-6. Для checklist примени правила `{baseDir}/references/planning-contract.md`:
+6. Сохрани уже связанные `before_research` targets; не создавай их повторно.
+7. Для checklist примени правила `{baseDir}/references/planning-contract.md`:
    содержательный title, optional details/done_when в task note,
    `completion_owner: user` для ручных гейтов и subtask только при
    самостоятельном результате/dependency/owner.
-7. Проверь ясность формулировок, затем выполни `simplicity-spec` → `humanizer`
+8. Проверь ясность формулировок, затем выполни `simplicity-spec` → `humanizer`
    без пользовательского voice profile. Не вызывай отдельного агента для
    каждого пункта; обрабатывай checklist целиком. Подробный пункт допустим, если
    сокращение теряет условие или критерий готовности.
-8. Переведи case в `artifacts_planned`.
+9. Переведи case в `artifacts_planned`.
 
 **Выход:** план минимален, зависим, основан на источниках и готов к проектной
 публикации.
