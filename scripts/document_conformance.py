@@ -15,9 +15,15 @@ TOC_POLICIES = {"obsidian-h2-exact"}
 SEPARATOR_POLICIES = {"optional", "required"}
 USER_STORY_POLICIES = {"numbered-role-goal-value"}
 USER_STORY_TITLE_SEPARATORS = {".", ":"}
+TRACEABILITY_POLICIES = {"semantic-id-links"}
+TRACEABILITY_LINK_STYLES = {"obsidian-heading-exact"}
 H2_RE = re.compile(r"^##(?!#)\s+(.+?)\s*$")
 H3_RE = re.compile(r"^###(?!#)\s+(.+?)\s*$")
+ATX_HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
 OBSIDIAN_TOC_LINK_RE = re.compile(r"\[\[#([^\]|]+)(?:\|[^\]]+)?\]\]")
+OBSIDIAN_HEADING_LINK_RE = re.compile(
+    r"\[\[#(?P<target>[^\]\n|]+?)(?:(?P<separator>\\?\|)(?P<alias>[^\]\n]+?))?\]\]"
+)
 
 
 class DocumentContractError(RuntimeError):
@@ -49,6 +55,10 @@ def build_profile_contract(
         "document_user_story_role_label",
         "document_user_story_goal_label",
         "document_user_story_value_label",
+        "document_traceability_policy",
+        "document_traceability_heading",
+        "document_traceability_link_style",
+        "document_traceability_id_prefixes",
     }
     if not any(metadata.get(field, "").strip() for field in field_names):
         return None
@@ -81,6 +91,14 @@ def build_profile_contract(
     }
     if any(user_story_fields.values()):
         contract["user_story"] = user_story_fields
+    traceability_fields: dict[str, Any] = {
+        "policy": metadata.get("document_traceability_policy", "").strip().casefold(),
+        "heading": metadata.get("document_traceability_heading", "").strip(),
+        "link_style": metadata.get("document_traceability_link_style", "").strip().casefold(),
+        "id_prefixes": list(_csv(metadata.get("document_traceability_id_prefixes", ""))),
+    }
+    if any(traceability_fields.values()):
+        contract["traceability"] = traceability_fields
     errors = validate_contract(contract)
     if errors:
         raise DocumentContractError(f"{source}: " + "; ".join(errors))
@@ -148,6 +166,31 @@ def validate_contract(payload: Any) -> list[str]:
                 value = user_story.get(field)
                 if not isinstance(value, str) or not value.strip():
                     errors.append(f"document contract has no user story {field}")
+
+    traceability = payload.get("traceability")
+    if traceability is not None:
+        if not isinstance(traceability, dict):
+            errors.append("document contract traceability must be an object")
+        else:
+            if traceability.get("policy") not in TRACEABILITY_POLICIES:
+                errors.append("document contract has an unsupported traceability policy")
+            heading = traceability.get("heading")
+            if not isinstance(heading, str) or not heading.strip():
+                errors.append("document contract has no traceability heading")
+            elif isinstance(headings, list) and heading not in headings:
+                errors.append("traceability heading must be included in required_headings")
+            if traceability.get("link_style") not in TRACEABILITY_LINK_STYLES:
+                errors.append("document contract has an unsupported traceability link style")
+            prefixes = traceability.get("id_prefixes")
+            if not isinstance(prefixes, list) or not prefixes:
+                errors.append("document contract traceability id_prefixes must be non-empty")
+            elif not all(
+                isinstance(item, str) and re.fullmatch(r"[A-Z][A-Z0-9]*", item)
+                for item in prefixes
+            ):
+                errors.append("document contract has an invalid traceability id_prefix")
+            elif len(prefixes) != len(set(prefixes)):
+                errors.append("document contract has duplicate traceability id_prefixes")
     return errors
 
 
@@ -301,6 +344,120 @@ def _validate_user_story_section(
     return errors
 
 
+def _semantic_id_body(prefixes: list[str]) -> str:
+    prefix_group = "|".join(re.escape(prefix) for prefix in sorted(prefixes, key=len, reverse=True))
+    return rf"(?:{prefix_group})(?:-[A-Z][A-Z0-9]*)*-\d+"
+
+
+def _semantic_id_re(prefixes: list[str], *, full: bool = False) -> re.Pattern[str]:
+    body = _semantic_id_body(prefixes)
+    return re.compile(rf"^{body}$" if full else rf"(?<![A-Z0-9-]){body}(?![A-Z0-9-])")
+
+
+def _all_atx_headings(lines: list[str]) -> dict[str, list[int]]:
+    headings: dict[str, list[int]] = {}
+    outside = _outside_fences(lines)
+    for index, (line, is_outside) in enumerate(zip(lines, outside, strict=True)):
+        if not is_outside:
+            continue
+        match = ATX_HEADING_RE.match(line)
+        if match:
+            headings.setdefault(_heading_text(match.group(1)), []).append(index)
+    return headings
+
+
+def _validate_traceability_section(
+    lines: list[str],
+    headings: list[tuple[str, int]],
+    contract: dict[str, Any],
+    *,
+    label: str,
+) -> list[str]:
+    policy = contract["traceability"]
+    heading = policy["heading"]
+    section_matches = [(name, index) for name, index in headings if name == heading]
+    if len(section_matches) != 1:
+        return []
+
+    section_start = section_matches[0][1] + 1
+    section_end = next(
+        (index for _name, index in headings if index >= section_start),
+        len(lines),
+    )
+    section_lines = lines[section_start:section_end]
+    outside = _outside_fences(section_lines)
+    semantic_re = _semantic_id_re(policy["id_prefixes"])
+    semantic_full_re = _semantic_id_re(policy["id_prefixes"], full=True)
+    semantic_body = _semantic_id_body(policy["id_prefixes"])
+    compression_re = re.compile(
+        rf"(?<![A-Z0-9-]){semantic_body}(?:\s*(?:/|–|—|-)\s*\d+)+"
+    )
+    document_headings = _all_atx_headings(lines)
+    errors: list[str] = []
+    linked_ids: list[str] = []
+    plain_ids: list[str] = []
+    compressed_refs: list[str] = []
+
+    for line, is_outside in zip(section_lines, outside, strict=True):
+        if not is_outside:
+            continue
+        masked = list(line)
+        for match in OBSIDIAN_HEADING_LINK_RE.finditer(line):
+            target = match.group("target").strip()
+            alias = (match.group("alias") or "").strip()
+            target_id_match = semantic_re.match(target)
+            target_id = target_id_match.group(0) if target_id_match and target_id_match.start() == 0 else None
+            alias_is_id = bool(semantic_full_re.fullmatch(alias))
+            if target_id or alias_is_id:
+                semantic_id = alias if alias_is_id else target_id
+                assert semantic_id is not None
+                linked_ids.append(semantic_id)
+                if alias != semantic_id:
+                    errors.append(
+                        f"{label}: trace link to {target!r} must use exact semantic ID "
+                        f"{semantic_id!r} as alias"
+                    )
+                if target_id != semantic_id:
+                    errors.append(
+                        f"{label}: trace link alias {semantic_id!r} points to a heading "
+                        "with a different semantic ID"
+                    )
+                target_lines = document_headings.get(target, [])
+                if len(target_lines) != 1:
+                    state = "missing" if not target_lines else "ambiguous"
+                    errors.append(
+                        f"{label}: trace link {semantic_id!r} has {state} exact heading target "
+                        f"{target!r}"
+                    )
+                if line.lstrip().startswith("|") and match.group("separator") == "|":
+                    errors.append(
+                        f"{label}: trace table link {semantic_id!r} must escape its alias "
+                        "separator as '\\|'"
+                    )
+            for index in range(match.start(), match.end()):
+                masked[index] = " "
+
+        remaining = "".join(masked)
+        compressed_refs.extend(match.group(0) for match in compression_re.finditer(remaining))
+        plain_ids.extend(match.group(0) for match in semantic_re.finditer(remaining))
+
+    if compressed_refs:
+        errors.append(
+            f"{label}: traceability must not compress semantic ID ranges: "
+            + ", ".join(dict.fromkeys(compressed_refs))
+        )
+    if plain_ids:
+        errors.append(
+            f"{label}: every semantic ID in {heading!r} must be an individual internal link: "
+            + ", ".join(dict.fromkeys(plain_ids))
+        )
+    if not linked_ids:
+        errors.append(
+            f"{label}: {heading!r} must contain at least one linked semantic ID"
+        )
+    return errors
+
+
 def validate_markdown(text: str, contract: dict[str, Any], *, label: str) -> list[str]:
     """Validate one Markdown document against a pinned project contract."""
     contract_errors = validate_contract(contract)
@@ -351,6 +508,8 @@ def validate_markdown(text: str, contract: dict[str, Any], *, label: str) -> lis
             errors.append(f"{label}: TOC must have a '---' separator after it")
     if contract.get("user_story") is not None:
         errors.extend(_validate_user_story_section(lines, headings, contract, label=label))
+    if contract.get("traceability") is not None:
+        errors.extend(_validate_traceability_section(lines, headings, contract, label=label))
     return errors
 
 

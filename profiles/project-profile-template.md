@@ -15,6 +15,10 @@ document_user_story_title_separator:
 document_user_story_role_label:
 document_user_story_goal_label:
 document_user_story_value_label:
+document_traceability_policy:
+document_traceability_heading:
+document_traceability_link_style:
+document_traceability_id_prefixes:
 ---
 
 # Профиль постановок проекта
@@ -114,6 +118,13 @@ frontmatter: `document_checks: draft, working_projection`, перечень
 локальные метки role/goal/value. Общий core проверяет объявленную форму, но не
 знает язык и терминологию проекта. Не заполняй часть полей: либо объяви контракт
 целиком, либо оставь соответствующий набор `document_*` пустым.
+
+Если таблица трассировки должна быть навигационной, добавь policy
+`semantic-id-links`, H2 трассировки, style `obsidian-heading-exact` и полный
+список допустимых semantic ID prefixes. Тогда каждый ID в разделе обязан быть
+отдельной ссылкой на один точный существующий heading. Сокращённые диапазоны и
+plain-text IDs machine check отклоняет. Для Obsidian-таблиц project profile
+должен отдельно требовать экранированный alias separator `\|`.
 
 Опиши отдельный `project-conformance`: применимые API/HTTP, identifier/casing,
 терминологию, frontmatter, шаблоны, ссылки, имена файлов и legacy-исключения.

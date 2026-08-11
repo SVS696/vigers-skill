@@ -87,6 +87,10 @@ description: "Оркестрирует предварительное иссле
     profile объявляет `user_story` contract, каждая история следует одной
     project-owned форме role-goal-value. `RULE/DATA/IF/AC/DOD` остаются
     отдельными трассируемыми слоями; таблицы `ACT` и списки `SCN` не заменяют US.
+17. **Трассировка должна навигировать, а не только перечислять ID.** Если
+    profile объявляет `traceability` contract, каждый semantic ID в разделе
+    трассировки является отдельной внутренней ссылкой на точный существующий
+    heading. Сжатые диапазоны и plain-text ID не проходят machine check.
 
 ## Когда применять
 
@@ -413,6 +417,8 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
   ревизию.
 - Объявленная profile форма User Story едина во всём документе; системные
   semantic IDs сохранены в собственных разделах и связаны трассировкой.
+- Объявленная linked traceability содержит только отдельные разрешаемые ссылки;
+  plain-text IDs, сокращённые диапазоны и dangling/ambiguous targets отсутствуют.
 - Business-context не присвоил пользователю ответственность бизнес-владельца.
 - Архитектор вызван только по гейту; `design` и `conformance` независимы.
 - Редактор не добавил новых требований и решений.
@@ -445,6 +451,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/evals/prompt-cookbook/bounded-systemic-scope.json` | Регрессия prompt: общий класс выявлен без расширения поставки до спекулятивного конструктора |
 | `{baseDir}/evals/prompt-cookbook/solution-boundary-smells.json` | Регрессия prompt: reviewer симметрично ловит частный hardcode и преждевременную универсализацию |
 | `{baseDir}/evals/prompt-cookbook/user-story-format-barrier.json` | Регрессия prompt: системные IDs не подменяют единую project-owned форму User Story |
+| `{baseDir}/evals/prompt-cookbook/traceability-link-barrier.json` | Регрессия prompt: plain-text IDs и диапазоны не обходят linked traceability gate |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/block-contract.md` | Контракт семантического блока и sidecar index |
 | `{baseDir}/references/knowledge-map.md` | Детерминированная карта методических маршрутов |

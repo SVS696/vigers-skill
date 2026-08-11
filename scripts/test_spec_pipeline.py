@@ -96,7 +96,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["contracts"], 5)
         self.assertEqual(counts["runtime_adapters"], 10)
         self.assertEqual(counts["workflows"], 3)
-        self.assertEqual(counts["prompt_evals"], 9)
+        self.assertEqual(counts["prompt_evals"], 10)
 
     def test_closed_coverage_prompt_eval_rejects_archaeological_restart(self) -> None:
         eval_path = (
@@ -176,6 +176,24 @@ class PipelineTests(unittest.TestCase):
             expected["required_output_signals"],
         )
 
+    def test_traceability_eval_rejects_plain_and_compressed_ids(self) -> None:
+        eval_path = (
+            spec_pipeline.ROOT
+            / "evals"
+            / "prompt-cookbook"
+            / "traceability-link-barrier.json"
+        )
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        expected = payload["expected"]
+        self.assertIn(
+            "оставлять semantic IDs обычным текстом или сокращённым диапазоном",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "every semantic ID is an individually resolved link",
+            expected["required_output_signals"],
+        )
+
     def test_generic_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             selection = spec_pipeline.detect_profile(Path(temp))
@@ -243,7 +261,7 @@ class PipelineTests(unittest.TestCase):
                 root,
                 extra_frontmatter=(
                     "document_checks: draft, working_projection\n"
-                    "document_required_headings: Оглавление, Описание, User Story\n"
+                    "document_required_headings: Оглавление, Описание, User Story, Трассировка\n"
                     "document_toc: obsidian-h2-exact\n"
                     "document_toc_heading: Оглавление\n"
                     "document_toc_separators: required\n"
@@ -253,7 +271,11 @@ class PipelineTests(unittest.TestCase):
                     "document_user_story_title_separator: .\n"
                     "document_user_story_role_label: As\n"
                     "document_user_story_goal_label: I want\n"
-                    "document_user_story_value_label: so that"
+                    "document_user_story_value_label: so that\n"
+                    "document_traceability_policy: semantic-id-links\n"
+                    "document_traceability_heading: Трассировка\n"
+                    "document_traceability_link_style: obsidian-heading-exact\n"
+                    "document_traceability_id_prefixes: US, REQ, AC, DOD"
                 ),
             )
             selection = spec_pipeline.detect_profile(root)
@@ -273,6 +295,15 @@ class PipelineTests(unittest.TestCase):
                     "role_label": "As",
                     "goal_label": "I want",
                     "value_label": "so that",
+                },
+            )
+            self.assertEqual(
+                selection.document_contract["traceability"],
+                {
+                    "policy": "semantic-id-links",
+                    "heading": "Трассировка",
+                    "link_style": "obsidian-heading-exact",
+                    "id_prefixes": ["US", "REQ", "AC", "DOD"],
                 },
             )
 

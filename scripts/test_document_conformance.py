@@ -68,6 +68,31 @@ def story_contract() -> dict[str, object]:
     return result
 
 
+def trace_contract() -> dict[str, object]:
+    metadata = {
+        "document_checks": "draft, working_projection",
+        "document_required_headings": (
+            "Оглавление, User Story, Требования, Acceptance Criteria, "
+            "Definition of Done, Трассировка, Полезные ссылки"
+        ),
+        "document_toc": "obsidian-h2-exact",
+        "document_toc_heading": "Оглавление",
+        "document_toc_separators": "required",
+        "document_traceability_policy": "semantic-id-links",
+        "document_traceability_heading": "Трассировка",
+        "document_traceability_link_style": "obsidian-heading-exact",
+        "document_traceability_id_prefixes": "US, REQ, AC, DOD",
+    }
+    result = document_conformance.build_profile_contract(
+        metadata,
+        profile_id="project-alpha",
+        profile_text=PROFILE,
+        source=Path("profile.md"),
+    )
+    assert result is not None
+    return result
+
+
 VALID = """# Постановка
 
 ---
@@ -112,6 +137,59 @@ VALID_STORIES = VALID.replace(
 **Как контролёр**, я хочу
 перепроверить результат, чтобы исключить ошибку.""",
 )
+
+
+VALID_TRACE = r"""# Постановка
+
+---
+
+## Оглавление
+
+1. [[#User Story]]
+2. [[#Требования]]
+3. [[#Acceptance Criteria]]
+4. [[#Definition of Done]]
+5. [[#Трассировка]]
+6. [[#Полезные ссылки]]
+
+---
+
+## User Story
+
+### US-1. Просмотр результата
+
+Текст.
+
+## Требования
+
+### REQ-B01-001 — Показать результат
+
+Текст.
+
+## Acceptance Criteria
+
+### AC-B01-001 — Результат показан
+
+Текст.
+
+## Definition of Done
+
+### DOD-B01-001 — Проверка добавлена
+
+Текст.
+
+## Трассировка
+
+| Откуда | Куда |
+|---|---|
+| [[#US-1. Просмотр результата\|US-1]] | [[#REQ-B01-001 — Показать результат\|REQ-B01-001]] |
+| [[#AC-B01-001 — Результат показан\|AC-B01-001]] | [[#REQ-B01-001 — Показать результат\|REQ-B01-001]] |
+| [[#DOD-B01-001 — Проверка добавлена\|DOD-B01-001]] | [[#AC-B01-001 — Результат показан\|AC-B01-001]] |
+
+## Полезные ссылки
+
+Текст.
+"""
 
 
 class DocumentConformanceTests(unittest.TestCase):
@@ -220,6 +298,75 @@ class DocumentConformanceTests(unittest.TestCase):
             label="draft",
         )
         self.assertTrue(any("IDs must be unique and sequential" in item for item in errors))
+
+    def test_individual_semantic_heading_links_pass(self) -> None:
+        self.assertEqual(
+            document_conformance.validate_markdown(
+                VALID_TRACE,
+                trace_contract(),
+                label="draft",
+            ),
+            [],
+        )
+
+    def test_plain_trace_ids_are_rejected(self) -> None:
+        text = VALID_TRACE.replace(
+            "[[#REQ-B01-001 — Показать результат\\|REQ-B01-001]]",
+            "REQ-B01-001",
+        )
+        errors = document_conformance.validate_markdown(text, trace_contract(), label="draft")
+        self.assertTrue(any("must be an individual internal link" in item for item in errors))
+
+    def test_compressed_trace_ranges_are_rejected(self) -> None:
+        text = VALID_TRACE.replace(
+            "[[#REQ-B01-001 — Показать результат\\|REQ-B01-001]]",
+            "REQ-B01-001/004–007",
+        )
+        errors = document_conformance.validate_markdown(text, trace_contract(), label="draft")
+        self.assertTrue(any("must not compress semantic ID ranges" in item for item in errors))
+
+    def test_trace_link_must_resolve_exact_heading(self) -> None:
+        text = VALID_TRACE.replace(
+            "#REQ-B01-001 — Показать результат\\|REQ-B01-001",
+            "#REQ-B01-001 — Несуществующий заголовок\\|REQ-B01-001",
+            1,
+        )
+        errors = document_conformance.validate_markdown(text, trace_contract(), label="draft")
+        self.assertTrue(any("missing exact heading target" in item for item in errors))
+
+    def test_trace_alias_must_equal_target_semantic_id(self) -> None:
+        text = VALID_TRACE.replace(
+            "#REQ-B01-001 — Показать результат\\|REQ-B01-001",
+            "#REQ-B01-001 — Показать результат\\|AC-B01-001",
+            1,
+        )
+        errors = document_conformance.validate_markdown(text, trace_contract(), label="draft")
+        self.assertTrue(any("different semantic ID" in item for item in errors))
+
+    def test_trace_table_alias_separator_must_be_escaped(self) -> None:
+        text = VALID_TRACE.replace(
+            "#US-1. Просмотр результата\\|US-1",
+            "#US-1. Просмотр результата|US-1",
+        )
+        errors = document_conformance.validate_markdown(text, trace_contract(), label="draft")
+        self.assertTrue(any("must escape its alias separator" in item for item in errors))
+
+    def test_partial_traceability_contract_is_rejected(self) -> None:
+        metadata = {
+            "document_checks": "draft",
+            "document_required_headings": "Оглавление, Трассировка",
+            "document_toc": "obsidian-h2-exact",
+            "document_toc_heading": "Оглавление",
+            "document_toc_separators": "optional",
+            "document_traceability_policy": "semantic-id-links",
+        }
+        with self.assertRaises(document_conformance.DocumentContractError):
+            document_conformance.build_profile_contract(
+                metadata,
+                profile_id="project-alpha",
+                profile_text=PROFILE,
+                source=Path("profile.md"),
+            )
 
 
 if __name__ == "__main__":

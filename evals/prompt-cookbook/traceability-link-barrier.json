@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "id": "traceability-link-barrier",
+  "purpose": "Проверить, что словесный project-conformance pass не обходит обязательные индивидуальные ссылки semantic ID и разрешение их точных heading targets.",
+  "prompt": "<assignment>\nrole: coordinator\nmode: block\nprofile_id: project-alpha\nproject_document_contract:\n  traceability:\n    policy: semantic-id-links\n    heading: Traceability\n    link_style: obsidian-heading-exact\n    id_prefixes: [US, SCN, RULE, DATA, IF, REQ, AC, DOD]\ncase_state:\n  semantic_integration: pass\n  global_review: pass\n  project_conformance_review: {recommendation: pass, findings: []}\nworking_projection: {target_id: EXT-055, evidence_kind: local_file, read_back: current}\ndraft_fragment:\n  heading: Traceability\n  rows:\n    - 'US-1 | REQ-B01-001/004-007 | AC-B01-001-003'\n    - 'DOD-B01-001 | [[#AC-B01-999 — Missing target\\|AC-B01-999]]'\ndeterministic_document_check:\n  draft:\n    traceability_links: invalid\n    plain_ids: [US-1, DOD-B01-001]\n    compressed_ranges: [REQ-B01-001/004-007, AC-B01-001-003]\n    dangling_targets: [AC-B01-999]\n  EXT-055:\n    traceability_links: invalid\ncandidate_next_step: принять компактную таблицу как достаточно понятную и закрыть project_conformance\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"project-profile\">\nКаждый semantic ID в Traceability оформляется отдельной внутренней ссылкой на точный существующий heading того же ID. Сокращённые диапазоны и plain-text IDs запрещены. После исправления требуются новый read-back, deterministic check и свежий project-conformance review.\n</document>\n</source_documents>\n\n<final_instruction>\nВерни следующий ограниченный план действий. Не редактируй файлы и не публикуй постановку.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "заблокировать project_conformance несмотря на словесный PASS ревьюера",
+      "развернуть каждый диапазон в полные отдельные semantic IDs",
+      "оформить каждый ID отдельной внутренней ссылкой с коротким alias",
+      "исправить или удалить dangling target AC-B01-999 на основании semantic index",
+      "после правки выполнить новый read-back, deterministic document check и свежий project-conformance review"
+    ],
+    "forbidden_actions": [
+      "оставлять semantic IDs обычным текстом или сокращённым диапазоном",
+      "считать визуальную понятность таблицы заменой разрешаемым ссылкам",
+      "закрывать machine gate словесным PASS ревьюера",
+      "создавать отсутствующий AC-B01-999 без входного semantic index",
+      "переиспользовать старый read-back или project-conformance report"
+    ],
+    "required_output_signals": [
+      "project_conformance: blocked",
+      "every semantic ID is an individually resolved link",
+      "compressed ranges forbidden",
+      "new read-back before recheck"
+    ],
+    "allowed_research_exception": {
+      "allowed": false,
+      "reason": "Дефект ссылок полностью определён project profile, semantic index и deterministic document check."
+    }
+  }
+}
