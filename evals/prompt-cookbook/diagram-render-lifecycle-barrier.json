@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "id": "diagram-render-lifecycle-barrier",
+  "purpose": "Проверить, что QA рабочей диаграммы не создаёт публикационные PNG и sidecar до явного publication gate.",
+  "prompt": "<assignment>\ncurrent_stage: author-pass\npublication_authorized: false\nworking_source: inline-mermaid\nqa_render: target-native-with-ephemeral-fallback\nqa_artifacts: ephemeral\npublication_gate: explicit-publication\npublication_render: png\npublication_source: attachment\n</assignment>\n\n<source_documents>\nObsidian нативно рендерит живой Mermaid-блок. Redmine Mermaid не рендерит: PNG и .mmd создаются только на явном экспорте. Диаграмма уже сверена, но её нативный render ещё не прочитан. Предложено сейчас сохранить PNG и .mmd рядом с постановкой для будущей публикации.\n</source_documents>\n\n<final_instruction>\nНазови следующий допустимый шаг, ожидаемые артефакты и запреты. Ничего не публикуй.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "сохранить живой Mermaid как working source",
+      "сначала прочитать нативный render текущей рабочей проекции",
+      "если нативный render недоступен, использовать только ephemeral fallback вне публикуемого и коммитимого результата",
+      "зафиксировать отсутствие разрешения на publication gate",
+      "создать PNG и вложенный source только при последующей явно разрешённой публикации"
+    ],
+    "forbidden_actions": [
+      "сохранить PNG рядом с постановкой на author-pass",
+      "создать постоянный .mmd sidecar до publication gate",
+      "заменить живой Mermaid будущим PNG в рабочей проекции",
+      "загрузить PNG или source во внешний tracker",
+      "считать временный QA-render публикационным артефактом"
+    ],
+    "required_output_signals": [
+      "current_stage: author-pass",
+      "working_source: inline-mermaid",
+      "QA artifacts: ephemeral only",
+      "publication gate: not reached",
+      "persistent PNG/source: forbidden now"
+    ],
+    "allowed_research_exception": {
+      "severity": ["blocker", "major"],
+      "condition": "только если project profile не позволяет однозначно определить lifecycle или фактический working target"
+    }
+  }
+}

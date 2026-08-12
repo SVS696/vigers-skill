@@ -56,7 +56,10 @@
     Каждая диаграмма отвечает на один явно названный вопрос, ссылается на
     исходные semantic IDs и сохраняет их смысл. Перегруженную модель разложи на
     обзор и фокусные схемы либо на схемы по сценарию/жизненному циклу. Верни
-    матрицу `diagram question → source_ids → section → editable source → render`.
+    матрицу `diagram question → source_ids → section → working source → current
+    stage → QA render → publication gate`. Соблюдай profile `diagram_delivery`:
+    не создавай persistent publication render или sidecar source во время
+    author/review стадии и не выдавай временный QA-файл за публикационный.
 14. Собери читательскую проекцию по
     `references/reader-projection-contract.md`: не переноси служебные ID,
     findings, gates, runtime-файлы и методическую терминологию. Публичный

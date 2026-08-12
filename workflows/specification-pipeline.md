@@ -128,7 +128,8 @@ architecture design note с ограничениями для редактора
 3. Редактор собирает документ, но не закрывает открытые вопросы и не добавляет
    новые требования, поля, числа, технологии или архитектурные решения.
 4. Редактор реализует принятый `diagram_gate` и возвращает матрицу
-   `diagram question → source_ids → section → editable source → render`.
+   `diagram question → source_ids → section → working source → current stage →
+   QA render → publication gate`.
    Перегруженные схемы декомпозируются, а не уменьшаются до нечитаемого вида.
 5. Редактор применяет `references/reader-projection-contract.md`: публикует
    только reader-facing смысл, делает все semantic references точными локальными
@@ -161,7 +162,9 @@ architecture design note с ограничениями для редактора
    запиши новый read-back хеш. Косметические изменения можно объединить одним
    update текущего gate.
 8. Для каждой required-диаграммы сверь смысл с source IDs, отрендери способом
-   целевого канала и прочитай фактический render на целевой ширине. Обрезка,
+   текущей рабочей стадии из profile `diagram_delivery` и прочитай фактический
+   render на целевой ширине. Не создавай publication render/source до явного
+   publication gate. Обрезка,
    наложения, неразличимые подписи, сломанные стрелки либо одна перегруженная
    схема вместо требуемой декомпозиции блокируют author gate.
 9. Закрой `author_passes` только после machine validation boundary-блока и

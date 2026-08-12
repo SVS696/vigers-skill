@@ -96,7 +96,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["contracts"], 5)
         self.assertEqual(counts["runtime_adapters"], 10)
         self.assertEqual(counts["workflows"], 3)
-        self.assertEqual(counts["prompt_evals"], 12)
+        self.assertEqual(counts["prompt_evals"], 13)
 
     def test_closed_coverage_prompt_eval_rejects_archaeological_restart(self) -> None:
         eval_path = (
@@ -137,6 +137,24 @@ class PipelineTests(unittest.TestCase):
         )
         self.assertIn(
             "visual read-back фактического render",
+            expected["required_output_signals"],
+        )
+
+    def test_diagram_lifecycle_eval_blocks_early_publication_artifacts(self) -> None:
+        eval_path = (
+            spec_pipeline.ROOT
+            / "evals"
+            / "prompt-cookbook"
+            / "diagram-render-lifecycle-barrier.json"
+        )
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        expected = payload["expected"]
+        self.assertIn(
+            "сохранить PNG рядом с постановкой на author-pass",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "publication gate: not reached",
             expected["required_output_signals"],
         )
 

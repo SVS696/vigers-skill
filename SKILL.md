@@ -96,6 +96,7 @@ description: "Оркестрирует предварительное иссле
     diagram gate по `{baseDir}/references/diagram-contract.md`. Диаграмма
     отвечает на один вопрос, трассируется к semantic IDs и проходит render QA;
     перегруженная схема декомпозируется, а не уменьшается до нечитаемого размера.
+    Рабочий source, QA-render и publication artifacts следуют profile lifecycle; файлы будущей публикации не создаются до её явного gate.
 19. **Публикуй читательскую проекцию, а не внутреннюю модель.** Служебные ID,
     findings, gates и reasoning остаются в case package. AC описывают
     наблюдаемую приёмку, DoD — готовность результата к ней, а developer
@@ -443,6 +444,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 - Diagram gate имеет `required|not-required|blocked`; все required surfaces
   представлены, семантически сверены и просмотрены в фактическом render. Одна
   гигантская нечитаемая схема не считается покрытием нескольких surfaces.
+- Diagram delivery contract соблюдён: working source редактируем, QA-render не опубликован, persistent render/source созданы только на publication gate.
 - Business-context не присвоил пользователю ответственность бизнес-владельца.
 - Архитектор вызван только по гейту; `design` и `conformance` независимы.
 - Редактор не добавил новых требований и решений.
@@ -479,6 +481,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/evals/prompt-cookbook/user-story-format-barrier.json` | Регрессия prompt: системные IDs не подменяют единую project-owned форму User Story |
 | `{baseDir}/evals/prompt-cookbook/traceability-link-barrier.json` | Регрессия prompt: plain-text IDs и диапазоны не обходят linked traceability gate |
 | `{baseDir}/evals/prompt-cookbook/diagram-complexity-barrier.json` | Регрессия prompt: полный текст не подменяет required diagrams и visual QA |
+| `{baseDir}/evals/prompt-cookbook/diagram-render-lifecycle-barrier.json` | Регрессия prompt: рабочий QA не создаёт PNG/source до publication gate |
 | `{baseDir}/evals/prompt-cookbook/reader-projection-barrier.json` | Регрессия prompt: служебная модель, developer checks и транзитивная трассировка не протекают в постановку |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/block-contract.md` | Контракт семантического блока и sidecar index |

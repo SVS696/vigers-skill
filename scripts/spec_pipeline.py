@@ -85,6 +85,7 @@ REQUIRED_PROMPT_EVALS = (
     "evals/prompt-cookbook/user-story-format-barrier.json",
     "evals/prompt-cookbook/traceability-link-barrier.json",
     "evals/prompt-cookbook/diagram-complexity-barrier.json",
+    "evals/prompt-cookbook/diagram-render-lifecycle-barrier.json",
     "evals/prompt-cookbook/reader-projection-barrier.json",
 )
 PUBLIC_FORBIDDEN_MARKERS = tuple(

@@ -23,6 +23,16 @@ TRACEABILITY_DENSITIES = {"direct-edges"}
 ACCEPTANCE_FOCI = {"observable-behavior"}
 DOD_FOCI = {"acceptance-readiness"}
 DEVELOPER_CHECK_POLICIES = {"omit-unless-normative"}
+DIAGRAM_WORKING_SOURCES = {"inline-mermaid", "inline-plantuml", "external-source"}
+DIAGRAM_QA_RENDERS = {
+    "target-native",
+    "ephemeral-render",
+    "target-native-with-ephemeral-fallback",
+}
+DIAGRAM_QA_ARTIFACT_POLICIES = {"none", "ephemeral"}
+DIAGRAM_PUBLICATION_GATES = {"none", "explicit-publication"}
+DIAGRAM_PUBLICATION_RENDERS = {"none", "target-native", "png", "svg"}
+DIAGRAM_PUBLICATION_SOURCES = {"none", "inline", "attachment"}
 H2_RE = re.compile(r"^##(?!#)\s+(.+?)\s*$")
 H3_RE = re.compile(r"^###(?!#)\s+(.+?)\s*$")
 ATX_HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
@@ -74,6 +84,12 @@ def build_profile_contract(
         "document_dod_focus",
         "document_developer_checks",
         "document_prose_language",
+        "document_diagram_working_source",
+        "document_diagram_qa_render",
+        "document_diagram_qa_artifacts",
+        "document_diagram_publication_gate",
+        "document_diagram_publication_render",
+        "document_diagram_publication_source",
     }
     if not any(metadata.get(field, "").strip() for field in field_names):
         return None
@@ -127,6 +143,26 @@ def build_profile_contract(
     }
     if any(reader_projection_fields.values()):
         contract["reader_projection"] = reader_projection_fields
+    diagram_delivery_fields = {
+        "working_source": metadata.get("document_diagram_working_source", "")
+        .strip()
+        .casefold(),
+        "qa_render": metadata.get("document_diagram_qa_render", "").strip().casefold(),
+        "qa_artifacts": metadata.get("document_diagram_qa_artifacts", "")
+        .strip()
+        .casefold(),
+        "publication_gate": metadata.get("document_diagram_publication_gate", "")
+        .strip()
+        .casefold(),
+        "publication_render": metadata.get("document_diagram_publication_render", "")
+        .strip()
+        .casefold(),
+        "publication_source": metadata.get("document_diagram_publication_source", "")
+        .strip()
+        .casefold(),
+    }
+    if any(diagram_delivery_fields.values()):
+        contract["diagram_delivery"] = diagram_delivery_fields
     errors = validate_contract(contract)
     if errors:
         raise DocumentContractError(f"{source}: " + "; ".join(errors))
@@ -277,6 +313,59 @@ def validate_contract(payload: Any) -> list[str]:
                     errors.append(
                         "traceability prefixes are not public reader IDs: " + ", ".join(unknown)
                     )
+
+    diagram_delivery = payload.get("diagram_delivery")
+    if diagram_delivery is not None:
+        if not isinstance(diagram_delivery, dict):
+            errors.append("document contract diagram_delivery must be an object")
+        else:
+            required_fields = {
+                "working_source",
+                "qa_render",
+                "qa_artifacts",
+                "publication_gate",
+                "publication_render",
+                "publication_source",
+            }
+            missing = sorted(
+                field for field in required_fields if not diagram_delivery.get(field)
+            )
+            if missing:
+                errors.append(
+                    "document contract diagram_delivery is incomplete: " + ", ".join(missing)
+                )
+            if diagram_delivery.get("working_source") not in DIAGRAM_WORKING_SOURCES:
+                errors.append("document contract has an unsupported diagram working source")
+            qa_render = diagram_delivery.get("qa_render")
+            qa_artifacts = diagram_delivery.get("qa_artifacts")
+            if qa_render not in DIAGRAM_QA_RENDERS:
+                errors.append("document contract has an unsupported diagram QA render")
+            if qa_artifacts not in DIAGRAM_QA_ARTIFACT_POLICIES:
+                errors.append("document contract has an unsupported diagram QA artifact policy")
+            if qa_render == "target-native" and qa_artifacts != "none":
+                errors.append("target-native diagram QA must not persist QA artifacts")
+            if qa_render in {
+                "ephemeral-render",
+                "target-native-with-ephemeral-fallback",
+            } and qa_artifacts != "ephemeral":
+                errors.append("diagram QA fallback requires ephemeral artifacts")
+            publication_gate = diagram_delivery.get("publication_gate")
+            publication_render = diagram_delivery.get("publication_render")
+            publication_source = diagram_delivery.get("publication_source")
+            if publication_gate not in DIAGRAM_PUBLICATION_GATES:
+                errors.append("document contract has an unsupported diagram publication gate")
+            if publication_render not in DIAGRAM_PUBLICATION_RENDERS:
+                errors.append("document contract has an unsupported diagram publication render")
+            if publication_source not in DIAGRAM_PUBLICATION_SOURCES:
+                errors.append("document contract has an unsupported diagram publication source")
+            if publication_gate == "none" and (
+                publication_render != "none" or publication_source != "none"
+            ):
+                errors.append("diagram publication disabled but publication artifacts are enabled")
+            if publication_gate == "explicit-publication" and (
+                publication_render == "none" or publication_source == "none"
+            ):
+                errors.append("explicit diagram publication requires render and source policies")
     return errors
 
 

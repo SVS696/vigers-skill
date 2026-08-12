@@ -48,6 +48,43 @@ diagram_gate:
 выбирает допустимый source/render формат, но не переопределяет смысл состояний,
 сообщений, ветвей и связей данных.
 
+## Жизненный цикл source и render
+
+Рабочая проекция и внешний publication target — разные стадии. Не создавай
+артефакты будущей стадии заранее. Если profile объявляет `diagram_delivery`, он
+целиком и однозначно фиксирует:
+
+```yaml
+diagram_delivery:
+  working_source: inline-mermaid | inline-plantuml | external-source
+  qa_render: target-native | ephemeral-render | target-native-with-ephemeral-fallback
+  qa_artifacts: none | ephemeral
+  publication_gate: none | explicit-publication
+  publication_render: none | target-native | png | svg
+  publication_source: none | inline | attachment
+```
+
+До `explicit-publication`:
+
+- редактируй только `working_source` в рабочей проекции;
+- проверяй визуальный результат способом `qa_render`;
+- при `target-native-with-ephemeral-fallback` сначала используй нативный render
+  текущего target, а временный renderer — только если нативный результат нельзя
+  прочитать;
+- `ephemeral` файлы создавай вне публикуемого и коммитимого результата; не
+  прикладывай, не регистрируй как delivery evidence и не сохраняй «на будущее»;
+- не создавай постоянные publication PNG/SVG и sidecar source.
+
+На `explicit-publication` создай ровно объявленные `publication_render` и
+`publication_source`, преобразуй представление под фактический target, затем
+выполни visual read-back уже публикационного render. Если `publication_gate` не
+достигнут или публикация не разрешена, работа завершается на рабочей стадии.
+
+`render текущего target` и `publication render` совпадают только когда profile
+явно задаёт один и тот же канал. Успешный QA рабочей проекции не доказывает
+готовность будущего PNG, а заранее созданный PNG не подменяет проверку живого
+исходника.
+
 ## Декомпозиция и читаемость
 
 Одна диаграмма отвечает на один вопрос и имеет один уровень детализации.
@@ -72,11 +109,13 @@ diagram_gate:
 
 1. Сверь каждый узел, переход, условие и участника с `source_ids` и каноническим
    текстом. При расхождении исправляй диаграмму, а не молча меняй требования.
-2. Отрендери диаграмму тем способом, которым она попадёт в итоговый target.
+2. Отрендери диаграмму способом текущей стадии из `diagram_delivery`; не
+   подменяй QA рабочей проекции будущим publication render.
 3. Просмотри фактический render на целевой ширине: нет обрезанных подписей,
    наложений, неразличимых стрелок, сломанной разметки и слишком мелкого текста.
 4. Проверь caption: какой вопрос решает диаграмма и что остаётся за её границей.
-5. Сохрани редактируемый source и доступный человеку render по правилам profile.
+5. Сохрани только артефакты, разрешённые для текущей стадии. Publication render
+   и sidecar source появляются исключительно на объявленном publication gate.
 
 Непрошедший render, семантическое расхождение или недекомпозированная
 нечитаемая схема — `major`. Косметическое выравнивание при полностью читаемом

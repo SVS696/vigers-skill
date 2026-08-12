@@ -28,6 +28,12 @@ document_acceptance_focus:
 document_dod_focus:
 document_developer_checks:
 document_prose_language:
+document_diagram_working_source:
+document_diagram_qa_render:
+document_diagram_qa_artifacts:
+document_diagram_publication_gate:
+document_diagram_publication_render:
+document_diagram_publication_source:
 ---
 
 # Профиль постановок проекта
@@ -158,6 +164,22 @@ plain-text IDs machine check отклоняет. Для Obsidian-таблиц pr
 dangling semantic references во всей читательской проекции. Смысловые правила
 AC/DoD, прямой трассировки, языка и ресурсной дисциплины проверяют editor и
 reviewer по `references/reader-projection-contract.md`.
+
+Если рабочая проекция и публикационный target по-разному обрабатывают диаграммы,
+объяви полный `document_diagram_*` lifecycle:
+
+- `working_source`: `inline-mermaid|inline-plantuml|external-source`;
+- `qa_render`: `target-native|ephemeral-render|target-native-with-ephemeral-fallback`;
+- `qa_artifacts`: `none|ephemeral`;
+- `publication_gate`: `none|explicit-publication`;
+- `publication_render`: `none|target-native|png|svg`;
+- `publication_source`: `none|inline|attachment`.
+
+При `explicit-publication` render и source создаются только после достижения
+явного publication gate. `ephemeral` разрешает временный QA-render вне
+публикуемого/коммитимого результата, но не постоянный файл «на будущее».
+Частично заполненный или внутренне противоречивый lifecycle machine check
+отклоняет.
 
 Опиши отдельный `project-conformance`: применимые API/HTTP, identifier/casing,
 терминологию, frontmatter, шаблоны, ссылки, имена файлов, допустимые форматы

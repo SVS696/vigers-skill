@@ -129,8 +129,10 @@ case-root и свежих block contexts.
    собирает финальный документ.
 3. Не позволяй редактору создавать определения, которых нет в semantic index.
 4. Если у блока есть required-диаграмма, редактор создаёт её как локальную
-   derived view, связывает с source IDs и возвращает editable source. Финальный
-   размер и межблочная декомпозиция повторно проверяются после интеграции.
+   derived view, связывает с source IDs и возвращает working source. QA следует
+   рабочей стадии profile `diagram_delivery`; publication render и sidecar до
+   явного publication gate не создаются. Финальный размер и межблочная
+   декомпозиция повторно проверяются после интеграции.
 5. Переведи блок в `analyzed`; оркестратор сохранит хэши block/index и kernel
    revision после всех авторских изменений.
 
@@ -238,8 +240,10 @@ case-root и свежих block contexts.
 2. До simplicity-pass проверь принятый boundary на `particular-case` и
    `speculative-generalization`; не удаляй доказанную seam как «лишнюю».
 3. После правок снова выполни consistency-check.
-4. Отрендери все required-диаграммы способом целевого канала и прочитай
-   фактические изображения на целевой ширине. Исправь обрезку, наложения,
+4. Отрендери все required-диаграммы способом текущей стадии из profile
+   `diagram_delivery` и прочитай фактические изображения на целевой ширине. До
+   явного publication gate не создавай persistent publication render/source.
+   Исправь обрезку, наложения,
    неразличимые подписи и перегрузку через декомпозицию, а не уменьшение шрифта.
 5. Зафиксируй `author_passes` только после machine validation единого
    solution-boundary блока.

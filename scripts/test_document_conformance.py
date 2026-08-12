@@ -127,6 +127,32 @@ def projection_contract() -> dict[str, object]:
     return result
 
 
+def diagram_contract() -> dict[str, object]:
+    metadata = {
+        "document_checks": "draft, working_projection",
+        "document_required_headings": (
+            "Оглавление, История изменений, Описание, User Story, Полезные ссылки"
+        ),
+        "document_toc": "obsidian-h2-exact",
+        "document_toc_heading": "Оглавление",
+        "document_toc_separators": "required",
+        "document_diagram_working_source": "inline-mermaid",
+        "document_diagram_qa_render": "target-native-with-ephemeral-fallback",
+        "document_diagram_qa_artifacts": "ephemeral",
+        "document_diagram_publication_gate": "explicit-publication",
+        "document_diagram_publication_render": "png",
+        "document_diagram_publication_source": "attachment",
+    }
+    result = document_conformance.build_profile_contract(
+        metadata,
+        profile_id="project-alpha",
+        profile_text=PROFILE,
+        source=Path("profile.md"),
+    )
+    assert result is not None
+    return result
+
+
 VALID = """# Постановка
 
 ---
@@ -401,6 +427,57 @@ class DocumentConformanceTests(unittest.TestCase):
                 profile_text=PROFILE,
                 source=Path("profile.md"),
             )
+
+    def test_complete_diagram_lifecycle_is_pinned(self) -> None:
+        diagram_delivery = diagram_contract()["diagram_delivery"]
+        self.assertEqual(
+            diagram_delivery,
+            {
+                "working_source": "inline-mermaid",
+                "qa_render": "target-native-with-ephemeral-fallback",
+                "qa_artifacts": "ephemeral",
+                "publication_gate": "explicit-publication",
+                "publication_render": "png",
+                "publication_source": "attachment",
+            },
+        )
+
+    def test_partial_diagram_lifecycle_is_rejected(self) -> None:
+        metadata = {
+            "document_checks": "draft",
+            "document_required_headings": "Оглавление",
+            "document_toc": "obsidian-h2-exact",
+            "document_toc_heading": "Оглавление",
+            "document_toc_separators": "optional",
+            "document_diagram_working_source": "inline-mermaid",
+        }
+        with self.assertRaises(document_conformance.DocumentContractError):
+            document_conformance.build_profile_contract(
+                metadata,
+                profile_id="project-alpha",
+                profile_text=PROFILE,
+                source=Path("profile.md"),
+            )
+
+    def test_explicit_diagram_publication_requires_render_and_source(self) -> None:
+        payload = diagram_contract()
+        diagram_delivery = payload["diagram_delivery"]
+        assert isinstance(diagram_delivery, dict)
+        diagram_delivery["publication_render"] = "none"
+        diagram_delivery["publication_source"] = "none"
+        errors = document_conformance.validate_contract(payload)
+        self.assertIn(
+            "explicit diagram publication requires render and source policies",
+            errors,
+        )
+
+    def test_native_diagram_qa_forbids_persistent_artifacts(self) -> None:
+        payload = diagram_contract()
+        diagram_delivery = payload["diagram_delivery"]
+        assert isinstance(diagram_delivery, dict)
+        diagram_delivery["qa_render"] = "target-native"
+        errors = document_conformance.validate_contract(payload)
+        self.assertIn("target-native diagram QA must not persist QA artifacts", errors)
 
     def test_reader_projection_accepts_defined_and_linked_public_ids(self) -> None:
         self.assertEqual(
