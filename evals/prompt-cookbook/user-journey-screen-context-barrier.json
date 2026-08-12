@@ -1,0 +1,39 @@
+{
+  "schema": 1,
+  "id": "user-journey-screen-context-barrier",
+  "purpose": "Проверить, что UI-сценарий называет место действия и связывает видимые поля с техническими ID без выдуманного интерфейса и повторов.",
+  "prompt": "<assignment>\nrole: spec-reviewer\nmode: block\nprofile_id: project-alpha\nuser_journey:\n  context: screen-on-entry-and-evidenced-navigation\n  ui_field_naming: visible-label-then-technical-id\ncases:\n  - id: UI-NAV\n    draft: 'Пользователь задаёт cadence и destination; система открывает подтверждение.'\n  - id: UI-OPEN\n    draft: 'Пользователь меняет locale на уже открытом экране.'\n  - id: UI-UNKNOWN\n    draft: 'Пользователь включает настройку.'\n  - id: SYSTEM\n    draft: 'Плановый процесс переносит записи в архив.'\n</assignment>\n\n<source_documents>\n<document id=\"SRC-UI-NAV\" origin=\"verified-ui\">Путь: Администрирование → Рассылки. Экран: Рассылки. Поля: Периодичность = cadence; Получатель = destination. После сохранения открывается диалог Подтверждение.</document>\n<document id=\"SRC-UI-OPEN\" origin=\"verified-ui\">Экран: Профиль. Поле: Язык = locale. Маршрут к уже открытому экрану не зафиксирован.</document>\n<document id=\"SRC-UI-UNKNOWN\" origin=\"request\">Точный экран, маршрут, подпись и ID неизвестны.</document>\n<document id=\"SRC-SYSTEM\" origin=\"system-contract\">Фоновый процесс без UI.</document>\n</source_documents>\n\n<final_instruction>\nПроверь все четыре случая отдельно. Верни ограниченные правки или gap. Не добавляй неподтверждённые экраны, переходы и поля.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "заблокировать сценарий без названного экрана",
+      "в первом UI-действии указать экран и подтверждённый путь навигации, когда сценарий описывает вход через разделы интерфейса",
+      "оформить значимые поля как видимая подпись с technical ID в скобках",
+      "не повторять полный путь в шагах, которые продолжаются на том же экране",
+      "при подтверждённом переходе явно называть новый экран, вкладку, окно или диалог",
+      "для уже открытого экрана назвать экран без реконструкции маршрута",
+      "при отсутствии evidence оставить gap вместо догадки",
+      "для system-only случая сохранить сценарий без фиктивного экрана"
+    ],
+    "forbidden_actions": [
+      "оставлять raw technical IDs единственными названиями полей для читателя",
+      "повторять полный путь навигации в каждом шаге неизменного экрана",
+      "придумывать экран, маршрут, видимую подпись или technical ID",
+      "добавлять фиктивный экран в API-, batch- или system-only сценарий",
+      "считать URL или API path пользовательским маршрутом интерфейса",
+      "реконструировать маршрут задним числом для сценария, который начинается с уже открытого экрана"
+    ],
+    "required_output_signals": [
+      "user_journey: blocked",
+      "screen on entry and evidenced navigation",
+      "visible label then technical ID",
+      "no route repetition on same screen",
+      "no invented UI",
+      "already-open screen has no reconstructed route",
+      "system-only has no screen"
+    ],
+    "allowed_research_exception": {
+      "allowed": false,
+      "reason": "Подтверждённый UI-контекст уже есть в source; нужен scoped rewrite, а не новый research."
+    }
+  }
+}

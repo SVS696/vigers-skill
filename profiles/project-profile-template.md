@@ -28,6 +28,8 @@ document_acceptance_focus:
 document_dod_focus:
 document_developer_checks:
 document_prose_language:
+document_user_journey_context:
+document_ui_field_naming:
 document_diagram_working_source:
 document_diagram_qa_render:
 document_diagram_qa_artifacts:
@@ -164,6 +166,22 @@ plain-text IDs machine check отклоняет. Для Obsidian-таблиц pr
 dangling semantic references во всей читательской проекции. Смысловые правила
 AC/DoD, прямой трассировки, языка и ресурсной дисциплины проверяют editor и
 reviewer по `references/reader-projection-contract.md`.
+
+Если постановка содержит пользовательские UI-сценарии, объяви оба правила:
+
+- `document_user_journey_context: screen-on-entry-and-evidenced-navigation`;
+- `document_ui_field_naming: visible-label-then-technical-id`.
+
+Первое действие на интерфейсе тогда называет текущий экран. Если до него
+сценарий описывает навигацию, укажи подтверждённый видимый путь. Каждый переход
+на другой экран, вкладку, окно или диалог называет новую поверхность. Пока
+сценарий идёт на том же экране, полный путь не повторяется. Значимое поле при первом
+упоминании оформляется как видимое пользователю название и технический ID в
+скобках. Если source не подтверждает экран, маршрут, подпись или ID, оставь gap,
+а не догадку. Не добавляй фиктивный экран в API-, batch- или system-only
+сценарий и не смешивай UI-навигацию с URL/API path. Если сценарий начинается с
+уже открытого экрана, достаточно назвать его: маршрут задним числом не
+реконструируется.
 
 Если рабочая проекция и публикационный target по-разному обрабатывают диаграммы,
 объяви полный `document_diagram_*` lifecycle:

@@ -96,7 +96,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["contracts"], 5)
         self.assertEqual(counts["runtime_adapters"], 10)
         self.assertEqual(counts["workflows"], 3)
-        self.assertEqual(counts["prompt_evals"], 13)
+        self.assertEqual(counts["prompt_evals"], 14)
 
     def test_closed_coverage_prompt_eval_rejects_archaeological_restart(self) -> None:
         eval_path = (
@@ -249,6 +249,41 @@ class PipelineTests(unittest.TestCase):
         )
         self.assertIn(
             "public GOAL preserved",
+            expected["required_output_signals"],
+        )
+
+    def test_user_journey_eval_requires_screen_context_without_ui_invention(self) -> None:
+        eval_path = (
+            spec_pipeline.ROOT
+            / "evals"
+            / "prompt-cookbook"
+            / "user-journey-screen-context-barrier.json"
+        )
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        prompt = payload["prompt"]
+        expected = payload["expected"]
+        for case_id in ("UI-NAV", "UI-OPEN", "UI-UNKNOWN", "SYSTEM"):
+            self.assertIn(f"id: {case_id}", prompt)
+        self.assertNotIn("Настройка отчётных периодов", prompt)
+        self.assertNotIn("Бизнес-администрирование", prompt)
+        self.assertIn(
+            "придумывать экран, маршрут, видимую подпись или technical ID",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "screen on entry and evidenced navigation",
+            expected["required_output_signals"],
+        )
+        self.assertIn(
+            "no route repetition on same screen",
+            expected["required_output_signals"],
+        )
+        self.assertIn(
+            "already-open screen has no reconstructed route",
+            expected["required_output_signals"],
+        )
+        self.assertIn(
+            "system-only has no screen",
             expected["required_output_signals"],
         )
 

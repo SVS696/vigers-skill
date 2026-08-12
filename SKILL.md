@@ -5,9 +5,8 @@ description: "Оркестрирует предварительное иссле
 
 # Вигерс: мультиагентная инженерия постановок
 
-Оркестрируй общий набор изолированных ролей поверх проектного профиля. Не
-смешивай анализ требований, архитектурное решение, редактуру и независимое
-ревью в одном контексте: убедительный текст не заменяет независимость проверки.
+Оркестрируй общий набор изолированных ролей поверх проектного профиля. Не смешивай
+анализ, архитектурное решение, редактуру и независимое ревью в одном контексте.
 
 ## Основные принципы
 
@@ -467,7 +466,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/references/convergence-contract.md` | Порог качества, переоткрытие research и остановка minor-only циклов |
 | `{baseDir}/references/solution-boundary-contract.md` | Горизонты решения, границы scope и двусторонняя защита от hardcode/overengineering |
 | `{baseDir}/references/diagram-contract.md` | Diagram gate, выбор представления, декомпозиция и render QA |
-| `{baseDir}/references/reader-projection-contract.md` | Граница внутренней модели и итогового текста, AC/DoD, прямые ссылки и ресурсная дисциплина |
+| `{baseDir}/references/reader-projection-contract.md` | Граница внутренней модели и итогового текста, UI-пути, AC/DoD, прямые ссылки и ресурсная дисциплина |
 | `{baseDir}/references/handoff-contract.md` | Контракт case package и результатов ролей |
 | `{baseDir}/references/prompt-contract.md` | Сборка ограниченного prompt для независимой роли |
 | `{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json` | Регрессия prompt: закрытый coverage не переоткрывается без существенной evidence-дыры |
@@ -483,6 +482,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/evals/prompt-cookbook/diagram-complexity-barrier.json` | Регрессия prompt: полный текст не подменяет required diagrams и visual QA |
 | `{baseDir}/evals/prompt-cookbook/diagram-render-lifecycle-barrier.json` | Регрессия prompt: рабочий QA не создаёт PNG/source до publication gate |
 | `{baseDir}/evals/prompt-cookbook/reader-projection-barrier.json` | Регрессия prompt: служебная модель, developer checks и транзитивная трассировка не протекают в постановку |
+| `{baseDir}/evals/prompt-cookbook/user-journey-screen-context-barrier.json` | Регрессия prompt: UI-сценарий называет экран и видимые поля без повторов и догадок |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/block-contract.md` | Контракт семантического блока и sidecar index |
 | `{baseDir}/references/knowledge-map.md` | Детерминированная карта методических маршрутов |

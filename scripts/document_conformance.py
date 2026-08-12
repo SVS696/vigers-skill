@@ -23,6 +23,8 @@ TRACEABILITY_DENSITIES = {"direct-edges"}
 ACCEPTANCE_FOCI = {"observable-behavior"}
 DOD_FOCI = {"acceptance-readiness"}
 DEVELOPER_CHECK_POLICIES = {"omit-unless-normative"}
+USER_JOURNEY_CONTEXT_POLICIES = {"screen-on-entry-and-evidenced-navigation"}
+UI_FIELD_NAMING_POLICIES = {"visible-label-then-technical-id"}
 DIAGRAM_WORKING_SOURCES = {"inline-mermaid", "inline-plantuml", "external-source"}
 DIAGRAM_QA_RENDERS = {
     "target-native",
@@ -84,6 +86,8 @@ def build_profile_contract(
         "document_dod_focus",
         "document_developer_checks",
         "document_prose_language",
+        "document_user_journey_context",
+        "document_ui_field_naming",
         "document_diagram_working_source",
         "document_diagram_qa_render",
         "document_diagram_qa_artifacts",
@@ -143,6 +147,16 @@ def build_profile_contract(
     }
     if any(reader_projection_fields.values()):
         contract["reader_projection"] = reader_projection_fields
+    user_journey_fields = {
+        "context": metadata.get("document_user_journey_context", "")
+        .strip()
+        .casefold(),
+        "ui_field_naming": metadata.get("document_ui_field_naming", "")
+        .strip()
+        .casefold(),
+    }
+    if any(user_journey_fields.values()):
+        contract["user_journey"] = user_journey_fields
     diagram_delivery_fields = {
         "working_source": metadata.get("document_diagram_working_source", "")
         .strip()
@@ -313,6 +327,16 @@ def validate_contract(payload: Any) -> list[str]:
                     errors.append(
                         "traceability prefixes are not public reader IDs: " + ", ".join(unknown)
                     )
+
+    user_journey = payload.get("user_journey")
+    if user_journey is not None:
+        if not isinstance(user_journey, dict):
+            errors.append("document contract user_journey must be an object")
+        else:
+            if user_journey.get("context") not in USER_JOURNEY_CONTEXT_POLICIES:
+                errors.append("document contract has an unsupported user journey context")
+            if user_journey.get("ui_field_naming") not in UI_FIELD_NAMING_POLICIES:
+                errors.append("document contract has an unsupported UI field naming policy")
 
     diagram_delivery = payload.get("diagram_delivery")
     if diagram_delivery is not None:

@@ -87,6 +87,7 @@ REQUIRED_PROMPT_EVALS = (
     "evals/prompt-cookbook/diagram-complexity-barrier.json",
     "evals/prompt-cookbook/diagram-render-lifecycle-barrier.json",
     "evals/prompt-cookbook/reader-projection-barrier.json",
+    "evals/prompt-cookbook/user-journey-screen-context-barrier.json",
 )
 PUBLIC_FORBIDDEN_MARKERS = tuple(
     "".join(parts) for parts in (("R", "TL"), ("H", "ÆZE"), ("HA", "EZE"))
@@ -477,6 +478,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/evals/prompt-cookbook/user-story-format-barrier.json",
             "{baseDir}/evals/prompt-cookbook/traceability-link-barrier.json",
             "{baseDir}/evals/prompt-cookbook/reader-projection-barrier.json",
+            "{baseDir}/evals/prompt-cookbook/user-journey-screen-context-barrier.json",
             "{baseDir}/scripts/spec_pipeline.py",
             "{baseDir}/scripts/case_pipeline.py",
         ):

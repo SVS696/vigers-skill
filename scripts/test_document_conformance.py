@@ -127,6 +127,28 @@ def projection_contract() -> dict[str, object]:
     return result
 
 
+def journey_contract() -> dict[str, object]:
+    metadata = {
+        "document_checks": "draft, working_projection",
+        "document_required_headings": "Оглавление, Сценарии",
+        "document_toc": "obsidian-h2-exact",
+        "document_toc_heading": "Оглавление",
+        "document_toc_separators": "optional",
+        "document_user_journey_context": (
+            "screen-on-entry-and-evidenced-navigation"
+        ),
+        "document_ui_field_naming": "visible-label-then-technical-id",
+    }
+    result = document_conformance.build_profile_contract(
+        metadata,
+        profile_id="project-alpha",
+        profile_text=PROFILE,
+        source=Path("profile.md"),
+    )
+    assert result is not None
+    return result
+
+
 def diagram_contract() -> dict[str, object]:
     metadata = {
         "document_checks": "draft, working_projection",
@@ -441,6 +463,34 @@ class DocumentConformanceTests(unittest.TestCase):
                 "publication_source": "attachment",
             },
         )
+
+    def test_complete_user_journey_policy_is_pinned(self) -> None:
+        self.assertEqual(
+            journey_contract()["user_journey"],
+            {
+                "context": "screen-on-entry-and-evidenced-navigation",
+                "ui_field_naming": "visible-label-then-technical-id",
+            },
+        )
+
+    def test_partial_user_journey_policy_is_rejected(self) -> None:
+        metadata = {
+            "document_checks": "draft",
+            "document_required_headings": "Оглавление, Сценарии",
+            "document_toc": "obsidian-h2-exact",
+            "document_toc_heading": "Оглавление",
+            "document_toc_separators": "optional",
+            "document_user_journey_context": (
+                "screen-on-entry-and-evidenced-navigation"
+            ),
+        }
+        with self.assertRaises(document_conformance.DocumentContractError):
+            document_conformance.build_profile_contract(
+                metadata,
+                profile_id="project-alpha",
+                profile_text=PROFILE,
+                source=Path("profile.md"),
+            )
 
     def test_partial_diagram_lifecycle_is_rejected(self) -> None:
         metadata = {
