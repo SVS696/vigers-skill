@@ -229,6 +229,10 @@ class PipelineTests(unittest.TestCase):
             "machine check before scoped re-review",
             expected["required_output_signals"],
         )
+        self.assertIn(
+            "public GOAL preserved",
+            expected["required_output_signals"],
+        )
 
     def test_generic_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

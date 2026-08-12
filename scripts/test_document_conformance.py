@@ -108,8 +108,8 @@ def projection_contract() -> dict[str, object]:
         "document_traceability_link_style": "obsidian-heading-exact",
         "document_traceability_id_prefixes": "US, REQ, AC, DOD",
         "document_reader_projection": "required",
-        "document_public_id_prefixes": "US, SCN, RULE, DATA, STATE, IF, REQ, AC, DOD",
-        "document_internal_id_prefixes": "GOAL, ACT, CON, DEC, ARCH, ASM, Q, PUS, PDOD",
+        "document_public_id_prefixes": "GOAL, US, SCN, RULE, DATA, STATE, IF, REQ, AC, DOD",
+        "document_internal_id_prefixes": "ACT, CON, DEC, ARCH, ASM, Q, PUS, PDOD",
         "document_semantic_references": "exact-heading-links",
         "document_traceability_density": "direct-edges",
         "document_acceptance_focus": "observable-behavior",
@@ -423,6 +423,28 @@ class DocumentConformanceTests(unittest.TestCase):
             label="draft",
         )
         self.assertTrue(any("analysis-only semantic IDs: ARCH-013" in item for item in errors))
+
+    def test_reader_projection_keeps_goal_as_public_navigable_layer(self) -> None:
+        text = VALID_TRACE.replace(
+            "## User Story\n\n### US-1. Просмотр результата\n\nТекст.",
+            """## User Story
+
+### GOAL-B01-001 — Дать пользователю результат
+
+Общая бизнес-цель.
+
+### US-1. Просмотр результата
+
+Реализует [[#GOAL-B01-001 — Дать пользователю результат|GOAL-B01-001]].""",
+        )
+        self.assertEqual(
+            document_conformance.validate_markdown(
+                text,
+                projection_contract(),
+                label="draft",
+            ),
+            [],
+        )
 
     def test_reader_projection_rejects_plain_public_reference_outside_traceability(self) -> None:
         text = VALID_TRACE.replace(

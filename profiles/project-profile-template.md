@@ -150,6 +150,10 @@ plain-text IDs machine check отклоняет. Для Obsidian-таблиц pr
 - `document_developer_checks: omit-unless-normative`;
 - язык обычной прозы в `document_prose_language`, например `ru`.
 
+Общая бизнес-цель остаётся обязательным содержанием постановки. Если проект
+использует semantic IDs и навигационную трассировку, включи `GOAL` в публичные,
+а не во внутренние prefixes и свяжи с User Story прямыми ссылками.
+
 Тогда machine check отклоняет внутренние ID, сжатые диапазоны, plain-text и
 dangling semantic references во всей читательской проекции. Смысловые правила
 AC/DoD, прямой трассировки, языка и ресурсной дисциплины проверяют editor и
