@@ -51,10 +51,22 @@ REQUIRED_AGENT_REFERENCES = (
     "references/solution-boundary-contract.md",
 )
 ROLE_SPECIFIC_AGENT_REFERENCES = {
-    "system-analyst": ("references/diagram-contract.md",),
-    "solution-architect": ("references/diagram-contract.md",),
-    "spec-editor": ("references/diagram-contract.md",),
-    "spec-reviewer": ("references/diagram-contract.md",),
+    "system-analyst": (
+        "references/diagram-contract.md",
+        "references/reader-projection-contract.md",
+    ),
+    "solution-architect": (
+        "references/diagram-contract.md",
+        "references/reader-projection-contract.md",
+    ),
+    "spec-editor": (
+        "references/diagram-contract.md",
+        "references/reader-projection-contract.md",
+    ),
+    "spec-reviewer": (
+        "references/diagram-contract.md",
+        "references/reader-projection-contract.md",
+    ),
 }
 REQUIRED_WORKFLOWS = {
     "planning-pipeline.md": 8,
@@ -73,6 +85,7 @@ REQUIRED_PROMPT_EVALS = (
     "evals/prompt-cookbook/user-story-format-barrier.json",
     "evals/prompt-cookbook/traceability-link-barrier.json",
     "evals/prompt-cookbook/diagram-complexity-barrier.json",
+    "evals/prompt-cookbook/reader-projection-barrier.json",
 )
 PUBLIC_FORBIDDEN_MARKERS = tuple(
     "".join(parts) for parts in (("R", "TL"), ("H", "ÆZE"), ("HA", "EZE"))
@@ -431,6 +444,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
         "references/requirements-method.md",
         "references/planning-contract.md",
         "references/convergence-contract.md",
+        "references/reader-projection-contract.md",
         "scripts/mode_decision.py",
         "scripts/planning_case.py",
         "scripts/case_pipeline.py",
@@ -454,12 +468,14 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/references/case-state.md",
             "{baseDir}/references/block-contract.md",
             "{baseDir}/references/convergence-contract.md",
+            "{baseDir}/references/reader-projection-contract.md",
             "{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json",
             "{baseDir}/evals/prompt-cookbook/early-working-projection.json",
             "{baseDir}/evals/prompt-cookbook/live-checklist-completion-barrier.json",
             "{baseDir}/evals/prompt-cookbook/profile-owned-working-projection.json",
             "{baseDir}/evals/prompt-cookbook/user-story-format-barrier.json",
             "{baseDir}/evals/prompt-cookbook/traceability-link-barrier.json",
+            "{baseDir}/evals/prompt-cookbook/reader-projection-barrier.json",
             "{baseDir}/scripts/spec_pipeline.py",
             "{baseDir}/scripts/case_pipeline.py",
         ):

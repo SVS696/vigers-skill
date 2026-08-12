@@ -93,6 +93,40 @@ def trace_contract() -> dict[str, object]:
     return result
 
 
+def projection_contract() -> dict[str, object]:
+    metadata = {
+        "document_checks": "draft, working_projection",
+        "document_required_headings": (
+            "Оглавление, User Story, Требования, Acceptance Criteria, "
+            "Definition of Done, Трассировка, Полезные ссылки"
+        ),
+        "document_toc": "obsidian-h2-exact",
+        "document_toc_heading": "Оглавление",
+        "document_toc_separators": "required",
+        "document_traceability_policy": "semantic-id-links",
+        "document_traceability_heading": "Трассировка",
+        "document_traceability_link_style": "obsidian-heading-exact",
+        "document_traceability_id_prefixes": "US, REQ, AC, DOD",
+        "document_reader_projection": "required",
+        "document_public_id_prefixes": "US, SCN, RULE, DATA, STATE, IF, REQ, AC, DOD",
+        "document_internal_id_prefixes": "GOAL, ACT, CON, DEC, ARCH, ASM, Q, PUS, PDOD",
+        "document_semantic_references": "exact-heading-links",
+        "document_traceability_density": "direct-edges",
+        "document_acceptance_focus": "observable-behavior",
+        "document_dod_focus": "acceptance-readiness",
+        "document_developer_checks": "omit-unless-normative",
+        "document_prose_language": "ru",
+    }
+    result = document_conformance.build_profile_contract(
+        metadata,
+        profile_id="project-alpha",
+        profile_text=PROFILE,
+        source=Path("profile.md"),
+    )
+    assert result is not None
+    return result
+
+
 VALID = """# Постановка
 
 ---
@@ -359,6 +393,89 @@ class DocumentConformanceTests(unittest.TestCase):
             "document_toc_heading": "Оглавление",
             "document_toc_separators": "optional",
             "document_traceability_policy": "semantic-id-links",
+        }
+        with self.assertRaises(document_conformance.DocumentContractError):
+            document_conformance.build_profile_contract(
+                metadata,
+                profile_id="project-alpha",
+                profile_text=PROFILE,
+                source=Path("profile.md"),
+            )
+
+    def test_reader_projection_accepts_defined_and_linked_public_ids(self) -> None:
+        self.assertEqual(
+            document_conformance.validate_markdown(
+                VALID_TRACE,
+                projection_contract(),
+                label="draft",
+            ),
+            [],
+        )
+
+    def test_reader_projection_rejects_analysis_only_ids_anywhere(self) -> None:
+        text = VALID_TRACE.replace(
+            "Текст.\n\n## Требования",
+            "Решение принято по ARCH-013.\n\n## Требования",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            projection_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("analysis-only semantic IDs: ARCH-013" in item for item in errors))
+
+    def test_reader_projection_rejects_plain_public_reference_outside_traceability(self) -> None:
+        text = VALID_TRACE.replace(
+            "Текст.\n\n## Требования",
+            "Поведение описано в REQ-B01-001.\n\n## Требования",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            projection_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("outside its definition heading" in item for item in errors))
+
+    def test_reader_projection_rejects_compressed_reference_outside_traceability(self) -> None:
+        text = VALID_TRACE.replace(
+            "Текст.\n\n## Требования",
+            "Проверить AC-B01-001/003–005.\n\n## Требования",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            projection_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("must not use compressed ranges" in item for item in errors))
+
+    def test_reader_projection_rejects_dangling_link_outside_traceability(self) -> None:
+        text = VALID_TRACE.replace(
+            "Текст.\n\n## Требования",
+            "См. [[#REQ-B01-999 — Нет определения|REQ-B01-999]].\n\n## Требования",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            projection_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("missing exact heading target" in item for item in errors))
+
+    def test_reader_projection_prefix_sets_must_not_overlap(self) -> None:
+        metadata = {
+            "document_checks": "draft",
+            "document_required_headings": "Оглавление",
+            "document_toc": "obsidian-h2-exact",
+            "document_toc_heading": "Оглавление",
+            "document_toc_separators": "optional",
+            "document_reader_projection": "required",
+            "document_public_id_prefixes": "US, REQ",
+            "document_internal_id_prefixes": "REQ, ARCH",
+            "document_semantic_references": "exact-heading-links",
+            "document_traceability_density": "direct-edges",
+            "document_acceptance_focus": "observable-behavior",
+            "document_dod_focus": "acceptance-readiness",
+            "document_developer_checks": "omit-unless-normative",
+            "document_prose_language": "ru",
         }
         with self.assertRaises(document_conformance.DocumentContractError):
             document_conformance.build_profile_contract(

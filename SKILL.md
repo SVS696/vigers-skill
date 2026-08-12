@@ -96,6 +96,13 @@ description: "Оркестрирует предварительное иссле
     diagram gate по `{baseDir}/references/diagram-contract.md`. Диаграмма
     отвечает на один вопрос, трассируется к semantic IDs и проходит render QA;
     перегруженная схема декомпозируется, а не уменьшается до нечитаемого размера.
+19. **Публикуй читательскую проекцию, а не внутреннюю модель.** Служебные ID,
+    findings, gates и reasoning остаются в case package. AC описывают
+    наблюдаемую приёмку, DoD — готовность результата к ней, а developer
+    self-check не публикуется без нормативной причины. Semantic references во
+    всём документе разрешаются в точные headings; трассировка хранит прямые
+    связи. Сначала запускай machine check, затем только необходимые дорогие
+    проходы по `{baseDir}/references/reader-projection-contract.md`.
 
 ## Когда применять
 
@@ -424,6 +431,13 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
   semantic IDs сохранены в собственных разделах и связаны трассировкой.
 - Объявленная linked traceability содержит только отдельные разрешаемые ссылки;
   plain-text IDs, сокращённые диапазоны и dangling/ambiguous targets отсутствуют.
+- Объявленная reader projection не содержит внутренних IDs и process jargon;
+  каждое публичное semantic reference во всём теле является точной ссылкой, а
+  traceability не хранит транзитивное замыкание.
+- AC исполнимы по наблюдаемому поведению фактическим приёмщиком; DoD фиксирует
+  готовность к приёмке, developer self-check исключён без нормативного основания.
+- После локальной правки повторены только затронутые gates; полный pipeline не
+  перезапущен без изменения цели, границы, публичного контракта или сквозной логики.
 - Diagram gate имеет `required|not-required|blocked`; все required surfaces
   представлены, семантически сверены и просмотрены в фактическом render. Одна
   гигантская нечитаемая схема не считается покрытием нескольких surfaces.
@@ -449,6 +463,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/references/convergence-contract.md` | Порог качества, переоткрытие research и остановка minor-only циклов |
 | `{baseDir}/references/solution-boundary-contract.md` | Горизонты решения, границы scope и двусторонняя защита от hardcode/overengineering |
 | `{baseDir}/references/diagram-contract.md` | Diagram gate, выбор представления, декомпозиция и render QA |
+| `{baseDir}/references/reader-projection-contract.md` | Граница внутренней модели и итогового текста, AC/DoD, прямые ссылки и ресурсная дисциплина |
 | `{baseDir}/references/handoff-contract.md` | Контракт case package и результатов ролей |
 | `{baseDir}/references/prompt-contract.md` | Сборка ограниченного prompt для независимой роли |
 | `{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json` | Регрессия prompt: закрытый coverage не переоткрывается без существенной evidence-дыры |
@@ -462,6 +477,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/evals/prompt-cookbook/user-story-format-barrier.json` | Регрессия prompt: системные IDs не подменяют единую project-owned форму User Story |
 | `{baseDir}/evals/prompt-cookbook/traceability-link-barrier.json` | Регрессия prompt: plain-text IDs и диапазоны не обходят linked traceability gate |
 | `{baseDir}/evals/prompt-cookbook/diagram-complexity-barrier.json` | Регрессия prompt: полный текст не подменяет required diagrams и visual QA |
+| `{baseDir}/evals/prompt-cookbook/reader-projection-barrier.json` | Регрессия prompt: служебная модель, developer checks и транзитивная трассировка не протекают в постановку |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/block-contract.md` | Контракт семантического блока и sidecar index |
 | `{baseDir}/references/knowledge-map.md` | Детерминированная карта методических маршрутов |

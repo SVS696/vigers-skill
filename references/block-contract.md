@@ -87,6 +87,13 @@
 `from` уточняет, проверяет или выводится из `to`. Поэтому `AC → REQ`, а
 `REQ → SCN|RULE|GOAL|...`.
 
+Semantic index является внутренней богатой моделью. При `block-render` редактор
+проецирует только prefixes, объявленные profile публичными, и только смысл,
+который нужен читателю. Integrator не копирует весь `trace` в финальную таблицу:
+он оставляет прямые reader-facing edges по
+`references/reader-projection-contract.md`. Внутренний ID, отсутствующий в
+постановке по profile, не считается потерянным при integration.
+
 ## Локальное ревью
 
 `reviews/Bxx.md` содержит findings по handoff-контракту или явный `PASS` с

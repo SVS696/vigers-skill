@@ -17,6 +17,12 @@ USER_STORY_POLICIES = {"numbered-role-goal-value"}
 USER_STORY_TITLE_SEPARATORS = {".", ":"}
 TRACEABILITY_POLICIES = {"semantic-id-links"}
 TRACEABILITY_LINK_STYLES = {"obsidian-heading-exact"}
+READER_PROJECTION_POLICIES = {"required"}
+SEMANTIC_REFERENCE_POLICIES = {"exact-heading-links"}
+TRACEABILITY_DENSITIES = {"direct-edges"}
+ACCEPTANCE_FOCI = {"observable-behavior"}
+DOD_FOCI = {"acceptance-readiness"}
+DEVELOPER_CHECK_POLICIES = {"omit-unless-normative"}
 H2_RE = re.compile(r"^##(?!#)\s+(.+?)\s*$")
 H3_RE = re.compile(r"^###(?!#)\s+(.+?)\s*$")
 ATX_HEADING_RE = re.compile(r"^#{1,6}\s+(.+?)\s*$")
@@ -59,6 +65,15 @@ def build_profile_contract(
         "document_traceability_heading",
         "document_traceability_link_style",
         "document_traceability_id_prefixes",
+        "document_reader_projection",
+        "document_public_id_prefixes",
+        "document_internal_id_prefixes",
+        "document_semantic_references",
+        "document_traceability_density",
+        "document_acceptance_focus",
+        "document_dod_focus",
+        "document_developer_checks",
+        "document_prose_language",
     }
     if not any(metadata.get(field, "").strip() for field in field_names):
         return None
@@ -99,6 +114,19 @@ def build_profile_contract(
     }
     if any(traceability_fields.values()):
         contract["traceability"] = traceability_fields
+    reader_projection_fields: dict[str, Any] = {
+        "policy": metadata.get("document_reader_projection", "").strip().casefold(),
+        "public_id_prefixes": list(_csv(metadata.get("document_public_id_prefixes", ""))),
+        "internal_id_prefixes": list(_csv(metadata.get("document_internal_id_prefixes", ""))),
+        "semantic_references": metadata.get("document_semantic_references", "").strip().casefold(),
+        "traceability_density": metadata.get("document_traceability_density", "").strip().casefold(),
+        "acceptance_focus": metadata.get("document_acceptance_focus", "").strip().casefold(),
+        "dod_focus": metadata.get("document_dod_focus", "").strip().casefold(),
+        "developer_checks": metadata.get("document_developer_checks", "").strip().casefold(),
+        "prose_language": metadata.get("document_prose_language", "").strip(),
+    }
+    if any(reader_projection_fields.values()):
+        contract["reader_projection"] = reader_projection_fields
     errors = validate_contract(contract)
     if errors:
         raise DocumentContractError(f"{source}: " + "; ".join(errors))
@@ -191,6 +219,64 @@ def validate_contract(payload: Any) -> list[str]:
                 errors.append("document contract has an invalid traceability id_prefix")
             elif len(prefixes) != len(set(prefixes)):
                 errors.append("document contract has duplicate traceability id_prefixes")
+
+    reader_projection = payload.get("reader_projection")
+    if reader_projection is not None:
+        if not isinstance(reader_projection, dict):
+            errors.append("document contract reader_projection must be an object")
+        else:
+            if reader_projection.get("policy") not in READER_PROJECTION_POLICIES:
+                errors.append("document contract has an unsupported reader projection policy")
+            public_prefixes = reader_projection.get("public_id_prefixes")
+            internal_prefixes = reader_projection.get("internal_id_prefixes")
+            for name, prefixes in (
+                ("public", public_prefixes),
+                ("internal", internal_prefixes),
+            ):
+                if not isinstance(prefixes, list) or not prefixes:
+                    errors.append(
+                        f"document contract reader_projection {name}_id_prefixes must be non-empty"
+                    )
+                elif not all(
+                    isinstance(item, str) and re.fullmatch(r"[A-Z][A-Z0-9]*", item)
+                    for item in prefixes
+                ):
+                    errors.append(
+                        f"document contract has an invalid reader_projection {name}_id_prefix"
+                    )
+                elif len(prefixes) != len(set(prefixes)):
+                    errors.append(
+                        f"document contract has duplicate reader_projection {name}_id_prefixes"
+                    )
+            if isinstance(public_prefixes, list) and isinstance(internal_prefixes, list):
+                overlap = sorted(set(public_prefixes) & set(internal_prefixes))
+                if overlap:
+                    errors.append(
+                        "document contract public/internal id prefixes overlap: "
+                        + ", ".join(overlap)
+                    )
+            if reader_projection.get("semantic_references") not in SEMANTIC_REFERENCE_POLICIES:
+                errors.append("document contract has an unsupported semantic reference policy")
+            if reader_projection.get("traceability_density") not in TRACEABILITY_DENSITIES:
+                errors.append("document contract has an unsupported traceability density")
+            if reader_projection.get("acceptance_focus") not in ACCEPTANCE_FOCI:
+                errors.append("document contract has an unsupported acceptance focus")
+            if reader_projection.get("dod_focus") not in DOD_FOCI:
+                errors.append("document contract has an unsupported DoD focus")
+            if reader_projection.get("developer_checks") not in DEVELOPER_CHECK_POLICIES:
+                errors.append("document contract has an unsupported developer checks policy")
+            prose_language = reader_projection.get("prose_language")
+            if not isinstance(prose_language, str) or not re.fullmatch(
+                r"[a-z]{2}(?:-[A-Z]{2})?", prose_language
+            ):
+                errors.append("document contract has an invalid prose language")
+            traceability = payload.get("traceability")
+            if isinstance(traceability, dict) and isinstance(public_prefixes, list):
+                unknown = sorted(set(traceability.get("id_prefixes", [])) - set(public_prefixes))
+                if unknown:
+                    errors.append(
+                        "traceability prefixes are not public reader IDs: " + ", ".join(unknown)
+                    )
     return errors
 
 
@@ -458,6 +544,105 @@ def _validate_traceability_section(
     return errors
 
 
+def _validate_reader_projection(
+    lines: list[str],
+    contract: dict[str, Any],
+    *,
+    label: str,
+) -> list[str]:
+    """Keep analysis-only IDs out and require navigable public references globally."""
+    policy = contract["reader_projection"]
+    public_prefixes = policy["public_id_prefixes"]
+    internal_prefixes = policy["internal_id_prefixes"]
+    public_re = _semantic_id_re(public_prefixes)
+    public_full_re = _semantic_id_re(public_prefixes, full=True)
+    internal_re = _semantic_id_re(internal_prefixes)
+    public_body = _semantic_id_body(public_prefixes)
+    compression_re = re.compile(
+        rf"(?<![A-Z0-9-]){public_body}(?:\s*(?:/|–|—|-)\s*\d+)+"
+    )
+    document_headings = _all_atx_headings(lines)
+    outside = _outside_fences(lines)
+    errors: list[str] = []
+    internal_ids: list[str] = []
+    compressed_refs: list[str] = []
+    plain_refs: list[str] = []
+
+    for line, is_outside in zip(lines, outside, strict=True):
+        if not is_outside:
+            continue
+        internal_ids.extend(match.group(0) for match in internal_re.finditer(line))
+        masked = list(line)
+        for match in OBSIDIAN_HEADING_LINK_RE.finditer(line):
+            target = match.group("target").strip()
+            alias = (match.group("alias") or "").strip()
+            target_id_match = public_re.match(target)
+            target_id = (
+                target_id_match.group(0)
+                if target_id_match and target_id_match.start() == 0
+                else None
+            )
+            alias_is_id = bool(public_full_re.fullmatch(alias))
+            if target_id or alias_is_id:
+                semantic_id = alias if alias_is_id else target_id
+                assert semantic_id is not None
+                if alias != semantic_id:
+                    errors.append(
+                        f"{label}: semantic link to {target!r} must use exact ID "
+                        f"{semantic_id!r} as alias"
+                    )
+                if target_id != semantic_id:
+                    errors.append(
+                        f"{label}: semantic link alias {semantic_id!r} points to a heading "
+                        "with a different semantic ID"
+                    )
+                target_lines = document_headings.get(target, [])
+                if len(target_lines) != 1:
+                    state = "missing" if not target_lines else "ambiguous"
+                    errors.append(
+                        f"{label}: semantic link {semantic_id!r} has {state} exact heading "
+                        f"target {target!r}"
+                    )
+                if line.lstrip().startswith("|") and match.group("separator") == "|":
+                    errors.append(
+                        f"{label}: semantic table link {semantic_id!r} must escape its alias "
+                        "separator as '\\|'"
+                    )
+            for index in range(match.start(), match.end()):
+                masked[index] = " "
+
+        heading_match = ATX_HEADING_RE.match(line)
+        if heading_match:
+            heading_text = _heading_text(heading_match.group(1))
+            definition = public_re.match(heading_text)
+            if definition and definition.start() == 0:
+                absolute_start = line.find(definition.group(0))
+                for index in range(absolute_start, absolute_start + len(definition.group(0))):
+                    masked[index] = " "
+
+        remaining = "".join(masked)
+        compressed_refs.extend(match.group(0) for match in compression_re.finditer(remaining))
+        plain_refs.extend(match.group(0) for match in public_re.finditer(remaining))
+
+    if internal_ids:
+        errors.append(
+            f"{label}: reader projection contains analysis-only semantic IDs: "
+            + ", ".join(dict.fromkeys(internal_ids))
+        )
+    if compressed_refs:
+        errors.append(
+            f"{label}: semantic references must not use compressed ranges: "
+            + ", ".join(dict.fromkeys(compressed_refs))
+        )
+    if plain_refs:
+        errors.append(
+            f"{label}: every public semantic reference outside its definition heading "
+            "must be an exact internal link: "
+            + ", ".join(dict.fromkeys(plain_refs))
+        )
+    return errors
+
+
 def validate_markdown(text: str, contract: dict[str, Any], *, label: str) -> list[str]:
     """Validate one Markdown document against a pinned project contract."""
     contract_errors = validate_contract(contract)
@@ -510,6 +695,8 @@ def validate_markdown(text: str, contract: dict[str, Any], *, label: str) -> lis
         errors.extend(_validate_user_story_section(lines, headings, contract, label=label))
     if contract.get("traceability") is not None:
         errors.extend(_validate_traceability_section(lines, headings, contract, label=label))
+    if contract.get("reader_projection") is not None:
+        errors.extend(_validate_reader_projection(lines, contract, label=label))
     return errors
 
 

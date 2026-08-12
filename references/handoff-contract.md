@@ -259,10 +259,16 @@ findings по той же классификации.
 - подтверждение, что новые требования и решения не добавлялись.
 - матрицу `diagram question → source_ids → section/render/source` либо
   `diagram_gate: not-required` из утверждённой модели.
+- подтверждение reader projection по
+  `references/reader-projection-contract.md`: опубликованные/подавленные ID
+  prefixes, число слов, публичных определений и прямых trace edges;
+- разделение `acceptance_observable`, `acceptance_readiness` и
+  `developer_self_check_omitted|normative_exception` с основанием исключения.
 
 В режиме `block-render` результат ограничен одним block artifact. В режиме
 `integrate` редактор возвращает полный draft и матрицу `block_id → место в
-документе`; semantic IDs не создаются и не исчезают.
+документе`; публичные semantic IDs не создаются и не исчезают, а внутренние
+остаются в case package и не считаются потерянными при читательской проекции.
 
 ## Review findings
 

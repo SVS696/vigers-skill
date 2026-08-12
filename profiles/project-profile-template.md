@@ -19,6 +19,15 @@ document_traceability_policy:
 document_traceability_heading:
 document_traceability_link_style:
 document_traceability_id_prefixes:
+document_reader_projection:
+document_public_id_prefixes:
+document_internal_id_prefixes:
+document_semantic_references:
+document_traceability_density:
+document_acceptance_focus:
+document_dod_focus:
+document_developer_checks:
+document_prose_language:
 ---
 
 # Профиль постановок проекта
@@ -127,6 +136,24 @@ frontmatter: `document_checks: draft, working_projection`, перечень
 отдельной ссылкой на один точный существующий heading. Сокращённые диапазоны и
 plain-text IDs machine check отклоняет. Для Obsidian-таблиц project profile
 должен отдельно требовать экранированный alias separator `\|`.
+
+Если итоговый документ не должен публиковать служебную модель анализа, объяви
+читательскую проекцию полностью:
+
+- `document_reader_projection: required`;
+- публичные и внутренние `document_*_id_prefixes` без пересечений;
+- `document_semantic_references: exact-heading-links` для ссылок на публичные ID
+  во всём документе, а не только в трассировке;
+- `document_traceability_density: direct-edges`;
+- `document_acceptance_focus: observable-behavior`;
+- `document_dod_focus: acceptance-readiness`;
+- `document_developer_checks: omit-unless-normative`;
+- язык обычной прозы в `document_prose_language`, например `ru`.
+
+Тогда machine check отклоняет внутренние ID, сжатые диапазоны, plain-text и
+dangling semantic references во всей читательской проекции. Смысловые правила
+AC/DoD, прямой трассировки, языка и ресурсной дисциплины проверяют editor и
+reviewer по `references/reader-projection-contract.md`.
 
 Опиши отдельный `project-conformance`: применимые API/HTTP, identifier/casing,
 терминологию, frontmatter, шаблоны, ссылки, имена файлов, допустимые форматы

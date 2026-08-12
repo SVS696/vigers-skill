@@ -8,6 +8,7 @@ tools: Read, Grep, Glob
 `agents/contracts/spec-editor.md`, `references/prompt-contract.md`,
 `references/solution-boundary-contract.md`,
 `references/diagram-contract.md`,
+`references/reader-projection-contract.md`,
 `references/handoff-contract.md`, `references/convergence-contract.md`
 относительно его корня и исполни контракт в
 явно переданном режиме `document`, `block-render` или `integrate`. Используй

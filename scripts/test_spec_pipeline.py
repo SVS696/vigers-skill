@@ -96,7 +96,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["contracts"], 5)
         self.assertEqual(counts["runtime_adapters"], 10)
         self.assertEqual(counts["workflows"], 3)
-        self.assertEqual(counts["prompt_evals"], 11)
+        self.assertEqual(counts["prompt_evals"], 12)
 
     def test_closed_coverage_prompt_eval_rejects_archaeological_restart(self) -> None:
         eval_path = (
@@ -209,6 +209,24 @@ class PipelineTests(unittest.TestCase):
         )
         self.assertIn(
             "every semantic ID is an individually resolved link",
+            expected["required_output_signals"],
+        )
+
+    def test_reader_projection_eval_separates_acceptance_from_developer_checks(self) -> None:
+        eval_path = (
+            spec_pipeline.ROOT
+            / "evals"
+            / "prompt-cookbook"
+            / "reader-projection-barrier.json"
+        )
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        expected = payload["expected"]
+        self.assertIn(
+            "считать автоматические тесты основным содержанием AC или DoD",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "machine check before scoped re-review",
             expected["required_output_signals"],
         )
 

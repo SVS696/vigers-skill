@@ -40,6 +40,7 @@ OPERATIONAL_REFERENCE_FILES = {
     "references/automation-timing.md",
     "references/convergence-contract.md",
     "references/diagram-contract.md",
+    "references/reader-projection-contract.md",
     "references/solution-boundary-contract.md",
 }
 SHORT_TERMS = {

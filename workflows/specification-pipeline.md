@@ -130,8 +130,12 @@ architecture design note с ограничениями для редактора
 4. Редактор реализует принятый `diagram_gate` и возвращает матрицу
    `diagram question → source_ids → section → editable source → render`.
    Перегруженные схемы декомпозируются, а не уменьшаются до нечитаемого вида.
-5. Координатор сохраняет текст как draft, не публикуя его.
-6. Если profile требует working projection, обнови каждый связанный target этим
+5. Редактор применяет `references/reader-projection-contract.md`: публикует
+   только reader-facing смысл, делает все semantic references точными локальными
+   ссылками, оставляет прямые trace edges и отделяет живую приёмку от developer
+   self-check. Сырой reasoning corpus и служебные IDs ему не передаются.
+6. Координатор сохраняет текст как draft, не публикуя его.
+7. Если profile требует working projection, обнови каждый связанный target этим
    draft через project adapter. Явно пометь unresolved и непроверенные разделы,
    выполни read-back и зарегистрируй `projection-update --source draft`. Для
    project file используй `--evidence-kind local_file`; для tracker/wiki сохрани
@@ -162,6 +166,9 @@ architecture design note с ограничениями для редактора
    схема вместо требуемой декомпозиции блокируют author gate.
 9. Закрой `author_passes` только после machine validation boundary-блока и
    успешного visual read-back всех required-диаграмм.
+10. До независимого глобального review выполни machine check reader projection.
+    Не расходуй reviewer pass на draft с внутренними IDs, dangling/plain refs
+    или нарушенным project document contract.
 
 **Выход:** черновик прошёл проектные author gates и готов к независимому ревью.
 
@@ -189,6 +196,9 @@ architecture design note с ограничениями для редактора
    `gate_recommendation`. После disposition координатор считает open counts.
    Координатор записывает `revise` только при открытом принятом `blocker|major`;
    residual minor не переоткрывают гейт.
+9. После исправления повторяй только затронутый semantic, project, architecture
+   или diagram gate. Полный global pass нужен лишь при изменении цели, границы,
+   публичного контракта или сквозной логики.
 
 **Выход:** независимый global review и project-conformance report.
 
