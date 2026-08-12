@@ -86,7 +86,11 @@ pack.
    probe, подтверждённый горизонт, current scope, seams, deferred и triggers.
    Сохрани принятый JSON block в существующий `decisions.md`; отдельный артефакт
    не создавай.
-7. Сохрани возвращённую модель требований в case package.
+7. Проверь `diagram_gate` по `{baseDir}/references/diagram-contract.md`: каждая
+   сложная поверхность имеет решение `required|not-required|blocked`, вопрос,
+   подходящий тип представления, source IDs и решение о декомпозиции. Не
+   считай объём текста самостоятельным основанием для диаграммы.
+8. Сохрани возвращённую модель требований в case package.
 
 Если аналитик во время прохода вернул доказанный `status: replan` с
 `planning_delta`, немедленно останови текущий pipeline и перейди в фазу
@@ -123,8 +127,11 @@ architecture design note с ограничениями для редактора
 2. Не передавай ему сырой диалог, если смысл уже зафиксирован артефактами.
 3. Редактор собирает документ, но не закрывает открытые вопросы и не добавляет
    новые требования, поля, числа, технологии или архитектурные решения.
-4. Координатор сохраняет текст как draft, не публикуя его.
-5. Если profile требует working projection, обнови каждый связанный target этим
+4. Редактор реализует принятый `diagram_gate` и возвращает матрицу
+   `diagram question → source_ids → section → editable source → render`.
+   Перегруженные схемы декомпозируются, а не уменьшаются до нечитаемого вида.
+5. Координатор сохраняет текст как draft, не публикуя его.
+6. Если profile требует working projection, обнови каждый связанный target этим
    draft через project adapter. Явно пометь unresolved и непроверенные разделы,
    выполни read-back и зарегистрируй `projection-update --source draft`. Для
    project file используй `--evidence-kind local_file`; для tracker/wiki сохрани
@@ -149,7 +156,12 @@ architecture design note с ограничениями для редактора
 7. После существенного author-pass обнови обязательную working projection и
    запиши новый read-back хеш. Косметические изменения можно объединить одним
    update текущего gate.
-8. Закрой `author_passes` только после machine validation boundary-блока.
+8. Для каждой required-диаграммы сверь смысл с source IDs, отрендери способом
+   целевого канала и прочитай фактический render на целевой ширине. Обрезка,
+   наложения, неразличимые подписи, сломанные стрелки либо одна перегруженная
+   схема вместо требуемой декомпозиции блокируют author gate.
+9. Закрой `author_passes` только после machine validation boundary-блока и
+   успешного visual read-back всех required-диаграмм.
 
 **Выход:** черновик прошёл проектные author gates и готов к независимому ревью.
 
@@ -165,12 +177,15 @@ architecture design note с ограничениями для редактора
 3. Требуй findings по handoff-контракту: место, доказательство, последствие и
    минимальное исправление.
 4. Отбрось вкусовщину и недоказанные замечания.
-5. Отдельным свежим запуском reviewer в режиме `project-conformance` проверь
+5. Требуй независимую проверку `diagram_gate`: покрытие сложных поверхностей,
+   семантическое соответствие source IDs, корректность декомпозиции и evidence
+   чтения финального render.
+6. Отдельным свежим запуском reviewer в режиме `project-conformance` проверь
    только затронутые соглашения профиля: API/HTTP, identifiers/casing,
    терминологию, шаблон, frontmatter, ссылки и имена файлов.
-6. Если применимых поверхностей нет, зафиксируй gate `project_conformance` как
+7. Если применимых поверхностей нет, зафиксируй gate `project_conformance` как
    `not_required` с причиной; иначе сохрани evidence и закрой findings.
-7. Для каждого отчёта проверь reported counts, `research_reopen` и
+8. Для каждого отчёта проверь reported counts, `research_reopen` и
    `gate_recommendation`. После disposition координатор считает open counts.
    Координатор записывает `revise` только при открытом принятом `blocker|major`;
    residual minor не переоткрывают гейт.

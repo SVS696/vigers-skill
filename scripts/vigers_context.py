@@ -39,6 +39,7 @@ METHOD_CONTEXT_MARKDOWN = "method-context.md"
 OPERATIONAL_REFERENCE_FILES = {
     "references/automation-timing.md",
     "references/convergence-contract.md",
+    "references/diagram-contract.md",
     "references/solution-boundary-contract.md",
 }
 SHORT_TERMS = {

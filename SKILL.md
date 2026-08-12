@@ -91,6 +91,11 @@ description: "Оркестрирует предварительное иссле
     profile объявляет `traceability` contract, каждый semantic ID в разделе
     трассировки является отдельной внутренней ссылкой на точный существующий
     heading. Сжатые диапазоны и plain-text ID не проходят machine check.
+18. **Сложность должна получать подходящее представление.** Для состояний,
+    ветвящейся логики, взаимодействий, границ и неочевидных связей данных пройди
+    diagram gate по `{baseDir}/references/diagram-contract.md`. Диаграмма
+    отвечает на один вопрос, трассируется к semantic IDs и проходит render QA;
+    перегруженная схема декомпозируется, а не уменьшается до нечитаемого размера.
 
 ## Когда применять
 
@@ -419,6 +424,9 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
   semantic IDs сохранены в собственных разделах и связаны трассировкой.
 - Объявленная linked traceability содержит только отдельные разрешаемые ссылки;
   plain-text IDs, сокращённые диапазоны и dangling/ambiguous targets отсутствуют.
+- Diagram gate имеет `required|not-required|blocked`; все required surfaces
+  представлены, семантически сверены и просмотрены в фактическом render. Одна
+  гигантская нечитаемая схема не считается покрытием нескольких surfaces.
 - Business-context не присвоил пользователю ответственность бизнес-владельца.
 - Архитектор вызван только по гейту; `design` и `conformance` независимы.
 - Редактор не добавил новых требований и решений.
@@ -440,6 +448,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/references/automation-timing.md` | Прогноз, wall-clock ledger, команды и агрегация истории |
 | `{baseDir}/references/convergence-contract.md` | Порог качества, переоткрытие research и остановка minor-only циклов |
 | `{baseDir}/references/solution-boundary-contract.md` | Горизонты решения, границы scope и двусторонняя защита от hardcode/overengineering |
+| `{baseDir}/references/diagram-contract.md` | Diagram gate, выбор представления, декомпозиция и render QA |
 | `{baseDir}/references/handoff-contract.md` | Контракт case package и результатов ролей |
 | `{baseDir}/references/prompt-contract.md` | Сборка ограниченного prompt для независимой роли |
 | `{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json` | Регрессия prompt: закрытый coverage не переоткрывается без существенной evidence-дыры |
@@ -452,6 +461,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/evals/prompt-cookbook/solution-boundary-smells.json` | Регрессия prompt: reviewer симметрично ловит частный hardcode и преждевременную универсализацию |
 | `{baseDir}/evals/prompt-cookbook/user-story-format-barrier.json` | Регрессия prompt: системные IDs не подменяют единую project-owned форму User Story |
 | `{baseDir}/evals/prompt-cookbook/traceability-link-barrier.json` | Регрессия prompt: plain-text IDs и диапазоны не обходят linked traceability gate |
+| `{baseDir}/evals/prompt-cookbook/diagram-complexity-barrier.json` | Регрессия prompt: полный текст не подменяет required diagrams и visual QA |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/block-contract.md` | Контракт семантического блока и sidecar index |
 | `{baseDir}/references/knowledge-map.md` | Детерминированная карта методических маршрутов |

@@ -199,6 +199,7 @@ revision и делает затронутые результаты stale.
 ## Definition of Done
 ## Разрешение planning-гипотез PUS/PDOD
 ## Граница решения и горизонт
+## Выбор моделей и диаграмм
 ## Архитектурное влияние
 ## Предположения
 ## Открытые вопросы
@@ -214,6 +215,12 @@ Business context обязательно разделяет `подтвержде
 предполагаемые варианты, current scope, seams, deferred, expansion triggers и
 disposition planning probe. Координатор принимает финальный machine block в
 существующий `decisions.md`; отдельный boundary artifact не создаётся.
+
+Раздел выбора моделей содержит `diagram_gate` из
+`references/diagram-contract.md`: для каждой required surface — вопрос,
+representation, source IDs, decomposition и placement; для `not-required` —
+проверяемую причину. Это часть модели требований, а не отдельный
+planning/runtime артефакт.
 
 В block-mode аналитик возвращает только модель целевого блока и отдельный
 semantic index по `{baseDir}/references/block-contract.md`. Общие факты
@@ -234,6 +241,9 @@ semantic index по `{baseDir}/references/block-contract.md`. Общие фак�
 - вопросы, которые меняют решение.
 - подтверждённый `solution_horizon`, оценку рисков particular-case и
   speculative-generalization, обязательные seams и evidence выбора.
+- уточнения diagram surfaces для границ, взаимодействий и данных, если
+  архитектурное решение делает прежний diagram decision неполным. Архитектор не
+  рисует финальный документ и не добавляет новый смысл через схему.
 
 В режиме `conformance` архитектор не продолжает собственное прежнее
 рассуждение. Он получает чистый набор источников и готовый черновик и возвращает
@@ -247,6 +257,8 @@ findings по той же классификации.
 - неразрешённые placeholder-ы;
 - места, где проектный шаблон не применён, и причина;
 - подтверждение, что новые требования и решения не добавлялись.
+- матрицу `diagram question → source_ids → section/render/source` либо
+  `diagram_gate: not-required` из утверждённой модели.
 
 В режиме `block-render` результат ограничен одним block artifact. В режиме
 `integrate` редактор возвращает полный draft и матрицу `block_id → место в
@@ -259,7 +271,7 @@ findings по той же классификации.
 ```yaml
 id: REV-001
 severity: blocker | major | minor
-category: logic | scope | traceability | testability | project-rule | architecture | solution-boundary
+category: logic | scope | traceability | testability | diagram | project-rule | architecture | solution-boundary
 solution_boundary_smell: particular-case | speculative-generalization | null
 location: <section-or-anchor>
 finding: <what-is-wrong>

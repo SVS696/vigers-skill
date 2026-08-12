@@ -50,6 +50,12 @@ REQUIRED_AGENT_REFERENCES = (
     "references/convergence-contract.md",
     "references/solution-boundary-contract.md",
 )
+ROLE_SPECIFIC_AGENT_REFERENCES = {
+    "system-analyst": ("references/diagram-contract.md",),
+    "solution-architect": ("references/diagram-contract.md",),
+    "spec-editor": ("references/diagram-contract.md",),
+    "spec-reviewer": ("references/diagram-contract.md",),
+}
 REQUIRED_WORKFLOWS = {
     "planning-pipeline.md": 8,
     "specification-pipeline.md": 10,
@@ -66,6 +72,7 @@ REQUIRED_PROMPT_EVALS = (
     "evals/prompt-cookbook/solution-boundary-smells.json",
     "evals/prompt-cookbook/user-story-format-barrier.json",
     "evals/prompt-cookbook/traceability-link-barrier.json",
+    "evals/prompt-cookbook/diagram-complexity-barrier.json",
 )
 PUBLIC_FORBIDDEN_MARKERS = tuple(
     "".join(parts) for parts in (("R", "TL"), ("H", "ÆZE"), ("HA", "EZE"))
@@ -349,7 +356,10 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
                 if not isinstance(parsed.get(field), str) or not parsed[field].strip():
                     errors.append(f"{codex_relative}: missing string field {field}")
             instructions = parsed.get("developer_instructions", "")
-            for reference in REQUIRED_AGENT_REFERENCES:
+            for reference in (
+                *REQUIRED_AGENT_REFERENCES,
+                *ROLE_SPECIFIC_AGENT_REFERENCES.get(contract, ()),
+            ):
                 if reference not in instructions:
                     errors.append(f"{codex_relative}: missing agent reference {reference}")
         except (PipelineError, tomllib.TOMLDecodeError) as exc:
@@ -363,7 +373,10 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             for field in ("name:", "description:", "tools:"):
                 if field not in claude_text:
                     errors.append(f"{claude_relative}: missing frontmatter field {field}")
-            for reference in REQUIRED_AGENT_REFERENCES:
+            for reference in (
+                *REQUIRED_AGENT_REFERENCES,
+                *ROLE_SPECIFIC_AGENT_REFERENCES.get(contract, ()),
+            ):
                 if reference not in claude_text:
                     errors.append(f"{claude_relative}: missing agent reference {reference}")
         except PipelineError as exc:

@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "id": "diagram-complexity-barrier",
+  "purpose": "Проверить, что сложная логика получает читаемые и трассируемые диаграммы, а не формальную картинку или один перегруженный граф.",
+  "prompt": "<assignment>\nevaluation_mode: isolated-semantic-fixture\npreflight: role manifest, pinned method context, generic profile and semantic indexes are valid for this fixture\nrole: spec-reviewer\nmode: global\ntarget: final draft diagram gate\n</assignment>\n\n<source_documents>\n<document id=\"REQ-MODEL\" origin=\"confirmed-requirements\">\nЖизненный цикл содержит 7 состояний, два возврата и отмену. Взаимодействуют пользователь, UI, API, очередь и внешний провайдер; предусмотрены retry, timeout и компенсация. Правило выбора содержит 12 комбинаций условий. Все элементы имеют STATE-*, SCN-*, RULE-* и IF-* identifiers.\n</document>\n<document id=\"DRAFT\" origin=\"draft\">\nДокумент на 1200 строк подробно описывает все состояния, взаимодействия и условия только текстом. Диаграмм и diagram decision нет. Предыдущий reviewer поставил PASS, потому что текст полный.\n</document>\n</source_documents>\n\n<final_instruction>\nПроверь diagram gate и верни только доказуемые findings и минимальный план исправления. Не добавляй новую предметную или архитектурную семантику.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "заблокировать финальный gate до явного diagram_gate и visual read-back",
+      "потребовать отдельную state diagram для жизненного цикла",
+      "потребовать отдельную sequence diagram для взаимодействия участников",
+      "представить ветвление decision table и при необходимости компактной flow diagram",
+      "разложить визуальные вопросы на несколько схем вместо одного общего графа",
+      "связать элементы схем с существующими semantic IDs и проверить фактический render"
+    ],
+    "forbidden_actions": [
+      "одобрить документ только из-за полноты текста",
+      "собрать все поверхности в одну гигантскую диаграмму",
+      "уменьшить перегруженную схему до нечитаемого размера",
+      "изобрести новые состояния, переходы, участников или условия",
+      "требовать диаграмму только из-за количества строк"
+    ],
+    "required_output_signals": [
+      "diagram_gate: required",
+      "separate visual questions",
+      "semantic parity with source IDs",
+      "visual read-back фактического render"
+    ],
+    "allowed_research_exception": {
+      "severity": ["blocker", "major"],
+      "condition": "только если source IDs не позволяют установить подтверждённую семантику визуальной поверхности"
+    }
+  }
+}

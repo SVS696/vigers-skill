@@ -96,7 +96,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["contracts"], 5)
         self.assertEqual(counts["runtime_adapters"], 10)
         self.assertEqual(counts["workflows"], 3)
-        self.assertEqual(counts["prompt_evals"], 10)
+        self.assertEqual(counts["prompt_evals"], 11)
 
     def test_closed_coverage_prompt_eval_rejects_archaeological_restart(self) -> None:
         eval_path = (
@@ -120,6 +120,24 @@ class PipelineTests(unittest.TestCase):
                 "target_sources",
                 "stop_condition",
             ],
+        )
+
+    def test_diagram_eval_requires_decomposition_and_visual_readback(self) -> None:
+        eval_path = (
+            spec_pipeline.ROOT
+            / "evals"
+            / "prompt-cookbook"
+            / "diagram-complexity-barrier.json"
+        )
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        expected = payload["expected"]
+        self.assertIn(
+            "собрать все поверхности в одну гигантскую диаграмму",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "visual read-back фактического render",
+            expected["required_output_signals"],
         )
 
     def test_early_projection_eval_rejects_hidden_case_as_user_artifact(self) -> None:

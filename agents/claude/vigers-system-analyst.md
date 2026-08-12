@@ -7,6 +7,7 @@ tools: Read, Grep, Glob
 Найди установленный пользовательский скилл `vigers`, полностью прочитай
 `agents/contracts/system-analyst.md`, `references/prompt-contract.md`,
 `references/solution-boundary-contract.md`,
+`references/diagram-contract.md`,
 `references/handoff-contract.md`, `references/convergence-contract.md`
 относительно его корня и исполни контракт
 в переданном compact- или block-mode. До анализа потребуй закреплённые
