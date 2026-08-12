@@ -262,7 +262,7 @@ class PipelineTests(unittest.TestCase):
         payload = json.loads(eval_path.read_text(encoding="utf-8"))
         prompt = payload["prompt"]
         expected = payload["expected"]
-        for case_id in ("UI-NAV", "UI-OPEN", "UI-UNKNOWN", "SYSTEM"):
+        for case_id in ("UI-NAV", "UI-OPEN", "UI-UNKNOWN", "SYSTEM", "MIXED"):
             self.assertIn(f"id: {case_id}", prompt)
         self.assertNotIn("Настройка отчётных периодов", prompt)
         self.assertNotIn("Бизнес-администрирование", prompt)
@@ -285,6 +285,22 @@ class PipelineTests(unittest.TestCase):
         self.assertIn(
             "system-only has no screen",
             expected["required_output_signals"],
+        )
+        self.assertIn(
+            "mixed branches split or classified",
+            expected["required_output_signals"],
+        )
+        self.assertIn(
+            "causal system response remains in UI scenario",
+            expected["required_output_signals"],
+        )
+        self.assertIn(
+            "объявлять весь MIXED сценарий system-only, скрывая отсутствующий экран пользовательской ветви",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "приписывать системной ветви экран соседнего пользовательского шага",
+            expected["forbidden_actions"],
         )
 
     def test_generic_fallback(self) -> None:
