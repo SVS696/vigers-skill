@@ -105,7 +105,10 @@ document_diagram_publication_source:
   outcome/dependency/owner;
 - при `timing_calendar: enabled` создай `.vigers/timing-calendar.json` schema 1:
   `calendar_id`, IANA `timezone`, непустые `working_windows`, опциональные
-  `handoff_windows` и `holidays`; фактическая off-schedule активность всё равно
+  `handoff_windows`, `holidays`, общий `production_calendar` страны и ручные
+  `day_overrides`; materialize production calendar через Work Metrics с
+  `isdayoff.ru` и независимой сверкой `xmlcalendar.ru`, персональные отпуска в
+  него не включай; фактическая off-schedule активность всё равно
   считается, отсутствие событий вне окон не создаёт business-time и не требует
   ручной паузы, а прогноз перекладывает business duration на будущие окна;
 - при `deferred_state: enabled` опиши trigger `defer/resume`. Если включён

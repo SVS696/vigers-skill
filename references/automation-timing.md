@@ -177,7 +177,15 @@ Project-owned `.vigers/timing-calendar.json` имеет schema 1:
   "handoff_windows": [
     {"weekdays": [1, 2, 3, 4, 5], "start": "09:00", "end": "18:00"}
   ],
-  "holidays": []
+  "holidays": [],
+  "production_calendar": {
+    "schema": 1,
+    "provider": "isdayoff.ru",
+    "country": "ru",
+    "years": [2026],
+    "day_overrides": []
+  },
+  "day_overrides": []
 }
 ```
 
@@ -187,6 +195,26 @@ Project-owned `.vigers/timing-calendar.json` имеет schema 1:
 working windows не требуй ручных pause-маркеров: без наблюдаемой активности
 business-time не растёт, а длинный разрыв в логах становится idle. Holidays —
 project-owned dated input; при их изменении обновляй calendar явно.
+
+`production_calendar.day_overrides` материализует общий календарь страны:
+нерабочие даты, переносные рабочие дни и сокращённые окна. Источником служит
+`isdayoff.ru`, а `xmlcalendar.ru` независимо сверяет результат; расхождение
+блокирует обновление. Материализацию выполняет `work-metrics`:
+
+```text
+python3 <work-metrics>/scripts/production_calendar.py materialize \
+  --calendar <project-root>/.vigers/timing-calendar.json \
+  --country ru --year 2026 \
+  --write <project-root>/.vigers/timing-calendar.json
+```
+
+Верхнеуровневые `holidays` и `day_overrides` — ручной project overlay с более
+высоким приоритетом. Персональный отпуск не является свойством проекта: до
+старта задачи timer не идёт, передача другому владельцу закрывает текущий
+lifecycle, а явная пауза остаётся страховкой для активной задачи, которую
+сознательно оставили на прежнем владельце. Прогноз за пределами перечисленных
+`years` завершается ошибкой до материализации следующего года, а не использует
+неточный недельный fallback.
 
 ## Публикация, передача и межсессионная история
 
