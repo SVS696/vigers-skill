@@ -395,7 +395,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 - Runtime ledger связан с точными planning revision и passport; перед финалом
   нет running или pending этапов required/measured plan. При включённом времени
   active исключает pause/limit waits, calendar elapsed включает их, а business
-  elapsed — нет WIP вне рабочих окон и в `deferred`. Прогноз строится после preliminary analysis по истории текущего проекта и имеет
+  elapsed вне окон добавляет только наблюдаемую работу, без фонового WIP и `deferred`. Прогноз строится после preliminary analysis по истории текущего проекта и имеет
   `purpose: human_information_only`.
 - Ролевой context содержит `planning-role-context.json`, но не automation plan,
   ETA или runtime ledger.

@@ -183,7 +183,9 @@ Project-owned `.vigers/timing-calendar.json` имеет schema 1:
 
 `working_windows` задают business clock, `handoff_windows` — допустимые моменты
 передачи. Фактические логи имеют приоритет над расписанием: реально сделанная
-вечером или в выходной работа остаётся active и business fact. Holidays —
+вечером, ночью или в выходной работа остаётся active и business fact. Вне
+working windows не требуй ручных pause-маркеров: без наблюдаемой активности
+business-time не растёт, а длинный разрыв в логах становится idle. Holidays —
 project-owned dated input; при их изменении обновляй calendar явно.
 
 ## Публикация, передача и межсессионная история
