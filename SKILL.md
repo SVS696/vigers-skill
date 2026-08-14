@@ -152,7 +152,7 @@ description: "Оркестрирует предварительное иссле
    оценивает время. После materialized preliminary analysis отдельный
    `timing_model.py` выбирает кейсы только этого проекта по change scope, типам
    surfaces/рисков, компонентам и форме плана и прогнозирует human-only остаток
-   до первой передачи. После handoff независимый `work-metrics` согласует полные
+   до первой передачи. Project calendar разделяет active/business/calendar ETA, а `ready_for_handoff` — готовность и ожидание. После handoff `work-metrics` согласует полные
    журналы; Vigers принимает только eligible fingerprinted результат. Доанализ
    после передачи — отдельный follow-up, не обучающий ETA первого цикла.
    Дополнительно выяви preliminary `PUS-*` и `PDOD-*` со
@@ -394,8 +394,8 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
   revisions, user comments и external read-back bindings не потеряны.
 - Runtime ledger связан с точными planning revision и passport; перед финалом
   нет running или pending этапов required/measured plan. При включённом времени
-  active исключает pause/limit waits, elapsed включает их. Прогноз строится после
-  preliminary analysis только по истории текущего проекта и имеет
+  active исключает pause/limit waits, calendar elapsed включает их, а business
+  elapsed — нет WIP вне рабочих окон и в `deferred`. Прогноз строится после preliminary analysis по истории текущего проекта и имеет
   `purpose: human_information_only`.
 - Ролевой context содержит `planning-role-context.json`, но не automation plan,
   ETA или runtime ledger.
@@ -482,7 +482,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/evals/prompt-cookbook/targeted-remediation-preserves-coverage.json` | Регрессия prompt: major проверяется по delta без потери прежнего покрытия |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/runtime-preferences.md` | User/project toggles для timing, progress и task-manager projection |
-| `{baseDir}/references/automation-timing.md` | Dual timer, post-analysis forecast и проектный калибратор |
+| `{baseDir}/references/automation-timing.md` | Active/business/calendar timing, deferred lifecycle и проектный калибратор |
 | `{baseDir}/references/block-contract.md` | Контракт семантического блока и sidecar index |
 | `{baseDir}/references/knowledge-map.md` | Детерминированная карта методических маршрутов |
 | `{baseDir}/workflows/specification-pipeline.md` | Мультиагентный pipeline |
@@ -495,6 +495,6 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/scripts/case_pipeline.py` | Детерминированный оркестратор case-state |
 | `{baseDir}/scripts/planning_case.py` | Planning state, revisions, external bindings и approved handoff |
 | `{baseDir}/scripts/automation_timing.py` | Stage start/stop, validation, summary и aggregation |
-| `{baseDir}/scripts/timing_model.py` | Project-local similarity model и human-only прогноз |
+| `{baseDir}/scripts/timing_model.py`, `{baseDir}/scripts/timing_calendar.py` | Project-local similarity model и calendar handoff projection |
 | `{baseDir}/scripts/vigers_context.py` | Маршрутизация методического контекста |
 | `{baseDir}/scripts/install.py` | Безопасное подключение скилла и агентов к рантаймам |

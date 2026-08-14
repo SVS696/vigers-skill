@@ -9,6 +9,9 @@ progress_tracking: inherit
 task_manager: inherit
 timing_projection: inherit
 timing_history: inherit
+timing_calendar: inherit
+deferred_state: inherit
+state_projection: inherit
 progress_projection: inherit
 ---
 

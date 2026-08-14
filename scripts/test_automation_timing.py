@@ -200,6 +200,179 @@ class AutomationTimingTests(unittest.TestCase):
         self.assertEqual(stage["pauses"][0]["seconds"], 300)
         self.assertEqual(automation_timing.validate_ledger(ledger), [])
 
+    def test_deferral_suspends_case_and_resumes_with_projection_readbacks(self) -> None:
+        ledger = automation_timing.initialize_ledger(
+            case_id="deferred-case",
+            automation_plan=measured_plan(),
+            planning_case_id="deferred-plan",
+            planning_revision=1,
+            passport=None,
+            created_at="2026-08-14T15:00:00+00:00",
+        )
+        automation_timing.start_stage(
+            ledger, "P01", at="2026-08-14T15:00:00+00:00"
+        )
+        automation_timing.defer_case(
+            ledger,
+            reason="No work is planned before Monday",
+            evidence_ref="user-message:defer",
+            projection_readbacks=[
+                {
+                    "system": "redmine",
+                    "item_id": "16400",
+                    "state": "Отложено (аналитика)",
+                    "read_back_at": "2026-08-14T15:02:00+00:00",
+                    "previous_state": {"status_id": 2, "status": "В работе"},
+                },
+                {
+                    "system": "singularity",
+                    "item_id": "T-1",
+                    "state": "backlog+tag:Отложено",
+                    "read_back_at": "2026-08-14T15:02:00+00:00",
+                },
+            ],
+            at="2026-08-14T15:02:00+00:00",
+        )
+        stage = automation_timing.find_stage(ledger, "P01")
+        self.assertEqual(ledger["case_state"]["status"], "deferred")
+        self.assertEqual(
+            ledger["case_state"]["projection_readbacks"][0]["previous_state"]["status_id"],
+            2,
+        )
+        self.assertEqual(stage["pause_reason"], "deferred")
+        self.assertEqual(
+            automation_timing.build_checkpoint(
+                ledger, at="2026-08-16T12:00:00+00:00"
+            )["state"],
+            "deferred",
+        )
+        with self.assertRaisesRegex(
+            automation_timing.AutomationTimingError, "case state is deferred"
+        ):
+            automation_timing.begin_checklist_item(
+                ledger, "P01", "P01-C01", at="2026-08-16T12:00:00+00:00"
+            )
+        resumed = automation_timing.resume_case(
+            ledger,
+            evidence_ref="user-message:resume",
+            at="2026-08-17T06:00:00+00:00",
+        )
+        self.assertEqual(resumed, ["P01"])
+        self.assertEqual(ledger["case_state"]["status"], "active")
+        self.assertEqual(stage["active_started_at"], "2026-08-17T06:00:00+00:00")
+        self.assertEqual(automation_timing.validate_ledger(ledger), [])
+
+    def test_legacy_ledger_can_record_direct_handoff_without_new_case_state(self) -> None:
+        plan = measured_plan()
+        plan["stages"] = [plan["stages"][0]]
+        plan["fingerprint"] = automation_timing.canonical_fingerprint(plan)
+        ledger = automation_timing.initialize_ledger(
+            case_id="legacy-handoff",
+            automation_plan=plan,
+            planning_case_id="legacy-plan",
+            planning_revision=1,
+            passport=None,
+            created_at="2026-08-14T10:00:00+00:00",
+        )
+        ledger.pop("case_state")
+        automation_timing.start_stage(ledger, "P01", at="2026-08-14T10:00:00+00:00")
+        automation_timing.begin_checklist_item(
+            ledger, "P01", "P01-C01", at="2026-08-14T10:00:10+00:00"
+        )
+        automation_timing.complete_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            evidence_refs=["draft.md"],
+            at="2026-08-14T10:01:00+00:00",
+        )
+        automation_timing.stop_stage(
+            ledger,
+            "P01",
+            status="completed",
+            reason=None,
+            at="2026-08-14T10:02:00+00:00",
+        )
+        automation_timing.record_milestone(
+            ledger,
+            kind="publication",
+            evidence_ref="legacy-publication",
+            at="2026-08-14T10:03:00+00:00",
+        )
+        automation_timing.record_milestone(
+            ledger,
+            kind="development_handoff",
+            evidence_ref="legacy-handoff",
+            at="2026-08-14T10:04:00+00:00",
+        )
+        self.assertNotIn("case_state", ledger)
+        self.assertEqual(automation_timing.validate_ledger(ledger), [])
+
+    def test_ready_for_handoff_is_required_before_development_handoff(self) -> None:
+        plan = measured_plan()
+        plan["stages"] = [plan["stages"][0]]
+        plan["fingerprint"] = automation_timing.canonical_fingerprint(plan)
+        ledger = automation_timing.initialize_ledger(
+            case_id="handoff-case",
+            automation_plan=plan,
+            planning_case_id="handoff-plan",
+            planning_revision=1,
+            passport=None,
+            created_at="2026-08-14T15:00:00+00:00",
+        )
+        automation_timing.start_stage(
+            ledger, "P01", at="2026-08-14T15:00:00+00:00"
+        )
+        automation_timing.begin_checklist_item(
+            ledger, "P01", "P01-C01", at="2026-08-14T15:00:30+00:00"
+        )
+        automation_timing.complete_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            evidence_refs=["draft.md"],
+            at="2026-08-14T15:05:00+00:00",
+        )
+        automation_timing.stop_stage(
+            ledger,
+            "P01",
+            status="completed",
+            reason=None,
+            at="2026-08-14T15:06:00+00:00",
+        )
+        automation_timing.record_milestone(
+            ledger,
+            kind="publication",
+            evidence_ref="redmine-readback",
+            at="2026-08-14T15:07:00+00:00",
+        )
+        with self.assertRaisesRegex(
+            automation_timing.AutomationTimingError, "ready_for_handoff"
+        ):
+            automation_timing.record_milestone(
+                ledger,
+                kind="development_handoff",
+                evidence_ref="user-handoff",
+                at="2026-08-17T07:00:00+00:00",
+            )
+        ready = automation_timing.record_milestone(
+            ledger,
+            kind="ready_for_handoff",
+            evidence_ref="analysis-complete",
+            at="2026-08-14T16:00:00+00:00",
+        )
+        self.assertEqual(ready["ready_revision"], 1)
+        self.assertEqual(ledger["case_state"]["status"], "ready_for_handoff")
+        handoff = automation_timing.record_milestone(
+            ledger,
+            kind="development_handoff",
+            evidence_ref="user-handoff",
+            at="2026-08-17T07:00:00+00:00",
+        )
+        self.assertEqual(handoff["kind"], "development_handoff")
+        self.assertEqual(ledger["case_state"]["status"], "handed_off")
+        self.assertEqual(automation_timing.validate_ledger(ledger), [])
+
     def test_disabled_timer_keeps_progress_without_duration(self) -> None:
         plan = measured_plan()
         plan["policy"] = "disabled"

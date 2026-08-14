@@ -9,6 +9,9 @@ progress_tracking: inherit
 task_manager: inherit
 timing_projection: inherit
 timing_history: inherit
+timing_calendar: inherit
+deferred_state: inherit
+state_projection: inherit
 progress_projection: inherit
 document_checks:
 document_required_headings:
@@ -100,6 +103,15 @@ document_diagram_publication_source:
 - маппинг этапов/checklists в личный task manager: details/done_when в task note,
   допустимая подробность пункта и subtask только для самостоятельного
   outcome/dependency/owner;
+- при `timing_calendar: enabled` создай `.vigers/timing-calendar.json` schema 1:
+  `calendar_id`, IANA `timezone`, непустые `working_windows`, опциональные
+  `handoff_windows` и `holidays`; фактическая off-schedule активность всё равно
+  считается, а прогноз перекладывает business duration на будущие окна;
+- при `deferred_state: enabled` опиши trigger `defer/resume`. Если включён
+  `state_projection: project`, задай для каждого внешнего provider точное
+  deferred-состояние, read-back и восстановление предыдущего состояния. Не
+  считай тег достаточным, если provider также имеет каноническую backlog/status
+  поверхность;
 - адаптер progress update: stable `Pxx-Cxx` → внешний item ID, операция установки
   галки, обязательный read-back checked state и правило идемпотентного повтора;
 - правила replanning delta: как во время анализа немедленно остановить неверный

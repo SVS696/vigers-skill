@@ -180,6 +180,12 @@ def complete_ledger(case_id: str) -> dict[str, object]:
     )
     automation_timing.record_milestone(
         ledger,
+        kind="ready_for_handoff",
+        evidence_ref="analysis:ready",
+        at="2026-08-07T10:15:00+00:00",
+    )
+    automation_timing.record_milestone(
+        ledger,
         kind="development_handoff",
         evidence_ref="user:handoff-confirmed",
         at="2026-08-07T10:16:00+00:00",
@@ -193,6 +199,8 @@ def activity_reconciliation(
     project_key: str,
     active_seconds: int = 300,
     elapsed_seconds: int = 960,
+    business_elapsed_seconds: int | None = None,
+    calendar_fingerprint: str | None = None,
 ) -> dict[str, object]:
     payload: dict[str, object] = {
         "schema": 1,
@@ -212,8 +220,14 @@ def activity_reconciliation(
                 "schema": 1,
                 "values": {
                     "active_observed_seconds": 240,
-                    "active_seconds": active_seconds,
-                    "elapsed_seconds": elapsed_seconds,
+                        "active_seconds": active_seconds,
+                        "elapsed_seconds": elapsed_seconds,
+                        "calendar_elapsed_seconds": elapsed_seconds,
+                        "business_elapsed_seconds": business_elapsed_seconds,
+                        "calendar_fingerprint": calendar_fingerprint,
+                        "ready_for_handoff_at": "2026-08-07T10:15:00+00:00",
+                        "handoff_wait_seconds": 60,
+                        "handoff_wait_business_seconds": 60,
                 },
             }
         ],
@@ -343,6 +357,64 @@ class TimingModelTests(unittest.TestCase):
             self.assertEqual(sample["calibration"]["publication_count"], 2)
             self.assertEqual(sample["calibration"]["elapsed"]["actual_seconds"], 960)
 
+    def test_business_calendar_projects_friday_work_to_monday_handoff(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            project_root = str(Path(temp) / "project-alpha")
+            features = timing_model.build_features(decision(), plan_graph())
+            model = timing_model.empty_model("project-alpha", project_root)
+            calibration = {"schema": 1, "case_id": "calendar-case"}
+            calibration["fingerprint"] = timing_model.canonical_fingerprint(calibration)
+            sample = {
+                "case_id": "calendar-case",
+                "features": features,
+                "active_seconds": 3600,
+                "business_elapsed_seconds": 7200,
+                "elapsed_seconds": 65 * 3600,
+                "calendar_fingerprint": "calendar-v1",
+                "handoff_wait_seconds": 63 * 3600,
+                "handoff_wait_business_seconds": 3600,
+                "quality": "measured",
+                "cycle_kind": "initial-specification",
+                "calibration": calibration,
+                "source_fingerprint": "sample-v1",
+                "recorded_at": "2026-08-17T10:00:00+00:00",
+            }
+            model["samples"] = [sample]
+            model["sample_count"] = 1
+            calendar = {
+                "schema": 1,
+                "calendar_id": "rtl",
+                "timezone": "Europe/Moscow",
+                "working_windows": [
+                    {
+                        "weekdays": [1, 2, 3, 4, 5],
+                        "start": "09:00",
+                        "end": "18:00",
+                    }
+                ],
+                "handoff_windows": [
+                    {
+                        "weekdays": [1, 2, 3, 4, 5],
+                        "start": "09:00",
+                        "end": "18:00",
+                    }
+                ],
+                "holidays": [],
+            }
+            result = timing_model.predict(
+                model,
+                features,
+                business_calendar=calendar,
+                generated_at="2026-08-14T17:00:00+03:00",
+            )
+            self.assertEqual(result["business_elapsed"]["likely_seconds"], 7200)
+            self.assertEqual(
+                result["projected_handoff_at"]["likely"],
+                "2026-08-17T07:00:00+00:00",
+            )
+            self.assertEqual(result["calendar_elapsed"]["likely_seconds"], 65 * 3600)
+            self.assertIn("17.08.2026 10:00", result["human_note"])
+
     def test_run_log_recovery_is_partial_and_not_training_eligible(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             path = Path(temp) / "agent-ledger.json"
@@ -382,6 +454,8 @@ class TimingModelTests(unittest.TestCase):
             reconciliation = activity_reconciliation(
                 case_id="case-1",
                 project_key=forecast["project_key"],
+                business_elapsed_seconds=600,
+                calendar_fingerprint="calendar-v1",
             )
             sample = timing_model.measured_sample(
                 ledger_path=ledger_path,
@@ -391,6 +465,11 @@ class TimingModelTests(unittest.TestCase):
             )
             self.assertEqual(sample["active_seconds"], 300)
             self.assertEqual(sample["elapsed_seconds"], 960)
+            self.assertEqual(sample["business_elapsed_seconds"], 600)
+            self.assertEqual(sample["handoff_wait_seconds"], 60)
+            self.assertEqual(
+                sample["calibration"]["business_elapsed"]["actual_seconds"], 600
+            )
             self.assertEqual(
                 sample["calibration"]["measurement"]["source"],
                 "work_metrics_activity_reconciliation",

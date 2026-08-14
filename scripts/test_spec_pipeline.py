@@ -134,6 +134,9 @@ class PipelineTests(unittest.TestCase):
                         "progress_tracking": "fine",
                         "task_manager": "singularity",
                         "timing_projection": "task-note",
+                        "timing_calendar": "enabled",
+                        "deferred_state": "enabled",
+                        "state_projection": "project",
                         "progress_projection": "checklist",
                     }
                 ),
@@ -152,6 +155,9 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(effective.automation_timing, "disabled")
             self.assertEqual(effective.timing_model, "disabled")
             self.assertEqual(effective.timing_projection, "none")
+            self.assertEqual(effective.timing_calendar, "disabled")
+            self.assertEqual(effective.deferred_state, "enabled")
+            self.assertEqual(effective.state_projection, "project")
             self.assertEqual(effective.progress_tracking, "fine")
             self.assertEqual(effective.progress_projection, "checklist")
 
@@ -162,6 +168,38 @@ class PipelineTests(unittest.TestCase):
                     "automation_timing": "disabled",
                     "timing_projection": "task-note",
                 },
+                Path("project-profile.md"),
+                spec_pipeline.DEFAULT_EXECUTION_PREFERENCES,
+            )
+
+    def test_project_can_disable_deferred_state_and_its_projection(self) -> None:
+        common = spec_pipeline.ExecutionPreferences(
+            automation_timing="enabled",
+            timing_model="enabled",
+            progress_tracking="fine",
+            task_manager="singularity",
+            timing_projection="task-note",
+            timing_history="passport",
+            timing_calendar="enabled",
+            deferred_state="enabled",
+            state_projection="project",
+            progress_projection="checklist",
+            source="test",
+        )
+        effective = spec_pipeline.resolve_execution_preferences(
+            {"deferred_state": "disabled", "state_projection": "inherit"},
+            Path("project-profile.md"),
+            common,
+        )
+        self.assertEqual(effective.deferred_state, "disabled")
+        self.assertEqual(effective.state_projection, "none")
+
+    def test_state_projection_requires_deferred_state(self) -> None:
+        with self.assertRaisesRegex(
+            spec_pipeline.PipelineError, "state projection requires deferred state"
+        ):
+            spec_pipeline.resolve_execution_preferences(
+                {"deferred_state": "disabled", "state_projection": "project"},
                 Path("project-profile.md"),
                 spec_pipeline.DEFAULT_EXECUTION_PREFERENCES,
             )

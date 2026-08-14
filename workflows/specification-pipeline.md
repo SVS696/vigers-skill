@@ -30,6 +30,9 @@ approved planning handoff либо явно выбранный `--intent review`
 completed`. При terminal failure закрой этап `failed|blocked|cancelled` с причиной.
 При `user_pause|limit_exhausted|external_wait|interrupted` сразу вызови `pause`,
 после продолжения — `resume`: active остановится, elapsed продолжит идти. При
+явном решении убрать case из текущего WIP используй `defer`, а не многодневную
+обычную паузу; external state projections выполни и прочитай до записи перехода.
+После явного возврата в работу выполни project restore/read-back и `resume`.
 timing disabled те же stage-команды ведут progress без длительностей. Не запускай
 task-manager timer и не переноси эти данные в checklist: точный контракт задан в
 `{baseDir}/references/automation-timing.md`.
@@ -304,8 +307,10 @@ architecture design note с ограничениями для редактора
    корректную публикацию. При measured timing зафиксируй `milestone
    --kind publication`. Если после него пришли правки, выполни `reopen` последнего
    completed stage, затем снова `stop` и новую publication revision.
-5. Явную передачу в разработку не выводи из факта публикации. После отдельного
-   подтверждения пользователя запиши `milestone --kind development_handoff`,
+5. После последней публикации и закрытия этапов запиши отдельный
+   `milestone --kind ready_for_handoff`. Явную передачу в разработку не выводи
+   из готовности или публикации. После отдельного подтверждения пользователя
+   запиши `milestone --kind development_handoff`,
    а при включённом timing и доступном `work-metrics` сначала согласуй все
    объявленные case-related журналы разных сессий/харнесов. Передавай
    `--logs-complete` только при доказанной полноте; eligible reconciliation
