@@ -18,87 +18,70 @@ description: "Оркестрирует предварительное иссле
    `{baseDir}/references/handoff-contract.md`. `kernel.md` удерживает общие
    инварианты, `method-context.md/json` фиксируют выбранную выжимку метода, а
    `manifest.json` и `ledger.json` — состояние и зависимости.
-3. **Свежий контекст на роль или блок.** Каждый вызов агента получает только
-   контракт роли, профиль, kernel и нужные входные артефакты. Не передавай
-   историю рассуждений автора, нерелевантные блоки и прошлые findings.
+3. **Свежий ограниченный контекст.** Каждый вызов получает `contract_inputs` и
+   нужные артефакты. Не передавай историю автора, нерелевантные блоки и findings.
 4. **Архитектор вызывается по влиянию.** Архитектурная роль существует всегда,
    но режимы `design` и `conformance` запускаются только при срабатывании гейта.
 5. **Внешние изменения отдельно.** Подготовка текста не разрешает публиковать
    его, менять внешние трекеры, базы знаний или статусы без явной просьбы.
-6. **Интеграция — самостоятельный гейт.** Успешные локальные ревью блоков не
-   доказывают целостность документа. После сборки обязательны детерминированная
-   сверка идентификаторов, интеграционное ревью и глобальный независимый проход.
-7. **Стиль проекта проверяется отдельно.** Логически верная постановка может
-   нарушать локальные соглашения API, полей, терминов, шаблонов и файлов. Режим
-   reviewer `project-conformance` проверяет это отдельным свежим проходом.
-8. **Планирование начинается с исследования.** Декомпозиция без проверки
+6. **Масштаб не равен риску.** `compact|block` управляет контекстом, а
+   `lite|standard|high` — глубиной review. В standard один `final` reviewer
+   объединяет integration/global и применимые project surfaces; high сохраняет
+   отдельные проходы по `{baseDir}/references/execution-policy.md`.
+7. **Планирование начинается с исследования.** Декомпозиция без проверки
    проектных источников создаёт ложную определённость. Planning-case сначала
    фиксирует search coverage, противоречия и gaps, затем строит зависимые этапы,
    внешние draft-артефакты и один user-review gate для первоначального plan
    snapshot. Отдельные пункты принятого плана повторно не согласуются.
-9. **Прогноз нужен человеку, а не модели.** Planning-case хранит трёхточечный
-   wall-clock прогноз по этапам, а Vigers case — отдельный runtime ledger,
-   связанный с planning revision и passport. ETA не передаётся исполнительным
-   ролям и не влияет на глубину, порядок, качество, scope, остановку или
-   контекстный бюджет модели.
-10. **Завершение пункта создаёт немедленный барьер синхронизации.** Перед работой
-    координатор переводит выбранный checklist item в `in_progress`; порядок
-    списка сам по себе не является зависимостью. Как только `done_when` пункта
-    выполнен, координатор до объявления результата или обычного перехода дальше
-    обновляет внешнюю галку, читает её обратно и фиксирует evidence в runtime
-    ledger. Одновременная работа над другим независимым пунктом требует явно
-    зафиксированной причины параллельности. Этап нельзя завершить при незакрытом
-    обязательном пункте. Для `completion_owner: user` агент только готовит
-    handoff: не начинает пункт и не ставит галку без явного подтверждения
-    пользователя и последующего read-back.
-11. **Качество имеет критерий достаточности.** `blocker` и `major` закрываются
-    обязательно; `minor` не блокируют следующий этап. Новый research после coverage
+8. **Tracking выбирает человек или проект.** Portable default `fine` сохраняет
+   видимый прогресс и machine barriers; `off|milestones` требуют явной настройки.
+   ETA не передаётся ролям и не влияет на качество или scope.
+   Внешняя запись, publication и user-owned handoff всегда требуют read-back.
+9. **Качество имеет критерий достаточности.** `blocker` и `major` закрываются
+    обязательно через bounded remediation: finding, baseline, semantic IDs и
+    прежнее покрытие сохраняются, а re-review проверяет delta, не весь блок заново.
+    `minor` не блокируют следующий этап. Новый research после coverage
     gate разрешён только для доказанной существенной evidence-дыры. Minor-only polish
     выполняется не более одного раза на review gate; затем остаток фиксируется и
     pipeline идёт дальше по `{baseDir}/references/convergence-contract.md`.
-12. **Скрытый case не заменяет рабочий документ.** Если profile объявляет
-    `working_projection: required`, после planning approval и до полного анализа
-    создай или свяжи видимый человеку файл, tracker либо wiki target. Обновляй
-    его после каждого reviewed блока и значимой compact-фазы, явно помечая
-    непроверенные части. Форму target определяет project profile: core не создаёт
-    параллельный локальный файл рядом с объявленным tracker/wiki target. Рабочая
-    проекция не является финальной публикацией.
-13. **Project-conformance имеет машинный барьер.** Если profile объявляет
+10. **Скрытый case не заменяет рабочий документ.** Создай объявленную видимую
+    проекцию до анализа. В `milestones` обновляй её полным draft на смысловых
+    вехах, в `per-block` — после каждого reviewed блока. Это не публикация.
+11. **Project-conformance имеет машинный барьер.** Если profile объявляет
     `document_*` contract, core проверяет закреплённый draft и локальную рабочую
     проекцию до `pass`; текстовый verdict ревьюера не перекрывает ошибку
     обязательного раздела, оглавления или якоря. После исправления и нового
-    read-back нужен свежий project-conformance pass: старый report не может быть
-    переиспользован. Review evidence сохраняется отдельными неизменяемыми
-    ревизиями.
-14. **Готовая постановка не равна готовой поставке.** Закрытие постановочных
+    read-back нужен свежий pass только после semantic/project-contract delta.
+    Editorial delta закрывается machine check и явным `record-change`.
+12. **Готовая постановка не равна готовой поставке.** Закрытие постановочных
     gates означает только готовность specification artifact. Внешние terminal
     statuses, закрытие delivery task или инцидента разрешены только по lifecycle
     policy проекта и подтверждённому delivery evidence; публикация текста сама
     по себе таким evidence не является.
-15. **Граница решения защищена с двух сторон.** Частный запрос — наблюдаемый
+13. **Граница решения защищена с двух сторон.** Частный запрос — наблюдаемый
     экземпляр потребности, а не автоматически весь класс задач. Анализируй
     системно, реализуй подтверждённый scope и сохраняй обоснованный путь
     расширения, но не строй механизм «на будущее» без evidence. Выбирай
     `tactical|bounded-systemic|generalized-capability` строго по
     `{baseDir}/references/solution-boundary-contract.md`; финальное решение живёт
     в существующем `decisions.md`, а не в новом артефакте.
-16. **Человекочитаемая User Story не подменяется системной моделью.** Если
+14. **Человекочитаемая User Story не подменяется системной моделью.** Если
     profile объявляет `user_story` contract, каждая история следует одной
     project-owned форме role-goal-value. `RULE/DATA/IF/AC/DOD` остаются
     отдельными трассируемыми слоями; таблицы `ACT` и списки `SCN` не заменяют US.
-17. **Трассировка должна навигировать, а не только перечислять ID.** Если
+15. **Трассировка должна навигировать, а не только перечислять ID.** Если
     profile объявляет `traceability` contract, каждый semantic ID в разделе
     трассировки является отдельной внутренней ссылкой на точный существующий
     heading. Сжатые диапазоны и plain-text ID не проходят machine check.
-18. **Сложность должна получать подходящее представление.** Для состояний,
+16. **Сложность должна получать подходящее представление.** Для состояний,
     ветвящейся логики, взаимодействий, границ и неочевидных связей данных пройди
     diagram gate по `{baseDir}/references/diagram-contract.md`. Диаграмма
     отвечает на один вопрос, трассируется к semantic IDs и проходит render QA;
     перегруженная схема декомпозируется, а не уменьшается до нечитаемого размера.
     Рабочий source, QA-render и publication artifacts следуют profile lifecycle; файлы будущей публикации не создаются до её явного gate.
-19. **Публикуй читательскую проекцию, а не внутреннюю модель.** Служебные ID,
+17. **Публикуй читательскую проекцию, а не внутреннюю модель.** Служебные ID,
     findings, gates и reasoning остаются в case package. AC описывают
-    наблюдаемую приёмку, DoD — готовность результата к ней, а developer
+    наблюдаемую приёмку и прямо ведут к сценарию/точке входа проверки, DoD — готовность результата к ней, а developer
     self-check не публикуется без нормативной причины. Semantic references во
     всём документе разрешаются в точные headings; трассировка хранит прямые
     связи. Сначала запускай machine check, затем только необходимые дорогие
@@ -153,7 +136,10 @@ description: "Оркестрирует предварительное иссле
 
 1. Полностью прочитай `{baseDir}/workflows/planning-pipeline.md`,
    `{baseDir}/references/planning-contract.md` и
-   `{baseDir}/references/solution-boundary-contract.md`.
+   `{baseDir}/references/solution-boundary-contract.md`. Для опциональных
+   checklists, task-manager projection и времени также прочитай
+   `{baseDir}/references/runtime-preferences.md` и
+   `{baseDir}/references/automation-timing.md`.
 2. Создай planning-case и один ранний passport. Команда `init --cwd "<cwd>"`
    автоматически подхватывает `planning_anchors` ближайшего profile. Найди
    существующие единицы результата, создай или свяжи обязательные пустые anchors
@@ -162,18 +148,21 @@ description: "Оркестрирует предварительное иссле
 3. Пройди `researching → researched`: выполни read-only поиск по применимым
    источникам profile, зафиксируй запросы, freshness, противоречия и coverage.
 4. Построй зависимые этапы и checklists, подготовь разрешённые до review external
-   artifacts через project adapters и прочитай записи обратно. Для каждого этапа
-   добавь automation estimate по `{baseDir}/references/automation-timing.md`.
-   Оценка — только предварительный baseline для последующей калибровки; агентам
-   запрещено учитывать её как runtime-бюджет, дедлайн или основание сокращать
-   покрытие и проверки. Дополнительно выяви preliminary `PUS-*` и `PDOD-*` со
+   artifacts через project adapters и прочитай записи обратно. Модель не
+   оценивает время. После materialized preliminary analysis отдельный
+   `timing_model.py` выбирает кейсы только этого проекта по change scope, типам
+   surfaces/рисков, компонентам и форме плана и прогнозирует human-only остаток
+   до первой передачи. После handoff независимый `work-metrics` согласует полные
+   журналы; Vigers принимает только eligible fingerprinted результат. Доанализ
+   после передачи — отдельный follow-up, не обучающий ETA первого цикла.
+   Дополнительно выяви preliminary `PUS-*` и `PDOD-*` со
    ссылками на источники; они обязательны для проверки полным анализом, но не
    являются утверждёнными требованиями или финальным DoD.
    Также сохрани preliminary solution-boundary probe: найденные аналоги,
    отрицательный результат, кандидат корневой способности и горизонта. Это не
    финальный scope.
-5. Покажи пользователю plan, coverage/gaps и bindings. До явного approval не
-   запускай полноценный Vigers case.
+5. Покажи `approval-summary.md`: preliminary `PUS-*`/DoD, coverage/gaps и план;
+   пометь истории изменяемыми, а approval — не финальным. До него не запускай case.
 6. После approval создай или свяжи объявленные profile post-approval artifacts.
    Для `working_projection: required` хотя бы один target должен иметь
    `working_projection: true`, `publish_gate: after_approval` и read-back.
@@ -212,7 +201,7 @@ Review готовой постановки может пропустить plann
 **Выход:** один `route_id` и неизменяемый ограниченный методический контекст в
 case-root.
 
-## Фаза 3. Выбери масштаб выполнения
+## Фаза 3. Выбери масштаб и assurance
 
 **Вход:** известны профиль, маршрут и объём смысловых связей.
 
@@ -249,13 +238,16 @@ case-root.
 python3 {baseDir}/scripts/spec_pipeline.py suggest-mode --cwd "<cwd>" \
   --task "<краткая область>" --blocks <N> \
   --surface scenarios --surface interfaces --component "<component>" \
-  --dependent-parts --project-trigger "<profile-trigger>" \
+  --dependent-parts --change-scope semantic-local \
+  --project-trigger "<profile-trigger>" \
   --write "<case-root>/mode-decision.json"
 ```
 
-Передавай только применимые повторяемые аргументы и флаги. Если пользователь
-явно выбрал режим, добавь `--requested-mode compact|block`: явное решение имеет
-приоритет, а расхождение с рекомендацией сохраняется в `warnings`.
+Добавь проверяемый `--change-scope`. Публичный контракт, migration/schema,
+security/permissions, cross-service ownership, необратимость, compliance или
+архитектурное решение повышают assurance до `high`. Остальная смысловая работа
+по умолчанию `standard`, редактура — `lite`. Явные `--requested-mode` и
+`--requested-assurance` имеют приоритет; override сохраняется в `warnings`.
 
 Прочитай `selected_mode` из JSON и инициализируй case тем же значением:
 
@@ -270,8 +262,8 @@ fingerprint с manifest и отклоняет несовпадение режи�
 книжной выжимки. Для review готового артефакта передай `--intent review`: только
 этот intent может запускаться без planning handoff.
 
-**Выход:** выбран и обоснован `compact` или `block`, decision и case package
-согласованы.
+**Выход:** независимо выбраны scale, assurance, tracking и projection sync;
+decision и case package согласованы.
 
 ## Общие роли
 
@@ -281,7 +273,7 @@ fingerprint с manifest и отклоняет несовпадение режи�
 | `vigers-system-analyst` | Всегда; в block-mode отдельно на каждый блок | `{baseDir}/agents/contracts/system-analyst.md` | Модель требований или блока |
 | `vigers-solution-architect` | По архитектурному гейту, отдельно `design` и `conformance` | `{baseDir}/agents/contracts/solution-architect.md` | Решение или архитектурное заключение |
 | `vigers-spec-editor` | После модели; режимы `document`, `block-render`, `integrate` | `{baseDir}/agents/contracts/spec-editor.md` | Черновик блока или всего документа |
-| `vigers-spec-reviewer` | Режимы `block`, `integration`, `global`, `project-conformance` | `{baseDir}/agents/contracts/spec-reviewer.md` | Независимые findings |
+| `vigers-spec-reviewer` | `block`, `integration`, `global`, `final`, `project-conformance` | `{baseDir}/agents/contracts/spec-reviewer.md` | Независимые findings |
 
 Business analysis не является отдельной обязательной ролью. Системный аналитик
 включает линзу `business-context`, когда неизвестны потребность, участники,
@@ -321,6 +313,7 @@ Business analysis не является отдельной обязательн�
 - Planning research можно делить на независимые source clusters, но итоговый
   `research.md` и DAG плана сшиваются отдельным свежим проходом.
 - Ревьюер не получает рассуждения редактора, самооценку и предыдущие findings.
+- Роль читает только `contract_inputs`; evidence не может подключать surfaces.
 - Роль возвращает структурированный результат координатору. Только координатор
   сохраняет его в case package и применяет принятые изменения.
 - Ни одна роль не меняет проектные или внешние артефакты самостоятельно.
@@ -335,7 +328,7 @@ specification workflow и выполни его:
 - `block` → `{baseDir}/workflows/block-pipeline.md`.
 
 Оба workflow задают входы, выходы, условные гейты, цикл исправлений и
-возобновление. Выполнение approved этапов ведёт `automation-timing.json` по
+возобновление. Выполнение approved этапов ведёт выбранный tracking по
 `{baseDir}/references/automation-timing.md`. Block-mode дополнительно следует
 `{baseDir}/references/case-state.md` и `{baseDir}/references/block-contract.md`.
 Перед research/review полностью прочитай
@@ -355,11 +348,9 @@ approval пользователя до продолжения изменённо
 согласования каждого пункта: completion evidence и внешняя галка подтверждают
 выполнение, а не запрашивают новое решение пользователя.
 Runtime `draft.md`, block artifacts и `working-projection.json` остаются машинным
-контуром. После каждого reviewed semantic block сначала обнови все обязательные
-видимые targets через project adapter, выполни read-back и зарегистрируй его
-командой `case_pipeline.py projection-update --source Bxx`. Пока проекция
-отстаёт, новый блок и author-pass gate не продолжаются. В compact-mode обнови
-проекцию после первого полного draft и после существенных исправлений. Локальный
+контуром. Синхронизируй targets по выбранному `projection_sync`; перед
+author/final/project gate всегда нужен актуальный полный `draft|integration`
+read-back. В `per-block` Bxx update остаётся барьером следующего блока. Локальный
 файл подтверждай `--evidence-kind local_file`, внешний tracker/wiki —
 сохранённым JSON receipt проектного адаптера и
 `--evidence-kind external_readback`.
@@ -394,25 +385,25 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 - Planning research покрывает применимые project sources либо честно фиксирует
   partial/blocked coverage; план, checklists, preliminary US и preliminary DoD
   ссылаются на `SRC-NNN`.
+- Перед approval показан immutable `approval-summary.md`: preliminary US имеют role-goal-value и пометку об изменяемости; JSON/checklist не заменяют сводку.
 - Planning probe сохранил поиск аналогов и отрицательный результат; полный
   анализ выбрал доказуемый горизонт и разделил current scope, extension seams,
   deferred variants и expansion triggers. Reviewer проверил оба запаха:
   `particular-case` и `speculative-generalization`.
 - Полноценный non-review Vigers case связан с approved planning handoff; старые
   revisions, user comments и external read-back bindings не потеряны.
-- Для каждого нового planned stage есть трёхточечный automation estimate, а
-  runtime ledger связан с точными planning revision и passport; перед финалом
-  нет running или pending этапов required plan. Estimate имеет
-  `execution_use: human_information_only` и не влияет на runtime-решения.
+- Runtime ledger связан с точными planning revision и passport; перед финалом
+  нет running или pending этапов required/measured plan. При включённом времени
+  active исключает pause/limit waits, elapsed включает их. Прогноз строится после
+  preliminary analysis только по истории текущего проекта и имеет
+  `purpose: human_information_only`.
 - Ролевой context содержит `planning-role-context.json`, но не automation plan,
   ETA или runtime ledger.
 - При `working_projection: required` видимый target создан или связан до полного
-  анализа. Каждый reviewed блок отражён отдельным read-back update; скрытый case
+  анализа. Cadence соответствует `milestones|per-block`; скрытый case
   не выдаётся за пользовательский черновик, а рабочий draft не называется
   финальной публикацией.
-- Каждый выполненный обязательный checklist item немедленно имеет completion
-  evidence; внешняя галка подтверждена read-back, а completed stage не содержит
-  pending items.
+- Tracking соблюдает `off|milestones|fine`; внешняя галка подтверждена read-back.
 - Replanning срабатывает немедленно во время полного анализа: текущий проход
   останавливается, новая revision/delta хранит причину и evidence, а старый
   approved snapshot и уже выполненные пункты не исчезают. Отдельный user
@@ -422,9 +413,10 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 - Методический маршрут материализован и привязан к case; аналитик и reviewer
   получают его автоматически, а редактор не получает книжный корпус.
 - Аналитик отделил факты, решения, предположения и открытые вопросы.
-- В block-mode каждый блок свеж относительно kernel и прошёл локальное ревью.
+- В block-mode каждый блок свеж относительно kernel; high сохраняет локальное
+  ревью каждого блока, standard применяет risk-based review.
 - Семантические ID уникальны, ссылки разрешаются, REQ трассируются к AC.
-- Интеграционное и глобальное ревью выполнены после сборки, а не до неё.
+- Review после сборки соответствует assurance: combined final либо separate passes.
 - Project-conformance проверил только применимые локальные соглашения.
 - Объявленный profile document contract прошёл machine check по закреплённому
   draft и актуальной видимой проекции; review evidence не перезаписало прежнюю
@@ -436,10 +428,11 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 - Объявленная reader projection не содержит внутренних IDs и process jargon;
   каждое публичное semantic reference во всём теле является точной ссылкой, а
   traceability не хранит транзитивное замыкание.
-- AC исполнимы по наблюдаемому поведению фактическим приёмщиком; DoD фиксирует
-  готовность к приёмке, developer self-check исключён без нормативного основания.
-- После локальной правки повторены только затронутые gates; полный pipeline не
-  перезапущен без изменения цели, границы, публичного контракта или сквозной логики.
+- AC исполнимы фактическим приёмщиком: UI-критерий ведёт к точному сценарию с экраном/маршрутом либо содержит их сам, а non-UI — к системной точке входа; DoD фиксирует готовность к приёмке, developer self-check исключён без нормативного основания.
+- После локальной правки `begin-remediation` сохранил immutable review/baseline;
+  проверены finding, объявленные semantic IDs и прямые регрессии. Полный block/
+  whole-case review запущен только при смысловой переписи, изменении цели,
+  границы, публичного контракта, архитектуры или сквозной логики.
 - Diagram gate имеет `required|not-required|blocked`; все required surfaces
   представлены, семантически сверены и просмотрены в фактическом render. Одна
   гигантская нечитаемая схема не считается покрытием нескольких surfaces.
@@ -463,6 +456,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/references/requirements-method.md` | Канонический метод Вигерса |
 | `{baseDir}/references/planning-contract.md` | Research, plan DAG, passport, external drafts и approval contract |
 | `{baseDir}/references/automation-timing.md` | Прогноз, wall-clock ledger, команды и агрегация истории |
+| `{baseDir}/references/execution-policy.md` | Assurance, tracking, projection cadence, change impact и telemetry |
 | `{baseDir}/references/convergence-contract.md` | Порог качества, переоткрытие research и остановка minor-only циклов |
 | `{baseDir}/references/solution-boundary-contract.md` | Горизонты решения, границы scope и двусторонняя защита от hardcode/overengineering |
 | `{baseDir}/references/diagram-contract.md` | Diagram gate, выбор представления, декомпозиция и render QA |
@@ -483,7 +477,12 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/evals/prompt-cookbook/diagram-render-lifecycle-barrier.json` | Регрессия prompt: рабочий QA не создаёт PNG/source до publication gate |
 | `{baseDir}/evals/prompt-cookbook/reader-projection-barrier.json` | Регрессия prompt: служебная модель, developer checks и транзитивная трассировка не протекают в постановку |
 | `{baseDir}/evals/prompt-cookbook/user-journey-screen-context-barrier.json` | Регрессия prompt: UI-сценарий называет экран и видимые поля без повторов и догадок |
+| `{baseDir}/evals/prompt-cookbook/acceptance-verification-context-barrier.json` | Регрессия prompt: каждый AC ведёт тестировщика к точному сценарию или точке входа |
+| `{baseDir}/evals/prompt-cookbook/human-only-timing-boundary.json` | Регрессия prompt: forecast не попадает в модель и не управляет её работой |
+| `{baseDir}/evals/prompt-cookbook/targeted-remediation-preserves-coverage.json` | Регрессия prompt: major проверяется по delta без потери прежнего покрытия |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
+| `{baseDir}/references/runtime-preferences.md` | User/project toggles для timing, progress и task-manager projection |
+| `{baseDir}/references/automation-timing.md` | Dual timer, post-analysis forecast и проектный калибратор |
 | `{baseDir}/references/block-contract.md` | Контракт семантического блока и sidecar index |
 | `{baseDir}/references/knowledge-map.md` | Детерминированная карта методических маршрутов |
 | `{baseDir}/workflows/specification-pipeline.md` | Мультиагентный pipeline |
@@ -496,5 +495,6 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/scripts/case_pipeline.py` | Детерминированный оркестратор case-state |
 | `{baseDir}/scripts/planning_case.py` | Planning state, revisions, external bindings и approved handoff |
 | `{baseDir}/scripts/automation_timing.py` | Stage start/stop, validation, summary и aggregation |
+| `{baseDir}/scripts/timing_model.py` | Project-local similarity model и human-only прогноз |
 | `{baseDir}/scripts/vigers_context.py` | Маршрутизация методического контекста |
 | `{baseDir}/scripts/install.py` | Безопасное подключение скилла и агентов к рантаймам |

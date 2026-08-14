@@ -3,6 +3,13 @@ vigers_profile: 2
 profile_id: generic
 planning_anchors:
 working_projection: optional
+automation_timing: inherit
+timing_model: inherit
+progress_tracking: inherit
+task_manager: inherit
+timing_projection: inherit
+timing_history: inherit
+progress_projection: inherit
 ---
 
 # Профиль постановок Generic
@@ -24,6 +31,9 @@ Fallback для проекта без специального профиля. �
 
 - Research matrix начинается с явного запроса, ближайших проектных инструкций и
   актуальных tracker/wiki/code sources, если они доступны и применимы.
+- Для одного bounded source cluster без конфликтов и high-risk признаков
+  разрешён `fast-plan`; он объединяет вызов planner, но не coverage, артефакты,
+  state transitions или approval.
 - Для solution-boundary probe проверь доступные backlog, код, процессы и прошлые
   постановки на аналогичные варианты; сохрани отрицательный результат. Срочный
   tactical fix допустим только по явному источнику срочности или риска.
@@ -82,6 +92,10 @@ Fallback для проекта без специального профиля. �
 - `compact` — один связный смысловой контур.
 - `block` — несколько сценарных/контрактных контуров или большой корпус
   источников; делить по смыслу, не по разделам шаблона.
+- Assurance выбирай отдельно: `lite` для доказанно редакторского изменения,
+  `standard` для обычной смысловой работы, `high` для публичных контрактов,
+  миграций/данных, безопасности/прав, cross-service, необратимости, compliance
+  и архитектуры.
 - Дополнительных `project-trigger` нет; используй общие наблюдаемые признаки из
   `suggest-mode`.
 - В block-mode используй 3–8 блоков: контекст/сценарии, правила/состояния,

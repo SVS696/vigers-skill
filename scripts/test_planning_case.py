@@ -77,6 +77,45 @@ class PlanningCaseTests(unittest.TestCase):
         _, manifest = planning_case.load_case(root)
         planning_case.transition(root, manifest, new_state="researched", note=None)
 
+    def test_new_case_pins_preferences_and_never_asks_model_for_time(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "planning"
+            preferences = {
+                "schema": 1,
+                "automation_timing": "enabled",
+                "timing_model": "enabled",
+                "progress_tracking": "fine",
+                "task_manager": "singularity",
+                "timing_projection": "task-note",
+                "progress_projection": "checklist",
+                "history_scope": "project-profile",
+                "source": "test",
+            }
+            planning_case.init_case(
+                root,
+                case_id="measured-plan",
+                profile_id="project-alpha",
+                project_root=str(Path(temp) / "project-alpha"),
+                passport_id=None,
+                passport_path=None,
+                execution_preferences=preferences,
+            )
+            manifest = json.loads(
+                (root / planning_case.MANIFEST_FILENAME).read_text(encoding="utf-8")
+            )
+            plan = json.loads((root / "plan.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["execution_preferences"], preferences)
+            self.assertEqual(plan["automation_estimation"]["policy"], "measured")
+            plan["stages"] = [
+                {
+                    "id": "P01",
+                    "title": "Analysis",
+                    "depends_on": [],
+                    "checklist": [{"id": "P01-C01", "text": "Analyze"}],
+                }
+            ]
+            self.assertEqual(planning_case.validate_plan_estimation(plan), [])
+
     def complete_plan(self, root: Path, *, external: bool = True) -> None:
         write_json(
             root / "artifact-plan.json",
@@ -327,6 +366,69 @@ class PlanningCaseTests(unittest.TestCase):
             _, final_manifest = planning_case.load_case(root)
             self.assertEqual(final_manifest["state"], "handed_to_vigers")
             self.assertEqual(planning_case.validate_case(root, final_manifest, final=True), [])
+
+    def test_review_snapshot_contains_mutable_preliminary_user_stories(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            base = Path(temp)
+            root = self.init(base)
+            self.complete_research(root)
+            self.complete_plan(root, external=False)
+            self.publish(root)
+
+            summary_path = root / planning_case.APPROVAL_SUMMARY_MARKDOWN
+            summary = summary_path.read_text(encoding="utf-8")
+            self.assertIn("## Предварительные User Story", summary)
+            self.assertIn(
+                "Как Operator, я хочу receive a verified change, чтобы "
+                "the intended result can be accepted.",
+                summary,
+            )
+            self.assertIn(
+                "Полный анализ может подтвердить, изменить, разделить, отклонить "
+                "или дополнить их.",
+                summary,
+            )
+            self.assertIn(
+                "не утверждает финальные US, требования, AC или DoD",
+                summary,
+            )
+            self.assertIn("## План полного анализа", summary)
+            self.assertIn("## Покрытие предварительного исследования", summary)
+
+            _, manifest = planning_case.load_case(root)
+            snapshot_path = (
+                root
+                / "revisions"
+                / "revision-001"
+                / planning_case.APPROVAL_SUMMARY_MARKDOWN
+            )
+            self.assertTrue(snapshot_path.is_file())
+            self.assertEqual(
+                manifest["snapshots"]["1"]["approval_summary"],
+                planning_case.sha256(snapshot_path),
+            )
+
+    def test_legacy_case_without_approval_summary_remains_compatible(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            _, manifest = planning_case.load_case(root)
+            del manifest["artifacts"]["approval_summary"]
+            planning_case.save_case(root, manifest)
+            (root / planning_case.APPROVAL_SUMMARY_MARKDOWN).unlink()
+
+            self.complete_research(root)
+            self.complete_plan(root, external=False)
+            self.publish(root)
+
+            _, published = planning_case.load_case(root)
+            self.assertEqual(
+                planning_case.validate_case(root, published, final=False),
+                [],
+            )
+            self.assertNotIn(
+                "approval_summary",
+                published["snapshots"]["1"],
+            )
 
     def test_in_analysis_material_replanning_preserves_approved_revision(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

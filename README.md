@@ -10,7 +10,7 @@ Acceptance Criteria и Definition of Done.
 - системный аналитик с условной business-context линзой;
 - архитектор решения в раздельных режимах `design` и `conformance`;
 - редактор постановки в режимах document/block-render/integrate;
-- reviewer в режимах block/integration/global/project-conformance.
+- reviewer в режимах block/integration/global/final/project-conformance.
 
 Роли обмениваются только case artifacts и не наследуют рассуждения друг друга.
 Общий prompt-contract задаёт ограниченный assignment envelope, отделяет
@@ -28,15 +28,31 @@ intake -> researching -> researched -> artifacts_planned
 
 Research включает поиск по применимым источникам project profile, фиксацию
 отрицательных результатов и gaps. Этапы и внешние checklists строятся только
-после coverage gate. Пользователь видит план и созданные draft-артефакты; его
-комментарий создаёт новую immutable revision. Полноценный Vigers case принимает
-только approved `planning-handoff.json/md`.
+после coverage gate. Перед approval Vigers детерминированно собирает
+`approval-summary.md`: предварительные User Story в форме «Как ..., я хочу ...,
+чтобы ...», preliminary DoD, укрупнённый план и coverage/gaps. Сводка прямо
+говорит, что полный анализ может изменить, разделить, отклонить или дополнить
+истории; approval подтверждает направление анализа, а не финальные требования.
+Пользователь также видит созданные draft-артефакты; его комментарий создаёт
+новую immutable revision. Полноценный Vigers case принимает только approved
+`planning-handoff.json/md`.
 
-План хранит трёхточечную оценку wall-clock времени только для информации
-человека. После approval оркестратор ведёт `automation-timing.json`: фиксирует
-фактическое время, `evidence` и немедленную отметку каждого `Pxx-Cxx`. Для внешней
-галки обязателен read-back с `checked=true`. ETA не попадает в контекст роли и не
-управляет её темпом, областью работ или проверками.
+Для простой однокластерной задачи `fast-plan` объединяет research design,
+synthesis и plan в один fresh вызов, не убирая source map, coverage gate,
+артефакты, state transitions и пользовательское approval. Конфликт, второй
+cluster или high-risk признак возвращает полный planning route.
+
+После предварительного анализа отдельный project-local калибратор выбирает
+похожие завершённые кейсы только этого проекта и показывает человеку два
+диапазона: чистую работу без пауз и календарное время с паузами. Модели время не
+получают и не оценивают. После approval оркестратор ведёт
+`automation-timing.json`, а подробные `Pxx-Cxx` остаются независимыми progress
+barriers. Для внешней галки обязателен read-back с `checked=true`.
+
+Timing, калибратор, task manager и внешние projections опциональны: package
+defaults ничего наружу не подключают, user common preferences задают личный
+набор, а project profile может переопределить каждую capability. Effective
+настройки закрепляются в planning handoff и не меняют уже начатые cases.
 
 Если во время полного анализа обнаружена ошибка в принятом плане, аналитик
 сразу возвращает `status: replan`. Некритичную коррекцию принимает координатор;
@@ -47,8 +63,9 @@ Research включает поиск по применимым источник�
 
 Project profile может потребовать раннюю working projection. Тогда после
 planning approval и до полного анализа создаётся или связывается обычный файл,
-tracker либо wiki draft. Он обновляется после каждого reviewed блока с
-обязательным read-back; `.vigers/cases/` не считается видимым человеку
+tracker либо wiki draft. В `per-block` он обновляется после каждого reviewed
+блока, в `milestones` — на полном draft, integration и принятых смысловых
+изменениях; read-back обязателен. `.vigers/cases/` не считается видимым человеку
 результатом. Форму target задаёт project profile: core не создаёт параллельный
 локальный файл для tracker/wiki проекции. Project file проверяется напрямую,
 внешний read-back — по JSON receipt проектного адаптера. Рабочая проекция и
@@ -68,6 +85,23 @@ fixture `evals/prompt-cookbook/convergence-closed-coverage.json`.
 Выбор project-owned target вместо универсального локального файла проверяется
 fixture `evals/prompt-cookbook/profile-owned-working-projection.json`.
 
+Простота решения применяется двумя слоями. Аналитик и архитектор сразу строят
+минимальную модель и обязаны обосновать текущим сценарием, правилом или
+ограничением каждый дополнительный статус, сущность, настройку, абстракцию и
+инфраструктурный механизм. После сборки всего решения Vigers один раз выполняет
+контрольный `simplicity-spec` до независимого смыслового review. Это evidence
+существующего author gate, а не новая роль или бесконечный review loop:
+требования возвращаются их semantic owner, архитектура — архитектору, а поздние
+правки получают только проверку введённой дельты.
+Перед выбором нового механизма роли проходят лестницу «не нужно → уже есть в
+продукте/процессе → проектная граница → native platform → принятый механизм →
+прямое локальное решение → минимальная новая реализация». Простота не может
+срезать protected floor: подтверждённый смысл, безопасность, восстановление,
+проверяемость, публичный контракт и доказанную extension seam. Для сознательного
+компромисса фиксируются потолок, измеримый trigger возврата и upgrade path.
+Та же логика действует на сам Vigers: deterministic check, текущая роль и
+существующая review surface имеют приоритет над новым артефактом или gate.
+
 `compact` обслуживает один связный смысловой контур. `block` делит крупную
 постановку на 3–8 семантических contracts с явным DAG, стабильными IDs и
 сохраняемым состоянием:
@@ -81,9 +115,14 @@ planning-handoff.json/md + mode-decision.json + method-context.json/md
   -> global/project/architecture gates
 ```
 
-Изменение kernel инвалидирует затронутые downstream blocks. Финальный PASS
-требует разрешённой трассировки, свежих fingerprints и независимых
-integration/global/project-conformance gates.
+Изменение kernel инвалидирует затронутые downstream blocks и переносит
+незатронутые на новый hash. Финальный PASS требует разрешённой трассировки,
+свежих fingerprints и review-покрытия, выбранного по assurance.
+
+Размер контекста (`compact|block`) и цена гарантии (`lite|standard|high`)
+выбираются независимо. Обычный `standard` использует один combined final review;
+`high` сохраняет отдельные integration/global/project проходы. Legacy cases без
+policy продолжают прежний строгий маршрут.
 
 Режим выбирается детерминированно из явно зафиксированных фактов задачи:
 
@@ -179,7 +218,7 @@ workflows, проектные overlays и отсутствие приватны�
 ├── agents/{contracts,codex,claude}
 ├── profiles
 ├── references
-├── scripts/{vigers_context,spec_pipeline,mode_decision,planning_case,case_pipeline,automation_timing}.py
+├── scripts/{vigers_context,spec_pipeline,mode_decision,planning_case,case_pipeline,automation_timing,timing_model}.py
 └── workflows/{planning-pipeline,specification-pipeline,block-pipeline}.md
 ```
 

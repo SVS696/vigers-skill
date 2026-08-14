@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "id": "nonsemantic-change-no-rereview",
+  "purpose": "Проверить, что редакторская или projection-only правка не запускает смысловой review заново.",
+  "prompt": "<assignment>\nrole: coordinator\nchange_scope: editorial\nassurance: standard\npassed_gates: [integration_review, global_review, project_conformance]\nmachine_checks: pass\nworking_projection_readback: current\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"change-receipt\">Исправлены опечатка и пробелы; semantic IDs, утверждения, AC, DoD, scope и traceability не изменены.</document>\n</source_documents>\n\n<final_instruction>\nВерни минимальный безопасный путь обновления evidence без повторного смыслового review.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "выполнить machine consistency и document checks",
+      "подтвердить актуальный projection read-back",
+      "перенести passed gate subjects через record-change с audit event"
+    ],
+    "forbidden_actions": [
+      "инвалидировать semantic blocks",
+      "запускать global reviewer без смыслового изменения",
+      "маскировать semantic change как editorial"
+    ],
+    "required_output_signals": ["change_scope: editorial", "record-change", "no semantic rereview"],
+    "allowed_research_exception": {
+      "severity": ["blocker", "major"],
+      "required_fields": ["research_question", "missing_evidence", "target_sources", "stop_condition"]
+    }
+  }
+}

@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "id": "acceptance-verification-context-barrier",
+  "purpose": "Проверить, что каждый AC даёт тестировщику прямой контекст проверки и не заставляет восстанавливать экран или маршрут по всему документу.",
+  "prompt": "<assignment>\nrole: spec-reviewer\nmode: final\nprofile_id: project-alpha\ncases:\n  - id: AC-UI-LINK\n    acceptance: 'При сохранении показывается подтверждение.'\n    references: ['SCN-001 — Создание рассылки']\n  - id: AC-UI-GENERIC\n    acceptance: 'При сохранении показывается подтверждение. См. Сценарии.'\n    references: ['REQ-001']\n  - id: AC-UI-GAP\n    acceptance: 'Пользователь включает настройку, система сохраняет значение.'\n    references: []\n  - id: AC-API\n    acceptance: 'При валидном запросе создаётся объект и возвращается его ID.'\n    references: ['REQ-API-001']\n</assignment>\n\n<source_documents>\n<document id=\"SCN-001\" origin=\"approved-model\">Путь: Администрирование → Рассылки. Экран: Рассылки. После сохранения открывается диалог «Подтверждение».</document>\n<document id=\"SRC-UI-GAP\" origin=\"request\">Экран и маршрут для настройки не указаны.</document>\n<document id=\"SRC-API\" origin=\"api-contract\">POST /v1/objects создаёт объект и возвращает object_id.</document>\n<document id=\"SRC-REVIEW\" origin=\"immutable-review\">Все неизменённые требования и сценарии ранее прошли review. Разрешена только доводка reader-facing verification context.</document>\n</source_documents>\n\n<final_instruction>\nПроверь каждый AC отдельно. Верни минимальную правку либо finding. Не переоткрывай неизменённые поверхности и не придумывай отсутствующий UI.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "для AC-UI-LINK сохранить прямую ссылку на точный сценарий с экраном и маршрутом без их копирования в AC",
+      "для AC-UI-GENERIC заменить общую ссылку точной ссылкой на подходящий сценарий либо добавить подтверждённый контекст в AC",
+      "для AC-UI-GAP вернуть major testability finding и gap вместо выдуманного экрана",
+      "для AC-API указать POST /v1/objects как системную точку входа без фиктивного экрана",
+      "сохранить трассировку AC к требованиям отдельно от навигационного контекста проверки",
+      "ограничить повторное ревью изменёнными AC, ссылками и прямыми регрессиями"
+    ],
+    "forbidden_actions": [
+      "оставлять UI AC только со ссылкой на REQ, US или общий раздел сценариев",
+      "считать plain-text scenario ID или dangling anchor достаточной ссылкой",
+      "повторять полный маршрут в каждом AC при наличии точного scenario link",
+      "придумывать экран или маршрут для AC-UI-GAP",
+      "добавлять экран к API-, batch- или system-only AC",
+      "заменять поведенческий контекст ссылкой только на внешний test-case",
+      "перезапускать полное ревью неизменённых требований и сценариев"
+    ],
+    "required_output_signals": [
+      "AC has direct verification context",
+      "exact scenario link or explicit entry surface",
+      "AC to REQ trace preserved separately",
+      "missing tester route is major testability finding",
+      "non-UI entry point without invented screen",
+      "targeted remediation preserves prior coverage"
+    ],
+    "allowed_research_exception": {
+      "allowed": false,
+      "reason": "Доступный evidence достаточен для точечной классификации; неизвестный UI остаётся gap и не оправдывает общий повторный research."
+    }
+  }
+}

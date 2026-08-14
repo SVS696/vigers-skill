@@ -23,6 +23,7 @@
 ├── role-manifest.json         # bounded manifest ролей без timing-derived полей
 ├── ledger.json                # блоки, DAG, состояния, пути артефактов
 ├── automation-timing.json     # прогноз и wall-clock факт approved этапов
+├── agent-ledger.json          # стоимость и повторы модельных проходов
 ├── working-projection.json    # видимые draft targets и read-back updates
 ├── status.md                  # генерируемый человекочитаемый DoD
 ├── kernel.md                  # общие цель, scope, словарь и инварианты
@@ -47,10 +48,11 @@ Machine truth — связка `planning-handoff.json/md`, `mode-decision.json`,
 
 `working-projection.json` не хранит текст постановки. Он доказывает, куда и
 когда проецировался растущий человекочитаемый draft. При policy `required`
-target уже создан или связан до полного анализа. После каждого reviewed блока
-координатор обновляет все targets, выполняет read-back и записывает update с
-`source=Bxx`. Пока хотя бы один reviewed блок отсутствует в проекции, следующий
-semantic pass не запускается. В compact-mode первый update обязателен до
+target уже создан или связан до полного анализа. При
+`projection_sync=per-block` после каждого reviewed блока координатор обновляет
+targets и записывает read-back с `source=Bxx`; следующий semantic pass ждёт
+проекции. При `milestones` Bxx-барьера нет: обязательны полный draft,
+integration и принятые смысловые изменения. В compact-mode первый update обязателен до
 `author_passes`, а его `source_sha256` должен совпадать с текущим `draft.md`.
 В block-mode перед `author_passes` так же проверяется текущий `integration`
 update. Последующие существенные исправления также читаются обратно.
@@ -74,6 +76,8 @@ SHA-256. Путь обязан точно совпадать с `object_id` targ
 - нормализованные facts;
 - сработавшие rules;
 - `recommended_mode`, `selected_mode` и `selection_source`;
+- независимо выбранные `selected_assurance`, `selected_tracking` и
+  `selected_projection_sync`;
 - warnings для явного override;
 - fingerprint всего решения.
 
@@ -82,6 +86,7 @@ SHA-256. Путь обязан точно совпадать с `object_id` targ
 ```text
 python3 {baseDir}/scripts/spec_pipeline.py suggest-mode --cwd "<cwd>" \
   --task "<область>" --blocks 3 --surface scenarios --surface interfaces \
+  --change-scope semantic-local \
   --write "<case-root>/mode-decision.json"
 ```
 
@@ -146,10 +151,25 @@ python3 {baseDir}/scripts/case_pipeline.py transition \
   --case-root "<path>" --id B01 --status ready
 
 python3 {baseDir}/scripts/case_pipeline.py context \
-  --case-root "<path>" --block B01 --role system-analyst
+  --case-root "<path>" --block B01 --role system-analyst \
+  --role-mode block --contract-surface diagram
 
 python3 {baseDir}/scripts/case_pipeline.py refresh-kernel \
-  --case-root "<path>" --affects B01
+  --case-root "<path>" --change-scope semantic-local --affects B01 \
+  --reason "<what changed>"
+
+python3 {baseDir}/scripts/case_pipeline.py begin-remediation \
+  --case-root "<path>" --id B01 \
+  --finding "REV-014=major" --semantic-id "REQ-B01-003" \
+  --evidence "reviews/history/global_review-r001.md" \
+  --reason "<accepted finding and bounded correction>"
+
+python3 {baseDir}/scripts/case_pipeline.py record-remediation \
+  --case-root "<path>" --id B01 --remediation-id R001 \
+  --reason "<fresh checks and read-back confirmed the bounded delta>"
+
+python3 {baseDir}/scripts/case_pipeline.py record-change \
+  --case-root "<path>" --change-scope editorial --reason "<what changed>"
 
 python3 {baseDir}/scripts/case_pipeline.py projection-update \
   --case-root "<path>" --target-id EXT-001 --source B01 \
@@ -180,6 +200,12 @@ python3 {baseDir}/scripts/automation_timing.py check \
 
 python3 {baseDir}/scripts/automation_timing.py stop \
   --case-root "<path>" --stage P01 --status completed
+
+python3 {baseDir}/scripts/case_pipeline.py record-agent-run \
+  --case-root "<path>" --role spec-reviewer --role-mode final \
+  --model "<model>" --subject-sha256 "<sha256>" --input-bytes 12345 \
+  --duration-seconds 42 --retries 0 --reported-blocker 0 \
+  --reported-major 0 --reported-minor 1
 
 python3 {baseDir}/scripts/case_pipeline.py validate \
   --case-root "<path>" --final
@@ -216,14 +242,40 @@ read-back; для `completion_owner: user` нужен новый пользов�
 `context --role system-analyst|spec-reviewer` всегда включает закреплённые
 `method-context.json/md`. Редактору и архитектору эти файлы не выдаются: они
 работают с уже полученной моделью требований и своими контрактами.
+Архитектор получает отдельный `--role solution-architect --role-mode
+design|conformance` и только объявленные contract surfaces.
 В compact-mode вызывай `context` без `--block`; в block-mode `--block Bxx`
 обязателен.
 
-Role context содержит `role-manifest.json` и `planning-role-context.json`, но не
-coordinator manifest, raw planning JSON, automation estimates или runtime
-ledger. ETA остаётся человекочитаемой информацией для plan review и не
-становится скрытым бюджетом роли; role projections инвариантны к самим значениям
-оценок.
+Role context содержит точные `contract_inputs`, `role-manifest.json` и
+`planning-role-context.json`, но не coordinator manifest, raw planning JSON,
+forecast, project timing model или runtime ledger. Время остаётся
+человекочитаемой информацией и не становится скрытым бюджетом роли; role
+projections инвариантны к значениям forecast.
+
+`refresh-kernel` различает `editorial|projection-only|semantic-local|
+semantic-crosscutting|architecture`. Локальное смысловое изменение переводит в
+`stale` только выбранные блоки и downstream, остальные переносит на новый
+kernel hash. Широкая инвалидация требует `--invalidate-all`; отсутствие
+аргумента не означает «протухло всё». Старые cases без execution policy
+сохраняют прежнюю семантику `high + fine + per-block`.
+`record-change` сравнивает текущий consistency snapshot со snapshot каждого
+переносимого review gate. Editorial допускает только изменения регистра и
+пробелов; операторы, checkbox state и Markdown-структура сохраняются.
+Projection-only не допускает изменений semantic artifacts вообще. Одной
+декларации scope недостаточно для переноса review evidence.
+
+Новый блок с `remediation_contract: targeted-v1` нельзя вернуть из
+`reviewed|integrated` в работу обычным `transition`. `begin-remediation`
+сохраняет immutable copies предыдущего блока, index и finding evidence, а также
+ограничивает targeted delta перечисленными semantic IDs. Повторный block report
+обязан вернуть `review_scope: targeted-remediation`, точный список
+`verified_findings` и путь `coverage_reused`. При `--full-block` прошлое
+покрытие не переносится. После свежих `semantic_integration`, `author_passes`,
+consistency, document checks и projection read-back `record-remediation`
+создаёт audit receipts и переносит только действительно существовавшие passed
+whole-case review gates. Изменение любого постороннего semantic artifact
+блокирует перенос.
 
 Planning stages `Pxx` и semantic blocks `Bxx` — разные DAG. Первый измеряет
 исполнение approved плана, второй управляет смысловой сборкой постановки. Не

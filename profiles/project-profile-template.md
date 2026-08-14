@@ -3,6 +3,13 @@ vigers_profile: 2
 profile_id: example
 planning_anchors:
 working_projection: optional
+automation_timing: inherit
+timing_model: inherit
+progress_tracking: inherit
+task_manager: inherit
+timing_projection: inherit
+timing_history: inherit
+progress_projection: inherit
 document_checks:
 document_required_headings:
 document_toc:
@@ -58,6 +65,8 @@ document_diagram_publication_source:
 
 - обязательные системы research и search order, включая критерий достаточности,
   freshness, отрицательный результат и недоступное покрытие;
+- project-specific запреты на `fast-plan` и признаки, требующие нескольких
+  source clusters; не делай full planning обязательным только из-за размера;
 - поверхности поиска аналогичных кейсов для solution-boundary probe: backlog,
   код, процессы, прежние постановки и roadmap; источник, который проект считает
   достаточным доказательством срочного tactical exception;
@@ -117,9 +126,11 @@ document_diagram_publication_source:
 
 ## Режимы и разбиение
 
-Когда использовать `compact` и `block`; рекомендуемые семантические блоки,
-зависимости, правила kernel, рабочий `case-root` и маппинг блоков в финальный
-проектный шаблон. Runtime `cases/` не должен попадать в общий пакет скилла.
+Когда использовать `compact` и `block`; локальные high-assurance risk triggers,
+допустимая гранулярность tracking/projection sync, рекомендуемые семантические
+блоки, зависимости, правила kernel, рабочий `case-root` и маппинг блоков в
+финальный проектный шаблон. Runtime `cases/` не должен попадать в общий пакет
+скилла.
 
 Назови стабильные project-trigger IDs, которые оркестратор передаёт в
 `suggest-mode --project-trigger`, и для каждого опиши наблюдаемое условие. Сам

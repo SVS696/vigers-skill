@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "id": "high-layered-review",
+  "purpose": "Проверить сохранение раздельных независимых гейтов при high-risk изменении.",
+  "prompt": "<assignment>\nrole: coordinator\nmode: block\nassurance: high\nrisk_triggers: [public_contract, data_migration]\ncompleted_gate: integration_review\nnext_gate: global_review\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"mode-decision\">Изменяются публичная схема и миграция данных; override assurance отсутствует.</document>\n</source_documents>\n\n<final_instruction>\nВерни следующий review route без объединения независимых high-assurance gates.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "сохранить отдельные integration, global и project review gates",
+      "передать каждому reviewer fresh context без прошлых findings",
+      "выполнить architecture conformance при сработавшем архитектурном гейте"
+    ],
+    "forbidden_actions": [
+      "снизить assurance из-за compact scale",
+      "заменить все гейты одним final review",
+      "использовать размер документа как risk trigger"
+    ],
+    "required_output_signals": ["assurance: high", "separate gates", "fresh reviewer"],
+    "allowed_research_exception": {
+      "severity": ["blocker", "major"],
+      "required_fields": ["research_question", "missing_evidence", "target_sources", "stop_condition"]
+    }
+  }
+}

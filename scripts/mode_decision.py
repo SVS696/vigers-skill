@@ -11,6 +11,16 @@ from typing import Any
 MODE_DECISION_SCHEMA = 1
 MODE_DECISION_FILENAME = "mode-decision.json"
 MODES = {"compact", "block"}
+ASSURANCE_LEVELS = {"lite", "standard", "high"}
+CHANGE_SCOPES = {
+    "editorial",
+    "projection-only",
+    "semantic-local",
+    "semantic-crosscutting",
+    "architecture",
+}
+TRACKING_POLICIES = {"off", "milestones", "fine"}
+PROJECTION_SYNC_POLICIES = {"milestones", "per-block"}
 SURFACES = {
     "scenarios",
     "rules",
@@ -64,8 +74,18 @@ def build_mode_decision(
     unsafe_single_pass: bool,
     project_triggers: list[str],
     requested_mode: str | None,
+    change_scope: str = "semantic-local",
+    public_contract: bool = False,
+    data_migration: bool = False,
+    security_or_permissions: bool = False,
+    cross_service: bool = False,
+    irreversible: bool = False,
+    compliance: bool = False,
+    requested_assurance: str | None = None,
+    requested_tracking: str | None = None,
+    requested_projection_sync: str | None = None,
 ) -> dict[str, Any]:
-    """Evaluate observable task facts and return one auditable mode decision."""
+    """Select context scale and assurance independently from observable facts."""
     task = task.strip()
     if not task:
         raise ModeDecisionError("task must be non-empty")
@@ -73,6 +93,19 @@ def build_mode_decision(
         raise ModeDecisionError("estimated_blocks must be at least 1")
     if requested_mode is not None and requested_mode not in MODES:
         raise ModeDecisionError(f"invalid requested mode: {requested_mode!r}")
+    if change_scope not in CHANGE_SCOPES:
+        raise ModeDecisionError(f"invalid change scope: {change_scope!r}")
+    if requested_assurance is not None and requested_assurance not in ASSURANCE_LEVELS:
+        raise ModeDecisionError(f"invalid requested assurance: {requested_assurance!r}")
+    if requested_tracking is not None and requested_tracking not in TRACKING_POLICIES:
+        raise ModeDecisionError(f"invalid requested tracking: {requested_tracking!r}")
+    if (
+        requested_projection_sync is not None
+        and requested_projection_sync not in PROJECTION_SYNC_POLICIES
+    ):
+        raise ModeDecisionError(
+            f"invalid requested projection sync: {requested_projection_sync!r}"
+        )
 
     stable_surfaces = normalized_values(surfaces, label="surfaces")
     unknown_surfaces = sorted(set(stable_surfaces) - SURFACES)
@@ -145,6 +178,52 @@ def build_mode_decision(
             f"{recommended_mode!r}"
         )
 
+    risk_facts = {
+        "change_scope": change_scope,
+        "public_contract": public_contract,
+        "data_migration": data_migration,
+        "security_or_permissions": security_or_permissions,
+        "cross_service": cross_service,
+        "irreversible": irreversible,
+        "compliance": compliance,
+    }
+    assurance_rules: list[dict[str, str]] = []
+    for rule_id, active, reason in (
+        ("ASSURANCE-ARCHITECTURE", change_scope == "architecture", "architecture decision"),
+        ("ASSURANCE-PUBLIC-CONTRACT", public_contract, "public contract change"),
+        ("ASSURANCE-DATA-MIGRATION", data_migration, "data migration or schema change"),
+        ("ASSURANCE-SECURITY", security_or_permissions, "security or permission boundary"),
+        ("ASSURANCE-CROSS-SERVICE", cross_service, "cross-service ownership or flow"),
+        ("ASSURANCE-IRREVERSIBLE", irreversible, "irreversible or high-blast-radius change"),
+        ("ASSURANCE-COMPLIANCE", compliance, "compliance or regulatory constraint"),
+    ):
+        if active:
+            assurance_rules.append({"id": rule_id, "reason": reason})
+    if assurance_rules:
+        recommended_assurance = "high"
+    elif change_scope in {"editorial", "projection-only"}:
+        recommended_assurance = "lite"
+    else:
+        recommended_assurance = "standard"
+    selected_assurance = requested_assurance or recommended_assurance
+    if requested_assurance is not None and requested_assurance != recommended_assurance:
+        warnings.append(
+            f"explicit assurance {requested_assurance!r} overrides risk recommendation "
+            f"{recommended_assurance!r}"
+        )
+
+    # Progress granularity is a user/project preference, not an assurance cost.
+    # Detailed Pxx-Cxx items remain the portable default even when reviews are
+    # combined under standard assurance.
+    recommended_tracking = "fine"
+    selected_tracking = requested_tracking or recommended_tracking
+    recommended_projection_sync = (
+        "per-block"
+        if selected_assurance == "high" and selected_mode == "block"
+        else "milestones"
+    )
+    selected_projection_sync = requested_projection_sync or recommended_projection_sync
+
     payload: dict[str, Any] = {
         "schema": MODE_DECISION_SCHEMA,
         "task": task,
@@ -169,6 +248,20 @@ def build_mode_decision(
         "selected_mode": selected_mode,
         "selection_source": "explicit" if requested_mode is not None else "rules",
         "warnings": warnings,
+        "risk_facts": risk_facts,
+        "triggered_assurance_rules": assurance_rules,
+        "recommended_assurance": recommended_assurance,
+        "requested_assurance": requested_assurance,
+        "selected_assurance": selected_assurance,
+        "assurance_selection_source": (
+            "explicit" if requested_assurance is not None else "risk-rules"
+        ),
+        "recommended_tracking": recommended_tracking,
+        "requested_tracking": requested_tracking,
+        "selected_tracking": selected_tracking,
+        "recommended_projection_sync": recommended_projection_sync,
+        "requested_projection_sync": requested_projection_sync,
+        "selected_projection_sync": selected_projection_sync,
     }
     payload["fingerprint"] = fingerprint(payload)
     return payload
@@ -222,6 +315,43 @@ def validate_mode_decision(
     stored_fingerprint = payload.get("fingerprint")
     if not isinstance(stored_fingerprint, str) or stored_fingerprint != fingerprint(payload):
         raise ModeDecisionError("mode decision fingerprint mismatch")
+    if expected_mode is not None and payload["selected_mode"] != expected_mode:
+        raise ModeDecisionError(
+            f"mode decision selects {payload['selected_mode']!r}, case uses {expected_mode!r}"
+        )
+    if expected_profile_id is not None and profile["id"] != expected_profile_id:
+        raise ModeDecisionError(
+            f"mode decision profile {profile['id']!r}, case uses {expected_profile_id!r}"
+        )
+
+    legacy_decision = "selected_assurance" not in payload
+    risk_facts: dict[str, Any] | None = None
+    if not legacy_decision:
+        if payload.get("selected_assurance") not in ASSURANCE_LEVELS:
+            raise ModeDecisionError("invalid selected_assurance")
+        if payload.get("recommended_assurance") not in ASSURANCE_LEVELS:
+            raise ModeDecisionError("invalid recommended_assurance")
+        if payload.get("selected_tracking") not in TRACKING_POLICIES:
+            raise ModeDecisionError("invalid selected_tracking")
+        if payload.get("selected_projection_sync") not in PROJECTION_SYNC_POLICIES:
+            raise ModeDecisionError("invalid selected_projection_sync")
+        candidate_risk_facts = payload.get("risk_facts")
+        if (
+            not isinstance(candidate_risk_facts, dict)
+            or candidate_risk_facts.get("change_scope") not in CHANGE_SCOPES
+        ):
+            raise ModeDecisionError("invalid risk_facts")
+        risk_facts = candidate_risk_facts
+        for field in (
+            "public_contract",
+            "data_migration",
+            "security_or_permissions",
+            "cross_service",
+            "irreversible",
+            "compliance",
+        ):
+            if not isinstance(risk_facts.get(field), bool):
+                raise ModeDecisionError(f"risk_facts.{field} must be boolean")
 
     required_fact_types = {
         "estimated_blocks": int,
@@ -239,6 +369,44 @@ def validate_mode_decision(
         ):
             raise ModeDecisionError(f"mode decision fact {field!r} has invalid type")
 
+    if legacy_decision:
+        rebuilt_legacy = build_mode_decision(
+            task=payload.get("task", ""),
+            profile_id=profile["id"],
+            profile_file=profile["file"],
+            profile_source=profile["source"],
+            project_root=profile.get("project_root"),
+            estimated_blocks=facts["estimated_blocks"],
+            surfaces=facts["surfaces"],
+            components=facts["components"],
+            owners=facts["owners"],
+            dependent_parts=facts["dependent_parts"],
+            unsafe_single_pass=facts["unsafe_single_pass"],
+            project_triggers=facts["project_triggers"],
+            requested_mode=payload["requested_mode"],
+        )
+        for field in (
+            "risk_facts",
+            "triggered_assurance_rules",
+            "recommended_assurance",
+            "requested_assurance",
+            "selected_assurance",
+            "assurance_selection_source",
+            "recommended_tracking",
+            "requested_tracking",
+            "selected_tracking",
+            "recommended_projection_sync",
+            "requested_projection_sync",
+            "selected_projection_sync",
+        ):
+            rebuilt_legacy.pop(field)
+        rebuilt_legacy["fingerprint"] = fingerprint(rebuilt_legacy)
+        if payload != rebuilt_legacy:
+            raise ModeDecisionError("legacy mode decision does not match deterministic rules")
+        return
+
+    assert risk_facts is not None
+
     rebuilt = build_mode_decision(
         task=payload.get("task", ""),
         profile_id=profile["id"],
@@ -253,14 +421,16 @@ def validate_mode_decision(
         unsafe_single_pass=facts["unsafe_single_pass"],
         project_triggers=facts["project_triggers"],
         requested_mode=payload["requested_mode"],
+        change_scope=risk_facts["change_scope"],
+        public_contract=risk_facts.get("public_contract", False),
+        data_migration=risk_facts.get("data_migration", False),
+        security_or_permissions=risk_facts.get("security_or_permissions", False),
+        cross_service=risk_facts.get("cross_service", False),
+        irreversible=risk_facts.get("irreversible", False),
+        compliance=risk_facts.get("compliance", False),
+        requested_assurance=payload.get("requested_assurance"),
+        requested_tracking=payload.get("requested_tracking"),
+        requested_projection_sync=payload.get("requested_projection_sync"),
     )
     if payload != rebuilt:
         raise ModeDecisionError("mode decision does not match deterministic rules")
-    if expected_mode is not None and payload["selected_mode"] != expected_mode:
-        raise ModeDecisionError(
-            f"mode decision selects {payload['selected_mode']!r}, case uses {expected_mode!r}"
-        )
-    if expected_profile_id is not None and profile["id"] != expected_profile_id:
-        raise ModeDecisionError(
-            f"mode decision profile {profile['id']!r}, case uses {expected_profile_id!r}"
-        )

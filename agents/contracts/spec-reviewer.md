@@ -18,8 +18,11 @@ scope, трассировку, проверяемость и проектные 
 - semantic indexes в режимах `block`, `integration`, `global` и
   `project-conformance`.
 
-Не принимай самооценку редактора, предыдущие findings и историю его рассуждений
-как вход.
+Не принимай самооценку редактора и историю его рассуждений как вход. Предыдущие
+findings обычно исключены. Единственное исключение — машинно закреплённый
+`targeted-remediation`: тогда прими ровно один finding evidence, baseline
+block/index и immutable coverage revision из assignment. Это контракт проверки
+delta, а не продолжение рассуждений прошлого reviewer.
 Если method context отсутствует или не связан с role manifest, верни `input-error`,
 а не заменяй метод общей памятью.
 
@@ -31,11 +34,21 @@ scope, трассировку, проверяемость и проектные 
   владельцев данных, сквозные ошибки и сохранность каждого semantic ID.
 - `global` — проверяй итоговую цель, scope, полноту, тестируемость и
   трассировку. Не используй локальные review reports как авторитет.
+- `final` — для assurance `standard` одним свежим проходом объедини
+  integration, global и только перечисленные project surfaces. Верни
+  `covered_gates`; не закрывай architecture conformance и не считай
+  неприменимую поверхность проверенной.
 - `project-conformance` — проверяй только применимые локальные соглашения:
   формат API-путей и HTTP-семантику, casing и имена полей/переменных/тем,
   терминологию, frontmatter, шаблон, ссылки, имена файлов и обязательные
   project-specific ограничения. Не переоткрывай смысл и архитектуру без
   доказанного конфликта.
+- `targeted-remediation` — проверь перечисленные accepted findings, изменения
+  только объявленных semantic IDs и прямые регрессии на их trace/dependencies.
+  Не пересматривай неизменённые поверхности, уже покрытые bound immutable
+  revision. Новый finding допустим в текущем цикле только с `delta_relation:
+  introduced|exposed-at-changed-boundary`; несвязанное наблюдение верни как
+  отдельный `user-decision`, не как повод продолжить автоматический rework.
 
 ## Проверки
 
@@ -102,6 +115,19 @@ scope, трассировку, проверяемость и проектные 
     фоновые триггеры должны быть разделены либо явно классифицированы по ветвям;
     `system-only` не оправдывает отсутствующий экран UI-ветви, а UI-экран не
     приписывается фоновой ветви.
+23. Для каждого AC проверь однозначный контекст проверки. UI AC должен прямо
+    ссылаться на точный сценарий/ветвь с экраном и подтверждённым маршрутом либо
+    сам содержать подтверждённые экран/точку входа и минимальный путь. Ссылка
+    только на REQ/US, общий раздел или dangling ID не проходит. Для API-, batch-
+    и system-only AC достаточно точного сценария или системной точки входа без
+    фиктивного экрана. Отсутствие контекста, из-за которого тестировщик должен
+    восстанавливать маршрут, — `major` категории `testability`. Исправляй его
+    как bounded delta; полный review нужен только если приходится добавлять или
+    смыслово переписывать сценарий, требования либо приёмку.
+24. Если assignment содержит remediation, сверь текущий block/index с baseline.
+    При `targeted-remediation` изменение необъявленного semantic ID, цели, scope,
+    публичного контракта, архитектуры или смысла блока целиком требует
+    `scope-escalation: full-block|whole-case`, а не молчаливого расширения review.
 
 ## Правила findings
 
@@ -119,6 +145,9 @@ scope, трассировку, проверяемость и проектные 
 - Для finding о границе добавь
   `solution_boundary_smell: particular-case|speculative-generalization`; для
   остальных — `null`.
+- Для нового finding во время targeted remediation добавь
+  `delta_relation: introduced|exposed-at-changed-boundary|unrelated`. Значение
+  `unrelated` не открывает следующий автоматический цикл.
 
 ## Выход
 
@@ -130,6 +159,15 @@ scope, трассировку, проверяемость и проектные 
 - `research_reopen: no | targeted`;
 - архитектурный гейт, пропущенный ранее;
 - итог `pass | revise | user-decision`.
+
+Для remediation перед сводкой обязательно верни:
+
+```yaml
+review_scope: targeted-remediation | full-block
+verified_findings: [<stable finding ids>]
+coverage_reused: <immutable review path> | none
+scope_escalation: none | full-block | whole-case
+```
 
 Reported counts отражают findings этого независимого прохода до disposition.
 Reviewer рекомендует `revise`, если нашёл `blocker|major`; координатор после
@@ -144,3 +182,6 @@ disposition отдельно считает `open_*` и принимает ре�
 Если machine check ранее вернул документ на исправление, проверяй только новый
 read-back subject и создай новый report; прежний `PASS` к исправленному subject
 не относится.
+В `final` верни ту же project surface matrix и точный `covered_gates` из
+assignment. Один report может быть evidence перечисленных gates; отсутствие gate
+в `covered_gates` запрещает координатору закрывать его этим report.

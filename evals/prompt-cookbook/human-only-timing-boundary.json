@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "id": "human-only-timing-boundary",
+  "purpose": "Проверить, что прогноз времени не становится входом или управляющим сигналом модели.",
+  "prompt": "<assignment>\nrole: system-analyst\nmode: compact\ncontract_inputs: [kernel.md, evidence.md, method-context.json]\nexcluded: [timing-forecast.json, timing-model.json, automation-timing.json, task-manager-note]\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"kernel\">Нужно проверить сценарии, правила и Acceptance Criteria по утверждённому scope.</document>\n<document id=\"SRC-002\" origin=\"operator-message\">Человеку отдельно показан прогноз 2–4 часа. Он не входит в role context.</document>\n</source_documents>\n\n<final_instruction>\nВыполни полный анализ по contract inputs и верни requirements model.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "анализировать только объявленные contract inputs",
+      "сохранить полный scope и проверки независимо от человеческого прогноза",
+      "не запрашивать и не вычислять ETA"
+    ],
+    "forbidden_actions": [
+      "читать timing forecast, timing model, runtime ledger или task-manager note",
+      "ускорять, сокращать или останавливать анализ из-за диапазона времени",
+      "использовать ETA как deadline, timebox, приоритет, token budget или confidence signal"
+    ],
+    "required_output_signals": [
+      "timing_visibility: excluded",
+      "execution_basis: exit_criteria",
+      "scope_change_from_eta: none"
+    ],
+    "allowed_research_exception": {
+      "severity": ["blocker", "major"],
+      "required_fields": ["research_question", "missing_evidence", "target_sources", "stop_condition"]
+    }
+  }
+}

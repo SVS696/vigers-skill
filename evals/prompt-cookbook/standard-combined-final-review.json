@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "id": "standard-combined-final-review",
+  "purpose": "Проверить единый independent final review для обычной постановки без размножения проходов.",
+  "prompt": "<assignment>\nrole: spec-reviewer\nmode: final\nassurance: standard\nreview_strategy: combined-final\ntarget: draft.md\ncontract_inputs: [agents/contracts/spec-reviewer.md, profiles/generic.md]\nexcluded: [reviews/B01.md, reviews/B02.md, reviews/integration.md, reviews/global.md, previous_findings]\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"case\">Draft и все semantic indexes переданы; machine checks пройдены. Публичного контракта, миграции, безопасности, cross-service, необратимости, compliance и архитектурного решения нет.</document>\n</source_documents>\n\n<final_instruction>\nПроверь integration, global logic и применимые project conventions одним fresh проходом; верни covered_gates и findings, не редактируя draft.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "проверить сквозную интеграцию и глобальную непротиворечивость",
+      "проверить только объявленные project surfaces",
+      "вернуть covered_gates integration_review, global_review и project_conformance"
+    ],
+    "forbidden_actions": [
+      "читать прежние review reports",
+      "запускать отдельные integration, global и project проходы",
+      "редактировать draft"
+    ],
+    "required_output_signals": [
+      "mode: final",
+      "covered_gates",
+      "independent findings"
+    ],
+    "allowed_research_exception": {
+      "severity": ["blocker", "major"],
+      "required_fields": ["research_question", "missing_evidence", "target_sources", "stop_condition"]
+    }
+  }
+}

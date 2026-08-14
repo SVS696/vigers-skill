@@ -96,7 +96,125 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["contracts"], 5)
         self.assertEqual(counts["runtime_adapters"], 10)
         self.assertEqual(counts["workflows"], 3)
-        self.assertEqual(counts["prompt_evals"], 14)
+        self.assertEqual(counts["prompt_evals"], 22)
+
+    def test_scale_and_assurance_are_selected_independently(self) -> None:
+        large_local = self.decision(
+            estimated_blocks=5,
+            surfaces=["scenarios", "rules"],
+        )
+        self.assertEqual(large_local["selected_mode"], "block")
+        self.assertEqual(large_local["selected_assurance"], "standard")
+        self.assertEqual(large_local["selected_tracking"], "fine")
+        self.assertEqual(large_local["selected_projection_sync"], "milestones")
+
+        small_risky = self.decision(
+            estimated_blocks=1,
+            surfaces=["interfaces"],
+            public_contract=True,
+        )
+        self.assertEqual(small_risky["selected_mode"], "compact")
+        self.assertEqual(small_risky["selected_assurance"], "high")
+
+        editorial = self.decision(change_scope="editorial")
+        self.assertEqual(editorial["selected_assurance"], "lite")
+
+        projection_only = self.decision(change_scope="projection-only")
+        self.assertEqual(projection_only["selected_assurance"], "lite")
+
+    def test_execution_preferences_are_common_then_project_overrides(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            preferences_path = Path(temp) / "preferences.json"
+            preferences_path.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "automation_timing": "enabled",
+                        "timing_model": "enabled",
+                        "progress_tracking": "fine",
+                        "task_manager": "singularity",
+                        "timing_projection": "task-note",
+                        "progress_projection": "checklist",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            common = spec_pipeline.load_common_preferences(preferences_path)
+            effective = spec_pipeline.resolve_execution_preferences(
+                {
+                    "automation_timing": "disabled",
+                    "timing_model": "inherit",
+                    "task_manager": "inherit",
+                },
+                Path("project-profile.md"),
+                common,
+            )
+            self.assertEqual(effective.automation_timing, "disabled")
+            self.assertEqual(effective.timing_model, "disabled")
+            self.assertEqual(effective.timing_projection, "none")
+            self.assertEqual(effective.progress_tracking, "fine")
+            self.assertEqual(effective.progress_projection, "checklist")
+
+    def test_project_cannot_enable_projection_when_timer_is_disabled(self) -> None:
+        with self.assertRaisesRegex(spec_pipeline.PipelineError, "cannot project timing"):
+            spec_pipeline.resolve_execution_preferences(
+                {
+                    "automation_timing": "disabled",
+                    "timing_projection": "task-note",
+                },
+                Path("project-profile.md"),
+                spec_pipeline.DEFAULT_EXECUTION_PREFERENCES,
+            )
+
+    def test_legacy_mode_decision_remains_valid(self) -> None:
+        payload = self.decision()
+        for field in (
+            "risk_facts",
+            "triggered_assurance_rules",
+            "recommended_assurance",
+            "requested_assurance",
+            "selected_assurance",
+            "assurance_selection_source",
+            "recommended_tracking",
+            "requested_tracking",
+            "selected_tracking",
+            "recommended_projection_sync",
+            "requested_projection_sync",
+            "selected_projection_sync",
+        ):
+            payload.pop(field)
+        payload["fingerprint"] = mode_decision.fingerprint(payload)
+        mode_decision.validate_mode_decision(
+            payload,
+            expected_mode="compact",
+            expected_profile_id="generic",
+        )
+
+    def test_legacy_mode_decision_still_obeys_original_scale_rules(self) -> None:
+        payload = self.decision(estimated_blocks=5)
+        for field in (
+            "risk_facts",
+            "triggered_assurance_rules",
+            "recommended_assurance",
+            "requested_assurance",
+            "selected_assurance",
+            "assurance_selection_source",
+            "recommended_tracking",
+            "requested_tracking",
+            "selected_tracking",
+            "recommended_projection_sync",
+            "requested_projection_sync",
+            "selected_projection_sync",
+        ):
+            payload.pop(field)
+        payload["selected_mode"] = "compact"
+        payload["fingerprint"] = mode_decision.fingerprint(payload)
+        with self.assertRaisesRegex(mode_decision.ModeDecisionError, "deterministic rules"):
+            mode_decision.validate_mode_decision(
+                payload,
+                expected_mode="compact",
+                expected_profile_id="generic",
+            )
 
     def test_closed_coverage_prompt_eval_rejects_archaeological_restart(self) -> None:
         eval_path = (
@@ -252,6 +370,48 @@ class PipelineTests(unittest.TestCase):
             expected["required_output_signals"],
         )
 
+    def test_simplicity_is_native_and_has_one_bounded_control(self) -> None:
+        eval_path = (
+            spec_pipeline.ROOT
+            / "evals"
+            / "prompt-cookbook"
+            / "native-simplicity-with-control.json"
+        )
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        expected = payload["expected"]
+        self.assertIn(
+            "запускать второй полный simplicity-pass после собственной bounded коррекции",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "native simplicity_authoring",
+            expected["required_output_signals"],
+        )
+        self.assertIn(
+            "one control before independent review",
+            expected["required_output_signals"],
+        )
+        self.assertIn("protected_floor: pass", expected["required_output_signals"])
+        self.assertIn("root_owner and chosen_rung", expected["required_output_signals"])
+
+    def test_process_yagni_reuses_existing_coverage(self) -> None:
+        eval_path = (
+            spec_pipeline.ROOT
+            / "evals"
+            / "prompt-cookbook"
+            / "process-yagni-no-new-gate.json"
+        )
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        expected = payload["expected"]
+        self.assertIn(
+            "создавать отдельного simplicity reviewer",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "no new role gate or artifact",
+            expected["required_output_signals"],
+        )
+
     def test_user_journey_eval_requires_screen_context_without_ui_invention(self) -> None:
         eval_path = (
             spec_pipeline.ROOT
@@ -301,6 +461,35 @@ class PipelineTests(unittest.TestCase):
         self.assertIn(
             "приписывать системной ветви экран соседнего пользовательского шага",
             expected["forbidden_actions"],
+        )
+
+    def test_acceptance_eval_requires_direct_verification_context(self) -> None:
+        eval_path = (
+            spec_pipeline.ROOT
+            / "evals"
+            / "prompt-cookbook"
+            / "acceptance-verification-context-barrier.json"
+        )
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        prompt = payload["prompt"]
+        expected = payload["expected"]
+        for case_id in ("AC-UI-LINK", "AC-UI-GENERIC", "AC-UI-GAP", "AC-API"):
+            self.assertIn(f"id: {case_id}", prompt)
+        self.assertIn(
+            "оставлять UI AC только со ссылкой на REQ, US или общий раздел сценариев",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "AC has direct verification context",
+            expected["required_output_signals"],
+        )
+        self.assertIn(
+            "missing tester route is major testability finding",
+            expected["required_output_signals"],
+        )
+        self.assertIn(
+            "targeted remediation preserves prior coverage",
+            expected["required_output_signals"],
         )
 
     def test_generic_fallback(self) -> None:

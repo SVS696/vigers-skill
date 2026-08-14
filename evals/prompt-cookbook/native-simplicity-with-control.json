@@ -1,0 +1,38 @@
+{
+  "schema": 1,
+  "id": "native-simplicity-with-control",
+  "purpose": "Проверить, что решение упрощается во время authoring и один раз контролируется после сборки без нового review loop.",
+  "prompt": "<assignment>\nrole: coordinator\nmode: block\nphase: integrated-draft-before-review\nassurance: standard\nnative_simplicity_records: [B01, architecture-design]\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"requirements\">Текущий подтверждённый сценарий требует один фиксированный способ отправки уведомления. Вариантов канала, администрирования правил и roadmap универсализации нет.</document>\n<document id=\"SRC-002\" origin=\"draft\">Решение добавляет реестр каналов, rule engine, универсальные metadata, очередь событий и административный конфигуратор на будущее.</document>\n</source_documents>\n\n<final_instruction>\nПримени правила simplicity-spec к authoring evidence и собранному решению; верни минимальную bounded коррекцию и дальнейший маршрут.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "проверить requirement или constraint refs каждого дополнительного механизма",
+      "пройти лестницу от существующей способности до минимального нового механизма",
+      "сохранить protected floor, включая доказанную extension seam",
+      "удалить или отложить необоснованные rule engine, metadata, очередь и конфигуратор",
+      "сохранить только доказанную extension seam",
+      "записать один simplicity-control как evidence существующего author gate",
+      "показать человеку итог контроля и краткую дельту исправления",
+      "направить requirements delta системному аналитику, а architecture delta архитектору"
+    ],
+    "forbidden_actions": [
+      "сохранять механизм только потому что он может пригодиться",
+      "создавать отдельную роль или новый review gate для simplicity-control",
+      "открывать общий research или полный повтор локальных reviews",
+      "запускать второй полный simplicity-pass после собственной bounded коррекции",
+      "самовольно удалять подтверждённый бизнес-смысл или архитектурный канон"
+    ],
+    "required_output_signals": [
+      "native simplicity_authoring",
+      "root_owner and chosen_rung",
+      "protected_floor: pass",
+      "ceiling revisit_trigger upgrade_path",
+      "simplicity_control: clean|corrected|decision-required",
+      "one control before independent review",
+      "delta routed to semantic owner"
+    ],
+    "allowed_research_exception": {
+      "severity": ["blocker", "major"],
+      "required_fields": ["research_question", "missing_evidence", "target_sources", "stop_condition"]
+    }
+  }
+}
