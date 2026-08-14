@@ -26,6 +26,7 @@ from spec_pipeline import (
     PipelineError,
     detect_profile,
     select_profile,
+    validate_common_preferences,
 )
 
 
@@ -39,6 +40,7 @@ TODO_MARKER = "VIGERS_TODO"
 MANIFEST_FILENAME = "planning-manifest.json"
 HANDOFF_JSON = "planning-handoff.json"
 HANDOFF_MARKDOWN = "planning-handoff.md"
+APPROVAL_SUMMARY_MARKDOWN = "approval-summary.md"
 
 CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 SOURCE_ID_RE = re.compile(r"^SRC-[0-9]{3,4}$")
@@ -92,6 +94,7 @@ JSON_ARTIFACTS = (
     "bindings",
 )
 SNAPSHOT_ARTIFACTS = (*MARKDOWN_ARTIFACTS, *JSON_ARTIFACTS)
+OPTIONAL_SNAPSHOT_ARTIFACTS = ("approval_summary",)
 
 
 class PlanningError(RuntimeError):
@@ -173,8 +176,172 @@ def artifact_ready(path: Path) -> bool:
     return bool(text.strip()) and TODO_MARKER not in text
 
 
+def inline_text(value: Any) -> str:
+    """Keep generated approval prose single-line and inert as Markdown structure."""
+    if not isinstance(value, str):
+        return "unknown"
+    normalized = " ".join(value.split()).strip()
+    return normalized.replace("<", "&lt;").replace(">", "&gt;") or "unknown"
+
+
+def approval_summary_markdown(
+    plan_graph: dict[str, Any],
+    source_map: dict[str, Any],
+    *,
+    revision: int,
+) -> str:
+    """Build the exact human review projection from machine planning artifacts."""
+    preliminary = plan_graph.get("preliminary_requirements")
+    stories = (
+        preliminary.get("user_stories", [])
+        if isinstance(preliminary, dict)
+        else []
+    )
+    dod_items = (
+        preliminary.get("definition_of_done", [])
+        if isinstance(preliminary, dict)
+        else []
+    )
+
+    lines = [
+        f"# Согласование предварительного анализа — revision {revision}",
+        "",
+        "> Предварительные User Story и DoD — рабочие гипотезы по уже проверенным "
+        "источникам. Полный анализ может подтвердить, изменить, разделить, отклонить "
+        "или дополнить их. Согласование разрешает начать полный анализ и подтверждает "
+        "его направление, но не утверждает финальные US, требования, AC или DoD.",
+        "",
+        "## Предварительные User Story",
+        "",
+    ]
+    for index, story in enumerate(stories, start=1):
+        if not isinstance(story, dict):
+            continue
+        story_id = inline_text(story.get("id"))
+        refs = ", ".join(
+            f"`{inline_text(ref)}`" for ref in story.get("source_refs", [])
+        ) or "нет"
+        lines.extend(
+            [
+                f"{index}. **{story_id}.** Как {inline_text(story.get('actor'))}, "
+                f"я хочу {inline_text(story.get('goal'))}, чтобы "
+                f"{inline_text(story.get('benefit'))}.",
+                f"   Уверенность: `{inline_text(story.get('confidence'))}`. "
+                f"Источники: {refs}.",
+            ]
+        )
+    if not stories:
+        lines.append("Предварительные истории ещё не выявлены.")
+
+    lines.extend(["", "## Предварительный Definition of Done", ""])
+    for index, item in enumerate(dod_items, start=1):
+        if not isinstance(item, dict):
+            continue
+        item_id = inline_text(item.get("id"))
+        refs = ", ".join(
+            f"`{inline_text(ref)}`" for ref in item.get("source_refs", [])
+        ) or "нет"
+        lines.extend(
+            [
+                f"{index}. **{item_id}.** {inline_text(item.get('criterion'))}",
+                f"   Проверка: {inline_text(item.get('evidence'))}. "
+                f"Уверенность: `{inline_text(item.get('confidence'))}`. "
+                f"Источники: {refs}.",
+            ]
+        )
+    if not dod_items:
+        lines.append("Предварительный DoD ещё не выявлен.")
+
+    lines.extend(["", "## План полного анализа", ""])
+    stages = plan_graph.get("stages", [])
+    for index, stage in enumerate(stages, start=1):
+        if not isinstance(stage, dict):
+            continue
+        stage_id = inline_text(stage.get("id"))
+        dependencies = stage.get("depends_on", [])
+        depends_on = (
+            ", ".join(f"`{inline_text(item)}`" for item in dependencies)
+            if isinstance(dependencies, list) and dependencies
+            else "нет"
+        )
+        lines.extend(
+            [
+                f"{index}. **{stage_id} — {inline_text(stage.get('title'))}.** "
+                f"{inline_text(stage.get('outcome'))}",
+                f"   Зависит от: {depends_on}.",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Покрытие предварительного исследования",
+            "",
+            f"- Вердикт: `{inline_text(source_map.get('coverage_verdict'))}`.",
+        ]
+    )
+    gaps = source_map.get("gaps", [])
+    if isinstance(gaps, list) and gaps:
+        lines.append("- Известные пробелы:")
+        for gap in gaps:
+            if isinstance(gap, dict):
+                gap_text = json.dumps(gap, ensure_ascii=False, sort_keys=True)
+            else:
+                gap_text = str(gap)
+            lines.append(f"  - {inline_text(gap_text)}")
+    else:
+        lines.append("- Известные пробелы: нет.")
+
+    lines.extend(
+        [
+            "",
+            "## Что означает согласование",
+            "",
+            "- Можно начинать полный анализ по указанному плану и источникам.",
+            "- Предварительные истории остаются гипотезами до их проверки полным анализом.",
+            "- Существенное изменение направления или DAG потребует новой planning revision.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def refresh_approval_summary(root: Path, manifest: dict[str, Any]) -> None:
+    """Refresh the optional deterministic approval projection for new cases."""
+    artifacts = manifest.get("artifacts", {})
+    relative = artifacts.get("approval_summary") if isinstance(artifacts, dict) else None
+    if not isinstance(relative, str):
+        return
+    paths = artifact_paths(root, manifest)
+    plan_graph = read_json(paths["plan_graph"])
+    source_map = read_json(paths["source_map"])
+    atomic_text(
+        paths["approval_summary"],
+        approval_summary_markdown(
+            plan_graph,
+            source_map,
+            revision=manifest["revision"],
+        ),
+    )
+
+
 def event(kind: str, **details: Any) -> dict[str, Any]:
     return {"at": now_utc(), "kind": kind, **details}
+
+
+def validate_execution_preferences_snapshot(payload: Any) -> list[str]:
+    """Validate case-pinned optional capabilities without consulting live config."""
+    if payload is None:
+        return []
+    if not isinstance(payload, dict):
+        return ["execution_preferences must be an object"]
+    try:
+        validate_common_preferences(payload, Path("execution-preferences"))
+    except PipelineError as exc:
+        return [str(exc)]
+    if payload.get("history_scope") != "project-profile":
+        return ["execution_preferences history_scope must be project-profile"]
+    return []
 
 
 def init_case(
@@ -187,6 +354,7 @@ def init_case(
     passport_path: str | None,
     required_anchor_systems: list[str] | None = None,
     working_projection_policy: str = "optional",
+    execution_preferences: dict[str, Any] | None = None,
 ) -> None:
     if not CASE_ID_RE.fullmatch(case_id):
         raise PlanningError(f"Invalid planning case id: {case_id!r}")
@@ -194,6 +362,9 @@ def init_case(
         raise PlanningError(
             f"Invalid working projection policy: {working_projection_policy!r}"
         )
+    preference_errors = validate_execution_preferences_snapshot(execution_preferences)
+    if preference_errors:
+        raise PlanningError("; ".join(preference_errors))
     root = root.expanduser().resolve()
     manifest_path = root / MANIFEST_FILENAME
     if manifest_path.exists():
@@ -213,6 +384,10 @@ def init_case(
         "## Planning implications\n\nVIGERS_TODO\n",
     )
     write_template(root / "plan.md", "# Approved-work plan\n\nVIGERS_TODO\n")
+    write_template(
+        root / APPROVAL_SUMMARY_MARKDOWN,
+        "# Согласование предварительного анализа\n\nVIGERS_TODO\n",
+    )
     write_template(
         root / "handoff.md",
         "# Planning handoff\n\n"
@@ -258,13 +433,20 @@ def init_case(
         root / "artifact-plan.json",
         {"schema": SCHEMA_VERSION, "targets": anchor_targets},
     )
+    timing_policy = "required"
+    if execution_preferences is not None:
+        timing_policy = (
+            "measured"
+            if execution_preferences.get("automation_timing") == "enabled"
+            else "disabled"
+        )
     atomic_json(
         root / "plan.json",
         {
             "schema": PLAN_SCHEMA_VERSION,
             "revision": 1,
             "automation_estimation": {
-                "policy": "required",
+                "policy": timing_policy,
                 "metric": "wall_clock",
                 "unit": "seconds",
                 "execution_use": EXECUTION_USE,
@@ -320,6 +502,11 @@ def init_case(
         "project_root": project_root,
         "required_anchor_systems": normalized_anchor_systems,
         "working_projection_policy": working_projection_policy,
+        **(
+            {"execution_preferences": dict(execution_preferences)}
+            if execution_preferences is not None
+            else {}
+        ),
         "minimum_plan_schema": PLAN_SCHEMA_VERSION,
         "state": "intake",
         "revision": 1,
@@ -332,6 +519,7 @@ def init_case(
             "artifact_plan": "artifact-plan.json",
             "plan_graph": "plan.json",
             "plan_markdown": "plan.md",
+            "approval_summary": APPROVAL_SUMMARY_MARKDOWN,
             "bindings": "bindings.json",
             "handoff": "handoff.md",
         },
@@ -370,6 +558,12 @@ def artifact_paths(root: Path, manifest: dict[str, Any]) -> dict[str, Path]:
         if not isinstance(relative, str):
             raise PlanningError(f"Missing artifact path: {name}")
         paths[name] = case_file(root, relative)
+    for name in OPTIONAL_SNAPSHOT_ARTIFACTS:
+        relative = artifacts.get(name)
+        if relative is not None:
+            if not isinstance(relative, str):
+                raise PlanningError(f"Invalid optional artifact path: {name}")
+            paths[name] = case_file(root, relative)
     return paths
 
 
@@ -1012,6 +1206,9 @@ def validate_required_anchors(
 
 def validate_artifacts(root: Path, manifest: dict[str, Any], *, for_review: bool) -> list[str]:
     errors: list[str] = []
+    errors.extend(
+        validate_execution_preferences_snapshot(manifest.get("execution_preferences"))
+    )
     paths = artifact_paths(root, manifest)
     for name in MARKDOWN_ARTIFACTS:
         if name == "handoff" and not for_review:
@@ -1047,6 +1244,22 @@ def validate_artifacts(root: Path, manifest: dict[str, Any], *, for_review: bool
             ),
         )
     )
+    approval_summary = paths.get("approval_summary")
+    if for_review and approval_summary is not None:
+        if not artifact_ready(approval_summary):
+            errors.append(
+                f"{approval_summary.name} is missing or still a placeholder"
+            )
+        else:
+            expected_summary = approval_summary_markdown(
+                plan_graph,
+                source_map,
+                revision=manifest["revision"],
+            )
+            if approval_summary.read_text(encoding="utf-8") != expected_summary:
+                errors.append(
+                    f"{approval_summary.name} is stale or differs from plan.json"
+                )
     target_ids = {
         target.get("id")
         for target in artifact_plan.get("targets", [])
@@ -1144,10 +1357,12 @@ def transition(
         if read_json(paths["source_map"])["coverage_verdict"] == "blocked":
             raise PlanningError("Blocked source coverage cannot transition to researched")
     if new_state == "artifacts_planned":
+        refresh_approval_summary(root, manifest)
         errors = validate_artifacts(root, manifest, for_review=False)
         if errors:
             raise PlanningError("Invalid planning artifacts: " + "; ".join(errors))
     if new_state == "published_for_review":
+        refresh_approval_summary(root, manifest)
         errors = validate_artifacts(root, manifest, for_review=True)
         if errors:
             raise PlanningError("Planning case is not publishable: " + "; ".join(errors))
@@ -1506,6 +1721,11 @@ def build_handoff(root: Path, manifest: dict[str, Any]) -> tuple[dict[str, Any],
         "required_anchor_systems": manifest.get("required_anchor_systems", []),
         "passport": bindings["passport"],
         "automation_plan": automation_plan,
+        **(
+            {"execution_preferences": dict(manifest["execution_preferences"])}
+            if isinstance(manifest.get("execution_preferences"), dict)
+            else {}
+        ),
         "preliminary_requirements": (
             plan_graph.get("preliminary_requirements")
             if plan_graph.get("schema") in {
@@ -1563,6 +1783,11 @@ def validate_handoff(
         automation_errors = validate_automation_plan(automation_plan)
         if automation_errors:
             raise PlanningError("planning handoff automation plan invalid: " + "; ".join(automation_errors))
+    preference_errors = validate_execution_preferences_snapshot(
+        payload.get("execution_preferences")
+    )
+    if preference_errors:
+        raise PlanningError("planning handoff " + "; ".join(preference_errors))
     preliminary_requirements = payload.get("preliminary_requirements")
     if preliminary_requirements is not None:
         preliminary_errors = validate_preliminary_requirements(
@@ -1952,6 +2177,7 @@ def main() -> int:
                 passport_path=args.passport_path,
                 required_anchor_systems=list(selection.planning_anchors),
                 working_projection_policy=selection.working_projection,
+                execution_preferences=selection.execution_preferences.as_dict(),
             )
             print(f"PASS planning-case={args.case_id} state=intake")
             return 0

@@ -60,7 +60,12 @@
       "id": "AC-B01-001",
       "kind": "acceptance",
       "summary": "При успешном запросе объект доступен для чтения",
-      "source_refs": ["SRC-12"]
+      "source_refs": ["SRC-12"],
+      "verification_context": {
+        "kind": "ui-scenario",
+        "scenario_refs": ["SCN-B01-001"],
+        "surface": "Экран создания объекта"
+      }
     }
   ],
   "trace": [
@@ -87,6 +92,15 @@
 `from` уточняет, проверяет или выводится из `to`. Поэтому `AC → REQ`, а
 `REQ → SCN|RULE|GOAL|...`.
 
+Для новой `acceptance` definition обязателен `verification_context`. Он хранит
+`kind: ui-scenario|api|batch|system`, точные `scenario_refs` и подтверждённую
+проверяемую поверхность. Для UI это экран/точка входа; видимый маршрут остаётся
+в связанном сценарии и не копируется в каждое AC. Если сценария нет, контекст
+может хранить минимальный подтверждённый путь. Для API/batch/system указывается
+операция, endpoint, событие, job или файл без фиктивного экрана. Поле не заменяет
+trace `AC → REQ` и остаётся во внутренней IR; редактор проецирует его ссылкой или
+коротким reader-facing контекстом.
+
 Semantic index является внутренней богатой моделью. При `block-render` редактор
 проецирует только prefixes, объявленные profile публичными, и только смысл,
 который нужен читателю. Integrator не копирует весь `trace` в финальную таблицу:
@@ -108,6 +122,16 @@ Residual minor допустимы; для minor-only разрешён макси
 polish-pass на текущий gate. Повторное review после исправления должно быть
 точечным. Новый research открывается только для существенного finding с полями
 из `{baseDir}/references/convergence-contract.md`.
+
+Каждый завершённый локальный review сохраняется отдельной immutable revision.
+При accepted `blocker|major` координатор открывает `begin-remediation` с finding
+ID, evidence и затронутыми semantic IDs. Контекст повторного reviewer включает
+baseline block/index, finding evidence и ровно одну закреплённую revision
+предыдущего покрытия. Для `targeted-remediation` отчёт возвращает
+`review_scope`, точный `verified_findings` и `coverage_reused`; изменение
+необъявленного semantic ID блокируется машиной. Для смысловой переписи блока
+используется `full-block`, где `coverage_reused: none` и выполняется полный
+локальный review.
 
 ## Границы контекста
 

@@ -10,6 +10,9 @@ package и передаёт каждой роли только перечисл�
   "schema": 2,
   "case_id": "stable-id",
   "mode": "compact | block",
+  "assurance_level": "lite | standard | high",
+  "tracking": "off | milestones | fine",
+  "projection_sync": "milestones | per-block",
   "intent": "create | update | review | decompose | architecture",
   "profile_id": "generic-or-project-profile-id",
   "project_root": null,
@@ -38,6 +41,7 @@ package и передаёт каждой роли только перечисл�
   "kernel": {"path": "kernel.md", "revision": 1, "sha256": "..."},
   "artifacts": {
     "automation_timing": "automation-timing.json",
+    "agent_ledger": "agent-ledger.json",
     "planning_role_context": "planning-role-context.json",
     "working_projection": "working-projection.json"
   },
@@ -49,6 +53,8 @@ package и передаёт каждой роли только перечисл�
 `planning_handoff` обязателен для нового non-review case; review готового
 артефакта и старый runtime state могут содержать `null`. `mode_decision` и
 `method_context` могут быть `null` только у старого case.
+Execution policy отсутствует у legacy case; это означает прежний маршрут
+`high + fine + per-block`, а не новые defaults.
 Методический context материализуется до `init`, проверяется по канонической
 выжимке и затем используется как закреплённый snapshot: изменение любого из
 двух файлов ломает валидацию. `manifest.json` не содержит пароли, токены,
@@ -72,7 +78,10 @@ machine recheck предшествуют новому project-conformance review
 read-back updates. Каждый target содержит неизменяемый
 `evidence_kind: local_file|external_readback`. Update использует только semantic source `Bxx`, `draft` или
 `integration` и содержит `source_sha256`, `content_sha256`, `evidence_kind`,
-`evidence_ref`, `evidence_sha256` и `read_back_at`. Runtime `draft.md` и block artifacts остаются машинными
+`evidence_ref`, `evidence_sha256`, `read_back_at` и optional
+`source_bindings`. При совпадении последнего прочитанного content/evidence новый
+source добавляется в bindings без копии snapshot; A→B→A остаётся тремя
+изменениями. Runtime `draft.md` и block artifacts остаются машинными
 рабочими материалами и не доказывают, что пользователь видит результат.
 Рабочая проекция явно отличена от финальной публикации; непроверенные разделы
 не превращаются в утверждённые требования только потому, что записаны наружу.
@@ -97,6 +106,9 @@ read-back evidence.
 Аналогично `role-manifest.json` проецирует только mode/profile/method/kernel,
 семантические paths и gates; coordinator `manifest.json`, timing path, event log
 и fingerprint raw handoff ролям не передаются.
+Для нового case manifest также передаёт assurance/review strategy и точные
+`contract_inputs`; `agent-ledger.json` остаётся координаторским и в assignment
+не попадает.
 
 ## Planning handoff
 
@@ -196,6 +208,7 @@ revision и делает затронутые результаты stale.
 ## Атрибуты качества и ограничения
 ## Ошибки и восстановление
 ## Acceptance criteria
+## Матрица контекста проверки AC
 ## Definition of Done
 ## Разрешение planning-гипотез PUS/PDOD
 ## Граница решения и горизонт
@@ -215,6 +228,15 @@ Business context обязательно разделяет `подтвержде
 предполагаемые варианты, current scope, seams, deferred, expansion triggers и
 disposition planning probe. Координатор принимает финальный machine block в
 существующий `decisions.md`; отдельный boundary artifact не создаётся.
+
+Модель также содержит служебный `simplicity_authoring`: статус
+`clean|simplified|decision-required`, `root_owner`, выбранный уровень лестницы,
+результат protected-floor check, основания сохранённых спорных элементов,
+список удалённого/отложенного и применимые пределы
+`ceiling|revisit_trigger|upgrade_path`. Пределы проецируются в существующие
+`current_scope`, `extension_seams`, `deferred_variants` и `expansion_triggers`,
+а не создают новый публичный раздел. Служебный record доказывает нативное
+применение простоты, но не входит в читательскую постановку.
 
 Раздел выбора моделей содержит `diagram_gate` из
 `references/diagram-contract.md`: для каждой required surface — вопрос,
@@ -241,6 +263,10 @@ semantic index по `{baseDir}/references/block-contract.md`. Общие фак�
 - вопросы, которые меняют решение.
 - подтверждённый `solution_horizon`, оценку рисков particular-case и
   speculative-generalization, обязательные seams и evidence выбора.
+- `simplicity_authoring` со статусом, requirement/constraint refs для
+  сохранённых спорных механизмов, `root_owner`, `chosen_rung`, protected-floor
+  check, перечнем удалённого/отложенного и пределами
+  `ceiling|revisit_trigger|upgrade_path`;
 - уточнения diagram surfaces для границ, взаимодействий и данных, если
   архитектурное решение делает прежний diagram decision неполным. Архитектор не
   рисует финальный документ и не добавляет новый смысл через схему.
@@ -264,6 +290,9 @@ findings по той же классификации.
   prefixes, число слов, публичных определений и прямых trace edges;
 - разделение `acceptance_observable`, `acceptance_readiness` и
   `developer_self_check_omitted|normative_exception` с основанием исключения.
+- матрицу `AC → verification context`: точный scenario/branch link либо
+  подтверждённая UI/системная точка входа; она дополняет, а не заменяет
+  трассировку `AC → REQ`.
 
 В режиме `block-render` результат ограничен одним block artifact. В режиме
 `integrate` редактор возвращает полный draft и матрицу `block_id → место в
@@ -285,6 +314,7 @@ evidence: <source-or-internal-contradiction>
 impact: <practical-consequence>
 proposed_change: <minimal-correction>
 remediation: edit | targeted-research | user-decision
+delta_relation: introduced | exposed-at-changed-boundary | unrelated | null
 confidence: high | medium | low
 ```
 
@@ -292,6 +322,8 @@ confidence: high | medium | low
 `targeted-research` допустим только для `blocker|major` и дополняется
 `research_question`, `missing_evidence`, `target_sources` и `stop_condition` по
 `references/convergence-contract.md`. `minor` не переоткрывает research.
+`delta_relation` обязателен только в targeted remediation. `unrelated` сохраняет
+наблюдение, но не открывает новый автоматический rework текущего finding.
 
 Режимы reviewer:
 

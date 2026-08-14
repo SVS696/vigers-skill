@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import tomllib
@@ -13,8 +14,12 @@ from pathlib import Path
 
 from document_conformance import DocumentContractError, build_profile_contract
 from mode_decision import (
+    ASSURANCE_LEVELS,
+    CHANGE_SCOPES,
     MODE_DECISION_FILENAME,
+    PROJECTION_SYNC_POLICIES,
     SURFACES,
+    TRACKING_POLICIES,
     ModeDecisionError,
     build_mode_decision,
 )
@@ -27,6 +32,13 @@ PROJECT_PROFILE_RELATIVE = Path(".vigers") / "profile.md"
 PROFILE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 WORKING_PROJECTION_POLICIES = {"required", "optional", "disabled"}
 PROJECTION_EVIDENCE_KINDS = {"local_file", "external_readback"}
+PREFERENCES_SCHEMA = 1
+AUTOMATION_TIMING_POLICIES = {"enabled", "disabled"}
+TIMING_PROJECTION_POLICIES = {"none", "task-note"}
+PROGRESS_PROJECTION_POLICIES = {"none", "checklist"}
+TIMING_HISTORY_POLICIES = {"none", "passport"}
+PROFILE_INHERIT = "inherit"
+TASK_MANAGER_RE = re.compile(r"^(?:none|[a-z][a-z0-9_-]{0,63})$")
 REQUIRED_PROFILE_HEADINGS = (
     "## Область",
     "## Канонические источники",
@@ -88,6 +100,14 @@ REQUIRED_PROMPT_EVALS = (
     "evals/prompt-cookbook/diagram-render-lifecycle-barrier.json",
     "evals/prompt-cookbook/reader-projection-barrier.json",
     "evals/prompt-cookbook/user-journey-screen-context-barrier.json",
+    "evals/prompt-cookbook/acceptance-verification-context-barrier.json",
+    "evals/prompt-cookbook/standard-combined-final-review.json",
+    "evals/prompt-cookbook/high-layered-review.json",
+    "evals/prompt-cookbook/nonsemantic-change-no-rereview.json",
+    "evals/prompt-cookbook/targeted-remediation-preserves-coverage.json",
+    "evals/prompt-cookbook/human-only-timing-boundary.json",
+    "evals/prompt-cookbook/native-simplicity-with-control.json",
+    "evals/prompt-cookbook/process-yagni-no-new-gate.json",
 )
 PUBLIC_FORBIDDEN_MARKERS = tuple(
     "".join(parts) for parts in (("R", "TL"), ("H", "ÆZE"), ("HA", "EZE"))
@@ -100,6 +120,34 @@ class PipelineError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ExecutionPreferences:
+    """Effective optional telemetry and personal task-manager capabilities."""
+
+    automation_timing: str
+    timing_model: str
+    progress_tracking: str
+    task_manager: str
+    timing_projection: str
+    timing_history: str
+    progress_projection: str
+    source: str
+
+    def as_dict(self) -> dict[str, str | int]:
+        return {
+            "schema": PREFERENCES_SCHEMA,
+            "automation_timing": self.automation_timing,
+            "timing_model": self.timing_model,
+            "progress_tracking": self.progress_tracking,
+            "task_manager": self.task_manager,
+            "timing_projection": self.timing_projection,
+            "timing_history": self.timing_history,
+            "progress_projection": self.progress_projection,
+            "history_scope": "project-profile",
+            "source": self.source,
+        }
+
+
+@dataclass(frozen=True)
 class ProfileSelection:
     profile_id: str
     profile_path: Path
@@ -107,7 +155,181 @@ class ProfileSelection:
     source: str
     planning_anchors: tuple[str, ...]
     working_projection: str
+    execution_preferences: ExecutionPreferences
     document_contract: dict[str, object] | None
+
+
+DEFAULT_EXECUTION_PREFERENCES = ExecutionPreferences(
+    automation_timing="disabled",
+    timing_model="disabled",
+    progress_tracking="fine",
+    task_manager="none",
+    timing_projection="none",
+    timing_history="none",
+    progress_projection="none",
+    source="package-default",
+)
+
+
+def common_preferences_path() -> Path:
+    """Return the optional user-owned common Vigers preferences path."""
+    override = os.environ.get("VIGERS_PREFERENCES")
+    if override:
+        return Path(override).expanduser()
+    return Path.home() / ".config" / "vigers" / "preferences.json"
+
+
+def validate_common_preferences(payload: object, source: Path) -> ExecutionPreferences:
+    """Validate one provider-neutral common preferences file."""
+    if not isinstance(payload, dict) or payload.get("schema") != PREFERENCES_SCHEMA:
+        raise PipelineError(f"{source}: preferences schema must be {PREFERENCES_SCHEMA}")
+    automation_timing = payload.get("automation_timing")
+    timing_model = payload.get("timing_model", "disabled")
+    progress_tracking = payload.get("progress_tracking")
+    task_manager = payload.get("task_manager")
+    timing_projection = payload.get("timing_projection")
+    timing_history = payload.get("timing_history", "none")
+    progress_projection = payload.get("progress_projection")
+    if automation_timing not in AUTOMATION_TIMING_POLICIES:
+        raise PipelineError(f"{source}: invalid automation_timing")
+    if timing_model not in AUTOMATION_TIMING_POLICIES:
+        raise PipelineError(f"{source}: invalid timing_model")
+    if progress_tracking not in TRACKING_POLICIES:
+        raise PipelineError(f"{source}: invalid progress_tracking")
+    if not isinstance(task_manager, str) or not TASK_MANAGER_RE.fullmatch(task_manager):
+        raise PipelineError(f"{source}: invalid task_manager")
+    if timing_projection not in TIMING_PROJECTION_POLICIES:
+        raise PipelineError(f"{source}: invalid timing_projection")
+    if timing_history not in TIMING_HISTORY_POLICIES:
+        raise PipelineError(f"{source}: invalid timing_history")
+    if progress_projection not in PROGRESS_PROJECTION_POLICIES:
+        raise PipelineError(f"{source}: invalid progress_projection")
+    if automation_timing == "disabled" and timing_projection != "none":
+        raise PipelineError(
+            f"{source}: disabled automation timing cannot have a timing projection"
+        )
+    if automation_timing == "disabled" and timing_model != "disabled":
+        raise PipelineError(
+            f"{source}: timing model requires automation timing"
+        )
+    if automation_timing == "disabled" and timing_history != "none":
+        raise PipelineError(f"{source}: timing history requires automation timing")
+    if task_manager == "none" and (
+        timing_projection != "none" or progress_projection != "none"
+    ):
+        raise PipelineError(
+            f"{source}: task-manager projections require a configured provider"
+        )
+    return ExecutionPreferences(
+        automation_timing=automation_timing,
+        timing_model=timing_model,
+        progress_tracking=progress_tracking,
+        task_manager=task_manager,
+        timing_projection=timing_projection,
+        timing_history=timing_history,
+        progress_projection=progress_projection,
+        source=str(source),
+    )
+
+
+def load_common_preferences(path: Path | None = None) -> ExecutionPreferences:
+    """Load optional user common preferences without making them package policy."""
+    source = path or common_preferences_path()
+    if not source.exists():
+        return DEFAULT_EXECUTION_PREFERENCES
+    try:
+        payload = json.loads(source.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise PipelineError(f"{source}: invalid preferences JSON") from exc
+    return validate_common_preferences(payload, source)
+
+
+def resolve_execution_preferences(
+    metadata: dict[str, str],
+    source: Path,
+    common: ExecutionPreferences,
+) -> ExecutionPreferences:
+    """Apply scalar project overrides to user common preferences."""
+    values = common.as_dict()
+    allowed = {
+        "automation_timing": AUTOMATION_TIMING_POLICIES,
+        "timing_model": AUTOMATION_TIMING_POLICIES,
+        "progress_tracking": TRACKING_POLICIES,
+        "timing_projection": TIMING_PROJECTION_POLICIES,
+        "timing_history": TIMING_HISTORY_POLICIES,
+        "progress_projection": PROGRESS_PROJECTION_POLICIES,
+    }
+    for field, choices in allowed.items():
+        raw = metadata.get(field, PROFILE_INHERIT).strip().casefold() or PROFILE_INHERIT
+        if raw != PROFILE_INHERIT and raw not in choices:
+            raise PipelineError(
+                f"{source}: {field} must be inherit or one of {', '.join(sorted(choices))}"
+            )
+        if raw != PROFILE_INHERIT:
+            values[field] = raw
+    task_manager = metadata.get("task_manager", PROFILE_INHERIT).strip().casefold()
+    task_manager = task_manager or PROFILE_INHERIT
+    if task_manager != PROFILE_INHERIT:
+        if not TASK_MANAGER_RE.fullmatch(task_manager):
+            raise PipelineError(f"{source}: invalid task_manager")
+        values["task_manager"] = task_manager
+
+    explicit_timing_projection = metadata.get("timing_projection", PROFILE_INHERIT)
+    explicit_timing_history = metadata.get("timing_history", PROFILE_INHERIT)
+    explicit_progress_projection = metadata.get("progress_projection", PROFILE_INHERIT)
+    if values["automation_timing"] == "disabled":
+        explicit_timing_model = metadata.get("timing_model", PROFILE_INHERIT)
+        if explicit_timing_model.strip().casefold() not in {
+            "",
+            PROFILE_INHERIT,
+            "disabled",
+        }:
+            raise PipelineError(
+                f"{source}: timing model requires automation timing"
+            )
+        values["timing_model"] = "disabled"
+        if explicit_timing_projection.strip().casefold() not in {"", PROFILE_INHERIT, "none"}:
+            raise PipelineError(
+                f"{source}: disabled automation timing cannot project timing"
+            )
+        values["timing_projection"] = "none"
+        if explicit_timing_history.strip().casefold() not in {"", PROFILE_INHERIT, "none"}:
+            raise PipelineError(f"{source}: timing history requires automation timing")
+        values["timing_history"] = "none"
+    if values["task_manager"] == "none":
+        if explicit_timing_projection.strip().casefold() not in {"", PROFILE_INHERIT, "none"}:
+            raise PipelineError(f"{source}: timing projection requires a task manager")
+        if explicit_progress_projection.strip().casefold() not in {
+            "",
+            PROFILE_INHERIT,
+            "none",
+        }:
+            raise PipelineError(f"{source}: progress projection requires a task manager")
+        values["timing_projection"] = "none"
+        values["progress_projection"] = "none"
+    return ExecutionPreferences(
+        automation_timing=str(values["automation_timing"]),
+        timing_model=str(values["timing_model"]),
+        progress_tracking=str(values["progress_tracking"]),
+        task_manager=str(values["task_manager"]),
+        timing_projection=str(values["timing_projection"]),
+        timing_history=str(values["timing_history"]),
+        progress_projection=str(values["progress_projection"]),
+        source=(
+            f"{common.source}+{source}"
+            if any(metadata.get(field, PROFILE_INHERIT).strip() not in {"", PROFILE_INHERIT}
+                   for field in (
+                       "automation_timing",
+                       "timing_model",
+                       "progress_tracking",
+                       "task_manager",
+                       "timing_projection",
+                       "timing_history",
+                       "progress_projection",
+                   ))
+            else common.source
+        ),
+    )
 
 
 def safe_file(relative: str) -> Path:
@@ -198,6 +420,9 @@ def validate_profile_text(
         raise PipelineError(f"{source}: project profile cannot shadow generic")
     parse_planning_anchors(metadata, source)
     parse_working_projection(metadata, source)
+    # Profile syntax is validated against portable package defaults.  Live
+    # user preferences are deliberately not consulted by package validation.
+    resolve_execution_preferences(metadata, source, DEFAULT_EXECUTION_PREFERENCES)
     try:
         build_profile_contract(
             metadata,
@@ -235,6 +460,7 @@ def read_project_profile(root: Path) -> ProfileSelection | None:
         "project",
         parse_planning_anchors(metadata, candidate),
         parse_working_projection(metadata, candidate),
+        resolve_execution_preferences(metadata, candidate, load_common_preferences()),
         build_profile_contract(
             metadata,
             profile_id=profile_id,
@@ -265,6 +491,11 @@ def detect_profile(cwd: Path) -> ProfileSelection:
         "generic",
         parse_planning_anchors(metadata, GENERIC_PROFILE_PATH),
         parse_working_projection(metadata, GENERIC_PROFILE_PATH),
+        resolve_execution_preferences(
+            metadata,
+            GENERIC_PROFILE_PATH,
+            load_common_preferences(),
+        ),
         build_profile_contract(
             metadata,
             profile_id=profile_id,
@@ -287,6 +518,11 @@ def select_profile(requested_id: str, cwd: Path) -> ProfileSelection:
             "generic",
             parse_planning_anchors(metadata, GENERIC_PROFILE_PATH),
             parse_working_projection(metadata, GENERIC_PROFILE_PATH),
+            resolve_execution_preferences(
+                metadata,
+                GENERIC_PROFILE_PATH,
+                load_common_preferences(),
+            ),
             build_profile_contract(
                 metadata,
                 profile_id=profile_id,
@@ -371,10 +607,12 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
                 if not isinstance(parsed.get(field), str) or not parsed[field].strip():
                     errors.append(f"{codex_relative}: missing string field {field}")
             instructions = parsed.get("developer_instructions", "")
-            for reference in (
-                *REQUIRED_AGENT_REFERENCES,
-                *ROLE_SPECIFIC_AGENT_REFERENCES.get(contract, ()),
-            ):
+            expected_references = (
+                (*REQUIRED_AGENT_REFERENCES, *ROLE_SPECIFIC_AGENT_REFERENCES.get(contract, ()))
+                if contract == "planner"
+                else (f"agents/contracts/{contract}.md", "contract_inputs")
+            )
+            for reference in expected_references:
                 if reference not in instructions:
                     errors.append(f"{codex_relative}: missing agent reference {reference}")
         except (PipelineError, tomllib.TOMLDecodeError) as exc:
@@ -388,10 +626,12 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             for field in ("name:", "description:", "tools:"):
                 if field not in claude_text:
                     errors.append(f"{claude_relative}: missing frontmatter field {field}")
-            for reference in (
-                *REQUIRED_AGENT_REFERENCES,
-                *ROLE_SPECIFIC_AGENT_REFERENCES.get(contract, ()),
-            ):
+            expected_references = (
+                (*REQUIRED_AGENT_REFERENCES, *ROLE_SPECIFIC_AGENT_REFERENCES.get(contract, ()))
+                if contract == "planner"
+                else (f"agents/contracts/{contract}.md", "contract_inputs")
+            )
+            for reference in expected_references:
                 if reference not in claude_text:
                     errors.append(f"{claude_relative}: missing agent reference {reference}")
         except PipelineError as exc:
@@ -445,11 +685,14 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
         "references/block-contract.md",
         "references/requirements-method.md",
         "references/planning-contract.md",
+        "references/runtime-preferences.md",
+        "references/automation-timing.md",
         "references/convergence-contract.md",
         "references/reader-projection-contract.md",
         "scripts/mode_decision.py",
         "scripts/planning_case.py",
         "scripts/case_pipeline.py",
+        "scripts/timing_model.py",
         "scripts/install.py",
     )
     for relative in required_files:
@@ -471,6 +714,8 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/references/block-contract.md",
             "{baseDir}/references/convergence-contract.md",
             "{baseDir}/references/reader-projection-contract.md",
+            "{baseDir}/references/runtime-preferences.md",
+            "{baseDir}/references/automation-timing.md",
             "{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json",
             "{baseDir}/evals/prompt-cookbook/early-working-projection.json",
             "{baseDir}/evals/prompt-cookbook/live-checklist-completion-barrier.json",
@@ -479,8 +724,12 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/evals/prompt-cookbook/traceability-link-barrier.json",
             "{baseDir}/evals/prompt-cookbook/reader-projection-barrier.json",
             "{baseDir}/evals/prompt-cookbook/user-journey-screen-context-barrier.json",
+            "{baseDir}/evals/prompt-cookbook/acceptance-verification-context-barrier.json",
+            "{baseDir}/evals/prompt-cookbook/human-only-timing-boundary.json",
+            "{baseDir}/evals/prompt-cookbook/targeted-remediation-preserves-coverage.json",
             "{baseDir}/scripts/spec_pipeline.py",
             "{baseDir}/scripts/case_pipeline.py",
+            "{baseDir}/scripts/timing_model.py",
         ):
             if link not in skill_text:
                 errors.append(f"SKILL.md missing link: {link}")
@@ -545,6 +794,29 @@ def build_parser() -> argparse.ArgumentParser:
     suggest_parser.add_argument("--project-trigger", action="append", default=[])
     suggest_parser.add_argument("--requested-mode", choices=("compact", "block"))
     suggest_parser.add_argument(
+        "--change-scope",
+        choices=sorted(CHANGE_SCOPES),
+        default="semantic-local",
+    )
+    suggest_parser.add_argument("--public-contract", action="store_true")
+    suggest_parser.add_argument("--data-migration", action="store_true")
+    suggest_parser.add_argument("--security-or-permissions", action="store_true")
+    suggest_parser.add_argument("--cross-service", action="store_true")
+    suggest_parser.add_argument("--irreversible", action="store_true")
+    suggest_parser.add_argument("--compliance", action="store_true")
+    suggest_parser.add_argument(
+        "--requested-assurance",
+        choices=sorted(ASSURANCE_LEVELS),
+    )
+    suggest_parser.add_argument(
+        "--requested-tracking",
+        choices=sorted(TRACKING_POLICIES),
+    )
+    suggest_parser.add_argument(
+        "--requested-projection-sync",
+        choices=sorted(PROJECTION_SYNC_POLICIES),
+    )
+    suggest_parser.add_argument(
         "--write",
         help=f"Create <case-root>/{MODE_DECISION_FILENAME} without overwriting it",
     )
@@ -571,6 +843,7 @@ def main() -> int:
                 ),
                 "planning_anchors": list(selection.planning_anchors),
                 "working_projection": selection.working_projection,
+                "execution_preferences": selection.execution_preferences.as_dict(),
                 "document_contract": selection.document_contract,
             }
             if args.json:
@@ -603,6 +876,20 @@ def main() -> int:
                 unsafe_single_pass=args.unsafe_single_pass,
                 project_triggers=args.project_trigger,
                 requested_mode=args.requested_mode,
+                change_scope=args.change_scope,
+                public_contract=args.public_contract,
+                data_migration=args.data_migration,
+                security_or_permissions=args.security_or_permissions,
+                cross_service=args.cross_service,
+                irreversible=args.irreversible,
+                compliance=args.compliance,
+                requested_assurance=args.requested_assurance,
+                requested_tracking=(
+                    args.requested_tracking
+                    if args.requested_tracking is not None
+                    else selection.execution_preferences.progress_tracking
+                ),
+                requested_projection_sync=args.requested_projection_sync,
             )
             if args.write:
                 write_mode_decision(Path(args.write), payload)

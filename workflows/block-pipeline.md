@@ -31,7 +31,10 @@ automation stage.
 `automation_timing.py start`; после exit criteria и проверки — `stop --status
 completed`. Не создавай отдельный таймер на каждый `Bxx`, если planning stage не
 делит их явно. При terminal failure используй `failed|blocked|cancelled` с
-причиной. Полный контракт: `{baseDir}/references/automation-timing.md`.
+причиной. При паузе пользователя, исчерпании лимита, внешнем ожидании или
+interruption вызови `pause --reason ...`, затем `resume`; active исключает паузу,
+elapsed включает её. При timing disabled команды сохраняют progress без
+длительностей. Полный контракт: `{baseDir}/references/automation-timing.md`.
 
 Перед содержательной работой вызови `automation_timing.py begin` для выбранного
 `Pxx-Cxx`; порядок списка не является dependency. Если другой item уже
@@ -57,9 +60,10 @@ pending или `in_progress` обязательный пункт.
    открытые решения.
 4. Не превращай kernel в сокращённую постановку. Детали одного блока остаются
    в его артефакте.
-5. После любого изменения kernel выполни `refresh-kernel`. Без `--affects`
-   безопасно устаревают все начатые блоки; с `--affects Bxx` — выбранные и их
-   транзитивные потребители.
+5. После изменения kernel выполни `refresh-kernel` с обязательным
+   `--change-scope`. Для `semantic-local` укажи seed через `--affects`; для
+   `semantic-crosscutting|architecture` используй явный `--invalidate-all`.
+   Пустой selector запрещён; незатронутые блоки carry-forward на новый hash.
 6. Зафиксируй гейт `evidence` только после проверки источников.
 
 После закрытия evidence/coverage не запускай новый общий research. Дополнительный
@@ -98,14 +102,20 @@ case-root и свежих block contexts.
 Для каждого доступного блока:
 
 1. Переведи `planned → ready → in_progress`.
-2. Получи допустимый набор входов командой `context --role system-analyst`.
+2. Получи допустимый набор входов командой `context --role system-analyst
+   --contract-surface solution-boundary --contract-surface diagram
+   --contract-surface reader-projection`.
 3. Запусти новый `vigers-system-analyst` только на этот блок.
 4. Сохрани смысловую модель в `blocks/Bxx.md`, а определения и трассировку — в
    `blocks/Bxx.index.json` по block-контракту.
-5. Сохрани локальные решения `diagram_gate` блока: вопрос, представление,
+5. Проверь `simplicity_authoring`: спорные сущности, статусы, настройки, поля,
+   access dimensions и варианты имеют текущие semantic refs; зафиксированы
+   `root_owner`, `chosen_rung`, protected-floor check и применимые пределы;
+   необоснованное удалено или отложено без потери доказанной seam.
+6. Сохрани локальные решения `diagram_gate` блока: вопрос, представление,
    source IDs и декомпозицию. Не проектируй общую «карту всего документа» из
    одного блока.
-6. Оставь блок в `in_progress` до block-render: kernel snapshot фиксируется
+7. Оставь блок в `in_progress` до block-render: kernel snapshot фиксируется
    только после последней авторской правки блока.
 
 Независимые блоки можно запускать параллельно ограниченными пакетами. Блоки с
@@ -120,13 +130,19 @@ case-root и свежих block contexts.
 
 **Вход:** `in_progress` block с моделью/index и сработавший архитектурный гейт.
 
-1. Если блок вводит архитектурное решение, запусти отдельный architect `design`
-   и внеси принятое ограничение в `decisions.md`; при глобальном инварианте
+1. Если блок вводит архитектурное решение, получи `context --role
+   solution-architect --role-mode design --contract-surface solution-boundary
+   --contract-surface diagram --contract-surface reader-projection` и запусти
+   отдельный architect; внеси принятое ограничение в `decisions.md`. При глобальном инварианте
    обнови kernel и выполни `refresh-kernel`.
    Горизонты `tactical` и `generalized-capability` также требуют этого gate;
    обычный `bounded-systemic` без других triggers — нет.
-2. Запусти editor в режиме `block-render`: он оформляет только данный блок и не
-   собирает финальный документ.
+   До принятия design note проверь его `simplicity_authoring`: у каждого нового
+   механизма есть текущий requirement/constraint ref, выбранный уровень
+   лестницы, protected-floor check и применимый предел, иначе он удалён/отложен.
+2. Получи `context --role spec-editor --role-mode block-render
+   --contract-surface diagram --contract-surface reader-projection` и запусти
+   editor: он оформляет только данный блок и не собирает финальный документ.
 3. Не позволяй редактору создавать определения, которых нет в semantic index.
 4. Если у блока есть required-диаграмма, редактор создаёт её как локальную
    derived view, связывает с source IDs и возвращает working source. QA следует
@@ -143,24 +159,39 @@ case-root и свежих block contexts.
 **Вход:** block artifact, index, kernel, закреплённый method context, evidence и
 зависимости.
 
-1. Получи набор входов командой `context --role spec-reviewer`.
-2. Запусти новый reviewer в режиме `block` без авторских рассуждений и прошлых
-   findings.
+1. В `high` каждый блок требует fresh reviewer. В `standard` запускай его только
+   для публичного контракта, migration/data, permissions/security, architecture,
+   cross-service связи или неопределённого владельца. Для прочих блоков сохрани
+   machine attestation `review_requirement: not-required`, не изображая PASS.
+2. Для review получи `context --role spec-reviewer --role-mode block` с
+   применимыми `--contract-surface` и запусти fresh reviewer без истории автора.
 3. Для локальной required-диаграммы проверь соответствие semantic index и
    читаемость пробного render; не требуй межблочную обзорную схему раньше
    интеграции.
 4. Сохрани findings или явный `PASS` в `reviews/Bxx.md`; отчёт обязан содержать
    reported counts, `research_reopen` и `gate_recommendation`. Disposition и open
    counts координатор фиксирует отдельно.
-5. Для открытых принятых `blocker/major` переведи блок `analyzed|reviewed →
-   in_progress`, исправь его точечно новым editor, снова переведи в `analyzed`,
-   затем повтори только локальный reviewer. Полный pipeline не перезапускай.
+5. Для открытых принятых `blocker/major` сначала вызови `begin-remediation`:
+   укажи стабильные finding IDs, evidence и точные semantic IDs. Обычный откат
+   проверенного блока в `in_progress` запрещён, потому что он теряет прежнее
+   покрытие. Исправь bounded delta новым editor, снова переведи блок в
+   `analyzed`, затем вызови reviewer с `review_scope: targeted-remediation`.
+   Reviewer получает immutable baseline/finding/coverage, проверяет finding и
+   прямые регрессии и не открывает неизменённые поверхности заново.
+   Если исправление переписывает смысл блока, меняет необъявленные IDs, цель,
+   scope, публичный контракт или сквозную логику, перезапусти remediation с
+   `--full-block` и выполни полный локальный и применимые whole-case review.
 6. При minor-only выполни не более одного пакетного polish-pass для этого review
    gate либо запиши остаток как `residual`; новый полный reviewer не запускай.
 7. Если тот же `blocker/major` остался после двух точечных циклов, верни
    `user-decision`. Иначе переведи блок в `reviewed`, когда открытых принятых
    `blocker/major` нет; residual minor переход не блокируют.
-8. Сразу после `reviewed` проецируй принятый block-render во все обязательные
+   Новый finding открывает следующий цикл только с `delta_relation:
+   introduced|exposed-at-changed-boundary`; несвязанное наблюдение сохрани
+   отдельно и не превращай в автоматический общий аудит.
+8. При `projection_sync=per-block` сразу после `reviewed` проецируй block-render.
+   При `milestones` пропусти Bxx-update: следующий read-back — после интеграции.
+   В per-block проецируй принятый block-render во все обязательные
    working targets. Сохрани уже показанные разделы, добавь или обнови только
    затронутый смысл, а будущие разделы пометь как непроверенные. Выполни
    read-back и `projection-update --source Bxx`: `local_file` проверяется по
@@ -174,18 +205,24 @@ case-root и свежих block contexts.
 
 **Вход:** все обязательные блоки в `reviewed` и один проектный шаблон.
 
-1. Запусти editor в режиме `integrate` в новом контексте.
+1. Получи `context --role spec-editor --role-mode integrate --contract-surface
+   diagram --contract-surface reader-projection` без `--block` и запусти editor
+   в новом контексте.
 2. Передай kernel, все block artifacts/indexes, решения и проектный шаблон; не
    передавай историю рассуждений.
 3. Собери `draft.md`: один факт в одном месте, ссылки между разделами вместо
-   копий, идентификаторы и смысл сохранены.
+   копий, идентификаторы и смысл сохранены. Не возвращай элементы, удалённые или
+   отложенные принятыми `simplicity_authoring` решениями блоков/архитектора.
 4. Примени `references/reader-projection-contract.md`: не переноси внутренние
    IDs/runtime-артефакты, разверни публичные references в точные локальные
    ссылки, оставь только прямые trace edges и отдели AC/DoD от developer
    self-check. Для UI-сценария сохрани экран входа; путь добавляй, только если
    source описывает навигацию, и не реконструируй его для уже открытого экрана.
    Явно назови новую поверхность при переходе, сопоставь видимые подписи полей
-   с technical IDs и не повторяй полный путь, пока экран не меняется.
+   с technical IDs и не повторяй полный путь, пока экран не меняется. Каждый UI
+   AC напрямую ссылается на точный сценарий/ветвь с этим контекстом либо содержит
+   подтверждённые экран/точку входа и минимальный маршрут; API-, batch- и
+   system-only AC называют сценарий или системную точку входа без фиктивного UI.
 5. Проверь, что ни один публичный semantic ID не потерян и не появился без определения.
 6. Консолидируй diagram surfaces всех блоков. Удали дубли, но не теряй вопросы;
    добавь обзорную схему только если без неё межблочные связи приходится
@@ -206,11 +243,26 @@ case-root и свежих block contexts.
 2. До reviewer pass выполни profile document check читательской проекции.
    Исправь внутренние ID, plain/compressed/dangling references и только затем
    переходи к дорогим независимым проходам.
-3. Исправь дубликаты ID, неразрешённые ссылки, stale-блоки и разрывы
+3. Проверь единый boundary на `particular-case` и
+   `speculative-generalization`, затем независимо от profile выполни ровно один
+   полный `simplicity-spec` по интегрированному решению. Запиши
+   `clean|corrected|decision-required` как evidence существующего
+   `author_passes`; не создавай роль или отдельный gate. В статусе/выдаче
+   покажи человеку итог одной строкой, а для `corrected` — короткую дельту; в
+   постановку служебный отчёт не переноси.
+4. Finding по требованиям верни владельцу semantic block, архитектурный —
+   архитектору; editor только проецирует принятую bounded дельту. Не открывай
+   общий research и не обнуляй локальные reviews. После собственной коррекции
+   второй полный simplicity-pass не нужен; позднее проверяй только дельту,
+   которая вводит новый элемент решения. Изменение бизнес-смысла, scope,
+   публичного контракта или канона требует `decision-required`.
+5. Исправь дубликаты ID, неразрешённые ссылки, stale-блоки и разрывы
    `REQ ↔ AC`.
-4. Сверь матрицу диаграмм: каждый указанный source ID существует, а каждый
+6. Сверь матрицу диаграмм: каждый указанный source ID существует, а каждый
    required-вопрос имеет определённое размещение и render target.
-5. Повторяй ту же команду до `PASS`; не закрывай гейт вручную.
+7. После принятой simplicity-дельты и остальных исправлений повторяй только
+   deterministic checks до `PASS`; не запускай второй полный control и не
+   закрывай гейт вручную.
 
 **Выход:** gate `consistency=pass`, структура и трассировка непротиворечивы.
 
@@ -218,7 +270,8 @@ case-root и свежих block contexts.
 
 **Вход:** draft после consistency-check и все block indexes.
 
-1. Запусти reviewer в режиме `integration`.
+1. В `high` запусти reviewer `integration`. В `standard` пометь gate
+   `not_required`: межблочная проверка входит в единый `final` pass.
 2. Проверь противоречия между блоками, разные значения одного термина,
    переходы состояний, владельцев данных, сквозные ошибки и сохранность scope.
 3. Проверь, что diagram surfaces не конфликтуют между блоками и что выбранная
@@ -232,6 +285,11 @@ case-root и свежих block contexts.
 7. После точечного исправления повторяй только затронутый semantic/project/
    diagram gate. Полный integration/global review нужен лишь при изменении цели,
    границы, публичного контракта или сквозной логики.
+8. Если correction осталась targeted, после свежих integration/author/machine
+   checks и projection read-back вызови `record-remediation`. Команда создаёт
+   audit receipts и переносит прежнее whole-case review coverage на новый
+   subject. При full-block/crosscutting delta перенос запрещён и нужен свежий
+   полный gate.
 
 **Выход:** документ сшит семантически, а не только редакционно.
 
@@ -239,10 +297,12 @@ case-root и свежих block contexts.
 
 **Вход:** интегрированный draft.
 
-1. Выполни профильные author gates в заданном порядке.
-2. До simplicity-pass проверь принятый boundary на `particular-case` и
-   `speculative-generalization`; не удаляй доказанную seam как «лишнюю».
-3. После правок снова выполни consistency-check.
+1. Выполни оставшиеся профильные author gates в заданном порядке. Полный
+   simplicity-control уже выполнен до integration review; повторно его не
+   запускай.
+2. Не удаляй доказанную seam как «лишнюю» и не возвращай отложенный обвес.
+3. После правок снова выполни consistency-check; если правка вводит новый
+   элемент решения, проверь только её simplicity-delta.
 4. Отрендери все required-диаграммы способом текущей стадии из profile
    `diagram_delivery` и прочитай фактические изображения на целевой ширине. До
    явного publication gate не создавай persistent publication render/source.
@@ -250,8 +310,10 @@ case-root и свежих block contexts.
    неразличимые подписи и перегрузку через декомпозицию, а не уменьшение шрифта.
 5. Зафиксируй `author_passes` только после machine validation единого
    solution-boundary блока.
-6. Запусти новый reviewer в режиме `global` на готовом документе, kernel,
-   evidence и indexes. Не передавай локальные review reports.
+6. В `high` запусти reviewer `global`. В `standard` запусти один reviewer
+   `final` с `covered_gates: [integration_review, global_review,
+   project_conformance]`, integration scope и применимыми project surfaces. Не
+   передавай прошлые reports.
 7. Сохрани итог в `reviews/global.md`; зафиксируй `global_review` только после
    закрытия открытых принятых `blocker/major`. Minor-only замечания не запускают
    второй полный global review после единственного polish-pass.
@@ -263,7 +325,9 @@ case-root и свежих block contexts.
 **Вход:** готовый draft, проектный профиль и только применимые источники
 соглашений.
 
-1. Запусти новый reviewer в режиме `project-conformance`.
+1. В `high` запусти reviewer `project-conformance`. В `standard` используй тот
+   же immutable `final` report только при явном `project_conformance` в
+   `covered_gates` и полной surface matrix. Machine check обязателен всегда.
 2. Проверь API-пути/HTTP, identifiers/casing, темы/сигналы, терминологию,
    frontmatter, шаблон, ссылки, файлы, формат публикации диаграмм и иные правила
    профиля.
@@ -298,6 +362,17 @@ case-root и свежих block contexts.
 1. Проверь нулевые `open_blocker/open_major` во всех review gates и зафиксированный
    residual log. Затем закрой последний active `Pxx`, выполни
    `automation_timing.py validate --final`, затем `case_pipeline.py validate --final`.
+   Публикацию зафиксируй отдельным timing milestone. Если после неё пришли
+   правки, `reopen` последний completed stage и создай следующую publication
+   revision. Project-local model обновляй только после отдельного explicit
+   development handoff. При включённом timing и доступном `work-metrics` перед
+   update согласуй все объявленные case-related журналы разных сессий/харнесов;
+   `--logs-complete` допустим только при доказанной полноте, а partial recovery
+   остаётся ретроспективой. Эти данные остаются human-only и не входят в
+   постановку или ролевые контексты.
+   После первого handoff новые данные разработки веди отдельным follow-up case,
+   начатым при фактическом возобновлении анализа: не переоткрывай основной
+   sample и не включай межцикловое ожидание в его elapsed.
 2. Выдай готовый текст, существенные допущения, решения и остаточный риск.
 3. Публикуй или меняй внешние системы только по явной просьбе и правилам
    профиля; после записи выполни read-back.

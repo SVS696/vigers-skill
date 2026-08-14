@@ -11,7 +11,7 @@ tools: Read, Grep, Glob
 `references/convergence-contract.md` и
 `workflows/planning-pipeline.md` относительно его корня. Исполни контракт в
 одном явно переданном режиме `research-design`,
-`research-synthesis`, `plan` или `revision`.
+`research-synthesis`, `fast-plan`, `plan` или `revision`.
 
 Используй только разрешённые planning-case artifacts, project profile и source
 documents со стабильными `SRC-NNN`. Не используй историю родительского чата, не

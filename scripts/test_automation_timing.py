@@ -68,6 +68,15 @@ def demo_plan() -> dict[str, object]:
     return plan
 
 
+def measured_plan() -> dict[str, object]:
+    plan = demo_plan()
+    plan["policy"] = "measured"
+    for stage in plan["stages"]:
+        stage["estimate"] = None
+    plan["fingerprint"] = automation_timing.canonical_fingerprint(plan)
+    return plan
+
+
 class AutomationTimingTests(unittest.TestCase):
     def ledger(self) -> dict[str, object]:
         return automation_timing.initialize_ledger(
@@ -145,6 +154,136 @@ class AutomationTimingTests(unittest.TestCase):
         self.assertEqual(summary["actual"]["elapsed_seconds"], 360)
         self.assertEqual(summary["actual"]["likely_estimate_ratio"], 1.0)
         self.assertEqual(summary["completed_checklist_item_count"], 2)
+
+    def test_dual_timer_excludes_pause_from_active_but_not_elapsed(self) -> None:
+        ledger = automation_timing.initialize_ledger(
+            case_id="dual-case",
+            automation_plan=measured_plan(),
+            planning_case_id="dual-plan",
+            planning_revision=1,
+            passport=None,
+            created_at="2026-08-07T10:00:00+00:00",
+        )
+        automation_timing.start_stage(
+            ledger, "P01", at="2026-08-07T10:00:00+00:00"
+        )
+        automation_timing.begin_checklist_item(
+            ledger, "P01", "P01-C01", at="2026-08-07T10:00:30+00:00"
+        )
+        automation_timing.pause_stage(
+            ledger,
+            "P01",
+            reason="limit_exhausted",
+            at="2026-08-07T10:02:00+00:00",
+        )
+        automation_timing.resume_stage(
+            ledger, "P01", at="2026-08-07T10:07:00+00:00"
+        )
+        automation_timing.complete_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            evidence_refs=["evidence.md"],
+            at="2026-08-07T10:09:00+00:00",
+        )
+        automation_timing.stop_stage(
+            ledger,
+            "P01",
+            status="completed",
+            reason=None,
+            at="2026-08-07T10:10:00+00:00",
+        )
+        stage = automation_timing.find_stage(ledger, "P01")
+        self.assertEqual(stage["actual_seconds"], 300)
+        self.assertEqual(stage["active_seconds"], 300)
+        self.assertEqual(stage["elapsed_seconds"], 600)
+        self.assertEqual(stage["pauses"][0]["seconds"], 300)
+        self.assertEqual(automation_timing.validate_ledger(ledger), [])
+
+    def test_disabled_timer_keeps_progress_without_duration(self) -> None:
+        plan = measured_plan()
+        plan["policy"] = "disabled"
+        plan["fingerprint"] = automation_timing.canonical_fingerprint(plan)
+        ledger = automation_timing.initialize_ledger(
+            case_id="progress-only",
+            automation_plan=plan,
+            planning_case_id=None,
+            planning_revision=None,
+            passport=None,
+            created_at="2026-08-07T10:00:00+00:00",
+        )
+        automation_timing.start_stage(
+            ledger, "P01", at="2026-08-07T10:00:00+00:00"
+        )
+        automation_timing.begin_checklist_item(
+            ledger, "P01", "P01-C01", at="2026-08-07T10:01:00+00:00"
+        )
+        automation_timing.complete_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            evidence_refs=["evidence.md"],
+            at="2026-08-07T10:02:00+00:00",
+        )
+        automation_timing.stop_stage(
+            ledger,
+            "P01",
+            status="completed",
+            reason=None,
+            at="2026-08-07T10:03:00+00:00",
+        )
+        stage = automation_timing.find_stage(ledger, "P01")
+        self.assertIsNone(stage["actual_seconds"])
+        self.assertIsNone(stage["started_at"])
+        self.assertEqual(automation_timing.validate_ledger(ledger), [])
+
+    def test_checkpoint_reconciles_cross_session_last_known_values(self) -> None:
+        ledger = automation_timing.initialize_ledger(
+            case_id="checkpoint-case",
+            automation_plan=measured_plan(),
+            planning_case_id="checkpoint-plan",
+            planning_revision=1,
+            passport={"id": "PASS-1", "path": "passport.md"},
+            created_at="2026-08-07T10:00:00+00:00",
+        )
+        automation_timing.start_stage(
+            ledger, "P01", at="2026-08-07T10:00:00+00:00"
+        )
+        automation_timing.pause_stage(
+            ledger,
+            "P01",
+            reason="external_wait",
+            at="2026-08-07T10:02:00+00:00",
+        )
+        checkpoint = automation_timing.build_checkpoint(
+            ledger, at="2026-08-07T10:05:00+00:00"
+        )
+        self.assertEqual(checkpoint["active_critical_path_seconds"], 120)
+        self.assertEqual(checkpoint["elapsed_seconds"], 300)
+        self.assertEqual(checkpoint["state"], "paused")
+        reconciled = automation_timing.reconcile_checkpoint(
+            ledger,
+            checkpoint,
+            at="2026-08-07T10:05:00+00:00",
+        )
+        self.assertEqual(reconciled["status"], "in_sync")
+
+        reconciled = automation_timing.reconcile_checkpoint(
+            ledger,
+            checkpoint,
+            at="2026-08-07T10:06:00+00:00",
+        )
+        self.assertEqual(reconciled["status"], "local_clock_advanced")
+
+        automation_timing.resume_stage(
+            ledger, "P01", at="2026-08-07T10:07:00+00:00"
+        )
+        reconciled = automation_timing.reconcile_checkpoint(
+            ledger,
+            checkpoint,
+            at="2026-08-07T10:07:00+00:00",
+        )
+        self.assertEqual(reconciled["status"], "local_ahead")
 
     def test_completed_stage_requires_all_required_checklist_items(self) -> None:
         ledger = self.ledger()

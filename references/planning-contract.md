@@ -84,13 +84,14 @@ source documents с ID, origin и датой чтения. Для большог
 ## План и checklist
 
 `plan.json` schema 4 содержит этапы `Pxx`. Каждый этап имеет outcome,
-dependencies, exit criteria, source refs, checklist `Pxx-Cxx` и трёхточечный
-`automation_estimate`. Верхний `automation_estimation` фиксирует обязательные
-`wall_clock`, `seconds` и `execution_use: human_information_only`. Это
-предварительный baseline для человека и последующей калибровки, а не срок или
-runtime-бюджет. Значения не включаются в role-context и не используются моделью
-для темпа, порядка, приоритетов, остановки, сокращения scope, покрытия,
-детализации или проверок. Общий прогноз вычисляется по critical path DAG; правила и runtime ledger заданы в
+dependencies, exit criteria, source refs и checklist `Pxx-Cxx`. Модель не
+формирует оценку времени. Верхний `automation_estimation` фиксирует только
+runtime policy `measured|disabled`, `wall_clock`, `seconds` и
+`execution_use: human_information_only`. После материализации preliminary plan
+отдельный `timing_model.py` строит human-only прогноз по похожим завершённым
+кейсам текущего project root. Forecast и ledger не включаются в role-context и
+не используются моделью для темпа, порядка, приоритетов, остановки, scope,
+покрытия, детализации или проверок. Правила заданы в
 `{baseDir}/references/automation-timing.md`. Этап
 создаётся только если у него есть самостоятельный результат или dependency gate;
 иначе это checklist item.
@@ -132,6 +133,16 @@ Planner выявляет минимальный набор предполага�
 валидации, а не источник этих гипотез.
 Approval planning revision согласует направление анализа и план исполнения, но
 не превращает `PUS-*`/`PDOD-*` в финальные требования, AC или DoD.
+
+Перед user-review координатор детерминированно строит `approval-summary.md` из
+`plan.json` и `source-map.json`. Это основной человекочитаемый материал для
+approval: каждая `PUS-*` показывается как «Как <actor>, я хочу <goal>, чтобы
+<benefit>» вместе с confidence и `SRC-NNN`; рядом показываются preliminary DoD,
+укрупнённые этапы анализа и известные gaps. В начале сводки обязательна явная
+пометка: истории являются гипотезами, их состав и формулировки могут быть
+подтверждены, изменены, разделены, отклонены или дополнены полным анализом.
+Сводка входит в immutable revision snapshot. Ручной пересказ, скрытый
+`plan.json` или один checklist не заменяют эту проекцию.
 
 Полный системный анализ обязан рассмотреть каждый стабильный planning ID и
 зафиксировать disposition `confirmed|changed|split|rejected` с трассировкой к

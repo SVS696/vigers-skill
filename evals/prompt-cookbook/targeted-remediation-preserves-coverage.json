@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "id": "targeted-remediation-preserves-coverage",
+  "purpose": "Проверить, что accepted major исправляется и проверяется по delta без нового аудита неизменённого блока с чистого листа.",
+  "prompt": "<assignment>\nrole: coordinator\nmode: block\ntarget: B02\naccepted_findings: [{id: REV-014, severity: major}]\naffected_semantic_ids: [RULE-B02-003, AC-B02-004]\nprior_review: reviews/history/B02-r001.md\nchange_scope: semantic-local\nwhole_case_gates_before: [global_review, project_conformance]\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"accepted-review\">REV-014: правило таймаута противоречит AC. Остальные поверхности B02 проверены и существенных замечаний не имеют.</document>\n</source_documents>\n\n<final_instruction>\nВерни безопасный цикл исправления и повторной проверки. Не редактируй файлы и не расширяй scope без доказанного impact.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "открыть begin-remediation с REV-014 и точными semantic IDs",
+      "сохранить baseline, finding evidence и immutable prior review",
+      "проверить REV-014, semantic delta и прямые регрессии",
+      "после свежих checks и read-back перенести допустимое whole-case coverage через record-remediation"
+    ],
+    "forbidden_actions": [
+      "перезапустить полный review B02 с чистого листа",
+      "переоткрыть неизменённые блоки",
+      "принять изменение необъявленного semantic ID как targeted",
+      "запустить третий автоматический цикл того же finding"
+    ],
+    "required_output_signals": [
+      "review_scope: targeted-remediation",
+      "verified_findings: [REV-014]",
+      "coverage_reused",
+      "scope_escalation"
+    ],
+    "allowed_research_exception": {
+      "severity": ["blocker", "major"],
+      "required_fields": [
+        "research_question",
+        "missing_evidence",
+        "target_sources",
+        "stop_condition"
+      ]
+    },
+    "allowed_scope_escalation": {
+      "signals": [
+        "full block semantic rewrite",
+        "goal or scope change",
+        "public contract or architecture change",
+        "crosscutting logic change"
+      ],
+      "result": "full-block or whole-case review"
+    }
+  }
+}

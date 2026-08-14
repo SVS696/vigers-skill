@@ -15,7 +15,7 @@ from typing import Any
 
 SCHEMA_VERSION = 1
 FILENAME = "automation-timing.json"
-POLICIES = {"optional", "required"}
+POLICIES = {"optional", "required", "measured", "disabled"}
 METRIC = "wall_clock"
 UNIT = "seconds"
 EXECUTION_USE = "human_information_only"
@@ -24,6 +24,7 @@ CONFIDENCE_LEVELS = {"low", "medium", "high"}
 TERMINAL_STATUSES = {"completed", "failed", "blocked", "cancelled"}
 STAGE_STATUSES = {"pending", "running", *TERMINAL_STATUSES}
 CHECKLIST_STATUSES = {"pending", "in_progress", "completed"}
+PAUSE_REASONS = {"user_pause", "limit_exhausted", "external_wait", "interrupted"}
 
 
 class AutomationTimingError(RuntimeError):
@@ -119,8 +120,11 @@ def validate_plan_estimation(plan_payload: Any) -> list[str]:
     policy = plan_payload.get("automation_estimation")
     if not isinstance(policy, dict):
         return ["plan.json automation_estimation must be an object"]
-    if policy.get("policy") != "required":
-        errors.append("plan.json automation_estimation policy must be required")
+    selected_policy = policy.get("policy")
+    if selected_policy not in {"required", "measured", "disabled"}:
+        errors.append(
+            "plan.json automation_estimation policy must be required, measured, or disabled"
+        )
     if policy.get("metric") != METRIC:
         errors.append(f"plan.json automation_estimation metric must be {METRIC}")
     if policy.get("unit") != UNIT:
@@ -134,10 +138,18 @@ def validate_plan_estimation(plan_payload: Any) -> list[str]:
     stages = plan_payload.get("stages")
     if not isinstance(stages, list) or not stages:
         return errors
-    for stage in stages:
-        stage_id = stage.get("id", "<unknown>") if isinstance(stage, dict) else "<unknown>"
-        estimate = stage.get("automation_estimate") if isinstance(stage, dict) else None
-        errors.extend(validate_estimate(estimate, prefix=str(stage_id)))
+    if selected_policy == "required":
+        for stage in stages:
+            stage_id = stage.get("id", "<unknown>") if isinstance(stage, dict) else "<unknown>"
+            estimate = stage.get("automation_estimate") if isinstance(stage, dict) else None
+            errors.extend(validate_estimate(estimate, prefix=str(stage_id)))
+    else:
+        for stage in stages:
+            if isinstance(stage, dict) and stage.get("automation_estimate") is not None:
+                errors.append(
+                    f"{stage.get('id', '<unknown>')}: {selected_policy} timing must not ask "
+                    "the planning model for an estimate"
+                )
     return errors
 
 
@@ -152,7 +164,11 @@ def build_automation_plan(plan_payload: dict[str, Any]) -> dict[str, Any]:
             "id": stage["id"],
             "title": stage["title"],
             "depends_on": list(stage.get("depends_on", [])),
-            "estimate": dict(stage["automation_estimate"]),
+            "estimate": (
+                dict(stage["automation_estimate"])
+                if policy["policy"] == "required"
+                else None
+            ),
             "external_target_id": stage.get("external_target_id"),
             "checklist": [
                 {
@@ -220,7 +236,10 @@ def validate_automation_plan(payload: Any) -> list[str]:
             dependencies[stage_id] = []
         else:
             dependencies[stage_id] = list(depends_on)
-        errors.extend(validate_estimate(stage.get("estimate"), prefix=stage_id))
+        if payload.get("policy") in {"required", "optional"}:
+            errors.extend(validate_estimate(stage.get("estimate"), prefix=stage_id))
+        elif stage.get("estimate") is not None:
+            errors.append(f"{stage_id}: measured/disabled plan estimate must be null")
         external_target_id = stage.get("external_target_id")
         if external_target_id is not None and (
             not isinstance(external_target_id, str) or not external_target_id.strip()
@@ -311,6 +330,8 @@ def initialize_ledger(
     if errors:
         raise AutomationTimingError("; ".join(errors))
 
+    dual_timer = automation_plan["policy"] == "measured"
+    timing_disabled = automation_plan["policy"] == "disabled"
     ledger = {
         "schema": SCHEMA_VERSION,
         "case_id": case_id,
@@ -336,7 +357,11 @@ def initialize_ledger(
                 "id": stage["id"],
                 "title": stage["title"],
                 "depends_on": list(stage["depends_on"]),
-                "estimate": dict(stage["estimate"]),
+                "estimate": (
+                    dict(stage["estimate"])
+                    if isinstance(stage.get("estimate"), dict)
+                    else None
+                ),
                 "external_target_id": stage.get("external_target_id"),
                 "checklist": [
                     {
@@ -361,10 +386,27 @@ def initialize_ledger(
                 "finished_at": None,
                 "actual_seconds": None,
                 "terminal_reason": None,
+                **(
+                    {
+                        "active_started_at": None,
+                        "active_seconds": 0,
+                        "elapsed_seconds": None,
+                        "pause_started_at": None,
+                        "pause_reason": None,
+                        "pauses": [],
+                    }
+                    if dual_timer
+                    else {}
+                ),
             }
             for stage in automation_plan["stages"]
         ],
         "events": [],
+        **(
+            {"timer_model": "dual", "milestones": []}
+            if dual_timer
+            else ({"timer_model": "disabled"} if timing_disabled else {})
+        ),
     }
     return ledger
 
@@ -424,6 +466,15 @@ def validate_ledger(
     errors: list[str] = []
     if not isinstance(payload, dict) or payload.get("schema") != SCHEMA_VERSION:
         return ["automation-timing.json unsupported schema"]
+    timer_model = payload.get("timer_model", "legacy")
+    if timer_model not in {"legacy", "dual", "disabled"}:
+        errors.append("automation timing timer_model is invalid")
+    expected_timer_model = {
+        "measured": "dual",
+        "disabled": "disabled",
+    }.get(payload.get("policy"), "legacy")
+    if timer_model != expected_timer_model:
+        errors.append("automation timing timer_model does not match policy")
     if not isinstance(payload.get("case_id"), str) or not payload["case_id"].strip():
         errors.append("automation timing case_id is required")
     elif expected_case_id is not None and payload["case_id"] != expected_case_id:
@@ -457,6 +508,65 @@ def validate_ledger(
         parse_timestamp(payload.get("updated_at"), field="updated_at")
     except AutomationTimingError as exc:
         errors.append(str(exc))
+
+    milestones = payload.get("milestones", [])
+    if timer_model == "dual":
+        if not isinstance(milestones, list):
+            errors.append("dual timer milestones must be an array")
+            milestones = []
+        publication_revisions: list[int] = []
+        handoff_count = 0
+        previous_at: datetime | None = None
+        for index, milestone in enumerate(milestones, start=1):
+            label = f"milestone {index}"
+            if not isinstance(milestone, dict):
+                errors.append(f"{label} must be an object")
+                continue
+            kind = milestone.get("kind")
+            if kind not in {"publication", "development_handoff"}:
+                errors.append(f"{label} has invalid kind")
+            try:
+                milestone_at = parse_timestamp(milestone.get("at"), field=f"{label}.at")
+                if previous_at is not None and milestone_at < previous_at:
+                    errors.append("milestones must be append-only chronological")
+                previous_at = milestone_at
+            except AutomationTimingError as exc:
+                errors.append(str(exc))
+            if not isinstance(milestone.get("evidence_ref"), str) or not milestone[
+                "evidence_ref"
+            ].strip():
+                errors.append(f"{label} requires evidence_ref")
+            if kind == "publication":
+                revision = milestone.get("publication_revision")
+                if not isinstance(revision, int) or isinstance(revision, bool) or revision <= 0:
+                    errors.append(f"{label} has invalid publication_revision")
+                else:
+                    publication_revisions.append(revision)
+            elif kind == "development_handoff":
+                handoff_count += 1
+                if milestone.get("publication_revision") is not None:
+                    errors.append(f"{label} handoff cannot have publication_revision")
+            read_back = milestone.get("external_read_back")
+            if read_back is not None:
+                if not isinstance(read_back, dict):
+                    errors.append(f"{label} external_read_back must be an object or null")
+                else:
+                    for field in ("system", "item_id", "read_back_at"):
+                        if not isinstance(read_back.get(field), str) or not read_back[field].strip():
+                            errors.append(f"{label} external_read_back missing {field}")
+                    try:
+                        parse_timestamp(
+                            read_back.get("read_back_at"),
+                            field=f"{label}.external_read_back.read_back_at",
+                        )
+                    except AutomationTimingError as exc:
+                        errors.append(str(exc))
+        if publication_revisions != list(range(1, len(publication_revisions) + 1)):
+            errors.append("publication milestones must use contiguous revisions from 1")
+        if handoff_count > 1:
+            errors.append("dual timer may have only one development_handoff")
+    elif milestones:
+        errors.append("legacy/disabled timer cannot have measured milestones")
 
     stages = payload.get("stages")
     if not isinstance(stages, list):
@@ -579,7 +689,99 @@ def validate_ledger(
                         except AutomationTimingError as exc:
                             errors.append(str(exc))
 
-        if status == "pending":
+        if timer_model == "disabled":
+            if any(value is not None for value in (started_at, finished_at, actual_seconds)):
+                errors.append(f"{stage_id}: disabled timer cannot have timing facts")
+        elif timer_model == "dual":
+            active_started_at = stage.get("active_started_at")
+            active_seconds = stage.get("active_seconds")
+            elapsed_seconds = stage.get("elapsed_seconds")
+            pause_started_at = stage.get("pause_started_at")
+            pause_reason = stage.get("pause_reason")
+            pauses = stage.get("pauses")
+            if not isinstance(active_seconds, int) or isinstance(active_seconds, bool) or active_seconds < 0:
+                errors.append(f"{stage_id}: active_seconds must be a non-negative integer")
+            if not isinstance(pauses, list):
+                errors.append(f"{stage_id}: pauses must be an array")
+                pauses = []
+            for index, pause in enumerate(pauses, start=1):
+                if not isinstance(pause, dict):
+                    errors.append(f"{stage_id}: pause {index} must be an object")
+                    continue
+                if pause.get("reason") not in PAUSE_REASONS:
+                    errors.append(f"{stage_id}: pause {index} has invalid reason")
+                try:
+                    pause_start = parse_timestamp(
+                        pause.get("started_at"), field=f"{stage_id}.pauses[{index}].started_at"
+                    )
+                    pause_finish = parse_timestamp(
+                        pause.get("finished_at"), field=f"{stage_id}.pauses[{index}].finished_at"
+                    )
+                    pause_seconds = int((pause_finish - pause_start).total_seconds())
+                    if pause_seconds < 0 or pause.get("seconds") != pause_seconds:
+                        errors.append(f"{stage_id}: pause {index} duration mismatch")
+                except AutomationTimingError as exc:
+                    errors.append(str(exc))
+            if status == "pending":
+                if any(
+                    value is not None
+                    for value in (
+                        started_at,
+                        finished_at,
+                        actual_seconds,
+                        active_started_at,
+                        elapsed_seconds,
+                        pause_started_at,
+                        pause_reason,
+                    )
+                ) or active_seconds != 0 or pauses:
+                    errors.append(f"{stage_id}: pending dual timer has runtime facts")
+            elif status == "running":
+                if started_at is None or finished_at is not None or actual_seconds is not None or elapsed_seconds is not None:
+                    errors.append(f"{stage_id}: running dual timer has invalid terminal facts")
+                try:
+                    parse_timestamp(started_at, field=f"{stage_id}.started_at")
+                except AutomationTimingError as exc:
+                    errors.append(str(exc))
+                active = active_started_at is not None
+                paused = pause_started_at is not None
+                if active == paused:
+                    errors.append(f"{stage_id}: running dual timer must be active or paused")
+                if active:
+                    try:
+                        parse_timestamp(active_started_at, field=f"{stage_id}.active_started_at")
+                    except AutomationTimingError as exc:
+                        errors.append(str(exc))
+                    if pause_reason is not None:
+                        errors.append(f"{stage_id}: active timer cannot have pause_reason")
+                if paused:
+                    try:
+                        parse_timestamp(pause_started_at, field=f"{stage_id}.pause_started_at")
+                    except AutomationTimingError as exc:
+                        errors.append(str(exc))
+                    if pause_reason not in PAUSE_REASONS:
+                        errors.append(f"{stage_id}: paused timer requires a valid reason")
+            else:
+                if (
+                    started_at is None
+                    or finished_at is None
+                    or active_started_at is not None
+                    or pause_started_at is not None
+                    or pause_reason is not None
+                ):
+                    errors.append(f"{stage_id}: terminal dual timer has invalid state")
+                else:
+                    try:
+                        started = parse_timestamp(started_at, field=f"{stage_id}.started_at")
+                        finished = parse_timestamp(finished_at, field=f"{stage_id}.finished_at")
+                        expected_elapsed = int((finished - started).total_seconds())
+                        if expected_elapsed < 0 or elapsed_seconds != expected_elapsed:
+                            errors.append(f"{stage_id}: elapsed_seconds does not match timestamps")
+                        if actual_seconds != active_seconds:
+                            errors.append(f"{stage_id}: actual_seconds must equal active_seconds")
+                    except AutomationTimingError as exc:
+                        errors.append(str(exc))
+        elif status == "pending":
             if any(value is not None for value in (started_at, finished_at, actual_seconds)):
                 errors.append(f"{stage_id}: pending stage cannot have timing facts")
         elif status == "running":
@@ -635,7 +837,7 @@ def validate_ledger(
                         f"{stage_id}: dependency {dependency} was not completed before execution"
                     )
 
-    if final and payload.get("policy") == "required":
+    if final and payload.get("policy") in {"required", "measured"}:
         unfinished = [
             str(stage.get("id"))
             for stage in stages
@@ -879,8 +1081,130 @@ def start_stage(ledger: dict[str, Any], stage_id: str, *, at: str | None = None)
         )
     timestamp = normalized_timestamp(at)
     stage["status"] = "running"
-    stage["started_at"] = timestamp
+    if ledger.get("timer_model") != "disabled":
+        stage["started_at"] = timestamp
+    if ledger.get("timer_model") == "dual":
+        stage["active_started_at"] = timestamp
     ledger["events"].append({"at": timestamp, "kind": "stage_started", "stage_id": stage_id})
+
+
+def pause_stage(
+    ledger: dict[str, Any],
+    stage_id: str,
+    *,
+    reason: str,
+    at: str | None = None,
+) -> None:
+    """Pause active work while leaving calendar elapsed time running."""
+    if ledger.get("timer_model") != "dual":
+        raise AutomationTimingError("Pause/resume requires a measured dual timer")
+    if reason not in PAUSE_REASONS:
+        raise AutomationTimingError(f"Invalid pause reason: {reason}")
+    stage = find_stage(ledger, stage_id)
+    if stage["status"] != "running" or stage.get("active_started_at") is None:
+        raise AutomationTimingError(f"Stage {stage_id} is not actively running")
+    timestamp = normalized_timestamp(at)
+    active_started = parse_timestamp(
+        stage["active_started_at"], field=f"{stage_id}.active_started_at"
+    )
+    paused = parse_timestamp(timestamp, field=f"{stage_id}.pause_started_at")
+    segment = int((paused - active_started).total_seconds())
+    if segment < 0:
+        raise AutomationTimingError(f"Stage {stage_id} pause precedes active start")
+    stage["active_seconds"] += segment
+    stage["active_started_at"] = None
+    stage["pause_started_at"] = paused.isoformat()
+    stage["pause_reason"] = reason
+    ledger["events"].append(
+        {
+            "at": paused.isoformat(),
+            "kind": "stage_paused",
+            "stage_id": stage_id,
+            "reason": reason,
+            "active_seconds": stage["active_seconds"],
+        }
+    )
+
+
+def resume_stage(ledger: dict[str, Any], stage_id: str, *, at: str | None = None) -> None:
+    """Resume a paused dual timer."""
+    if ledger.get("timer_model") != "dual":
+        raise AutomationTimingError("Pause/resume requires a measured dual timer")
+    stage = find_stage(ledger, stage_id)
+    if stage["status"] != "running" or stage.get("pause_started_at") is None:
+        raise AutomationTimingError(f"Stage {stage_id} is not paused")
+    timestamp = normalized_timestamp(at)
+    pause_started = parse_timestamp(
+        stage["pause_started_at"], field=f"{stage_id}.pause_started_at"
+    )
+    resumed = parse_timestamp(timestamp, field=f"{stage_id}.active_started_at")
+    seconds = int((resumed - pause_started).total_seconds())
+    if seconds < 0:
+        raise AutomationTimingError(f"Stage {stage_id} resume precedes pause")
+    stage["pauses"].append(
+        {
+            "started_at": pause_started.isoformat(),
+            "finished_at": resumed.isoformat(),
+            "seconds": seconds,
+            "reason": stage["pause_reason"],
+        }
+    )
+    stage["pause_started_at"] = None
+    stage["pause_reason"] = None
+    stage["active_started_at"] = resumed.isoformat()
+    ledger["events"].append(
+        {"at": resumed.isoformat(), "kind": "stage_resumed", "stage_id": stage_id}
+    )
+
+
+def reopen_stage(
+    ledger: dict[str, Any],
+    stage_id: str,
+    *,
+    evidence_ref: str,
+    at: str | None = None,
+) -> None:
+    """Reopen a completed stage for edits after a recorded publication."""
+    if ledger.get("timer_model") != "dual":
+        raise AutomationTimingError("Post-publication reopen requires a dual timer")
+    if not isinstance(evidence_ref, str) or not evidence_ref.strip():
+        raise AutomationTimingError("Post-publication reopen requires evidence_ref")
+    if any(
+        item.get("kind") == "development_handoff"
+        for item in ledger.get("milestones", [])
+    ):
+        raise AutomationTimingError("Handed-off timing case cannot be reopened")
+    stage = find_stage(ledger, stage_id)
+    if stage.get("status") != "completed":
+        raise AutomationTimingError(f"Stage {stage_id} must be completed before reopen")
+    finished = parse_timestamp(stage.get("finished_at"), field=f"{stage_id}.finished_at")
+    publications = [
+        item
+        for item in ledger.get("milestones", [])
+        if item.get("kind") == "publication"
+    ]
+    if not publications or parse_timestamp(
+        publications[-1].get("at"), field="publication.at"
+    ) < finished:
+        raise AutomationTimingError("Post-publication reopen requires a later publication milestone")
+    reopened = parse_timestamp(normalized_timestamp(at), field=f"{stage_id}.active_started_at")
+    if reopened < finished:
+        raise AutomationTimingError(f"Stage {stage_id} reopen precedes previous completion")
+    stage["status"] = "running"
+    stage["active_started_at"] = reopened.isoformat()
+    stage["finished_at"] = None
+    stage["elapsed_seconds"] = None
+    stage["actual_seconds"] = None
+    stage["terminal_reason"] = None
+    ledger["events"].append(
+        {
+            "at": reopened.isoformat(),
+            "kind": "stage_reopened_after_publication",
+            "stage_id": stage_id,
+            "evidence_ref": evidence_ref.strip(),
+            "publication_revision": publications[-1]["publication_revision"],
+        }
+    )
 
 
 def stop_stage(
@@ -913,18 +1237,53 @@ def stop_stage(
                 f"Stage {stage_id} has unfinished checklist items: {', '.join(incomplete)}"
             )
     timestamp = normalized_timestamp(at)
-    started = parse_timestamp(stage["started_at"], field=f"{stage_id}.started_at")
-    finished = parse_timestamp(timestamp, field=f"{stage_id}.finished_at")
-    actual_seconds = int((finished - started).total_seconds())
-    if actual_seconds < 0:
-        raise AutomationTimingError(f"Stage {stage_id} finish precedes start")
+    timer_model = ledger.get("timer_model", "legacy")
+    actual_seconds: int | None = None
+    finished: datetime | None = None
+    if timer_model != "disabled":
+        started = parse_timestamp(stage["started_at"], field=f"{stage_id}.started_at")
+        finished = parse_timestamp(timestamp, field=f"{stage_id}.finished_at")
+        elapsed_seconds = int((finished - started).total_seconds())
+        if elapsed_seconds < 0:
+            raise AutomationTimingError(f"Stage {stage_id} finish precedes start")
+        if timer_model == "dual":
+            if stage.get("active_started_at") is not None:
+                active_started = parse_timestamp(
+                    stage["active_started_at"], field=f"{stage_id}.active_started_at"
+                )
+                segment = int((finished - active_started).total_seconds())
+                if segment < 0:
+                    raise AutomationTimingError(f"Stage {stage_id} finish precedes active start")
+                stage["active_seconds"] += segment
+            else:
+                pause_started = parse_timestamp(
+                    stage["pause_started_at"], field=f"{stage_id}.pause_started_at"
+                )
+                pause_seconds = int((finished - pause_started).total_seconds())
+                if pause_seconds < 0:
+                    raise AutomationTimingError(f"Stage {stage_id} finish precedes pause")
+                stage["pauses"].append(
+                    {
+                        "started_at": pause_started.isoformat(),
+                        "finished_at": finished.isoformat(),
+                        "seconds": pause_seconds,
+                        "reason": stage["pause_reason"],
+                    }
+                )
+            stage["active_started_at"] = None
+            stage["pause_started_at"] = None
+            stage["pause_reason"] = None
+            stage["elapsed_seconds"] = elapsed_seconds
+            actual_seconds = stage["active_seconds"]
+        else:
+            actual_seconds = elapsed_seconds
     stage["status"] = status
-    stage["finished_at"] = finished.isoformat()
+    stage["finished_at"] = finished.isoformat() if finished is not None else None
     stage["actual_seconds"] = actual_seconds
     stage["terminal_reason"] = reason.strip() if reason else None
     ledger["events"].append(
         {
-            "at": finished.isoformat(),
+            "at": finished.isoformat() if finished is not None else timestamp,
             "kind": "stage_stopped",
             "stage_id": stage_id,
             "status": status,
@@ -932,6 +1291,243 @@ def stop_stage(
             "reason": stage["terminal_reason"],
         }
     )
+
+
+def record_milestone(
+    ledger: dict[str, Any],
+    *,
+    kind: str,
+    evidence_ref: str,
+    external_system: str | None = None,
+    external_item_id: str | None = None,
+    read_back_at: str | None = None,
+    at: str | None = None,
+) -> dict[str, Any]:
+    """Record publication checkpoints and the explicit development handoff."""
+    if ledger.get("timer_model") != "dual":
+        raise AutomationTimingError("Measured milestones require a dual timer")
+    if kind not in {"publication", "development_handoff"}:
+        raise AutomationTimingError(f"Invalid timing milestone: {kind}")
+    if not isinstance(evidence_ref, str) or not evidence_ref.strip():
+        raise AutomationTimingError("Timing milestone requires evidence_ref")
+    milestones = ledger.setdefault("milestones", [])
+    if any(item.get("kind") == "development_handoff" for item in milestones):
+        raise AutomationTimingError("Timing case is already handed to development")
+    if any(stage.get("status") != "completed" for stage in ledger.get("stages", [])):
+        raise AutomationTimingError(
+            "Timing milestone requires every planned stage to be completed"
+        )
+    external_values = (external_system, external_item_id, read_back_at)
+    if any(value is not None for value in external_values) and not all(
+        isinstance(value, str) and value.strip() for value in external_values
+    ):
+        raise AutomationTimingError(
+            "Milestone external read-back requires system, item id, and timestamp together"
+        )
+    timestamp = normalized_timestamp(at)
+    milestone_at = parse_timestamp(timestamp, field="milestone.at")
+    stage_starts = [
+        parse_timestamp(stage["started_at"], field=f"{stage['id']}.started_at")
+        for stage in ledger.get("stages", [])
+        if stage.get("started_at") is not None
+    ]
+    if not stage_starts or milestone_at < min(stage_starts):
+        raise AutomationTimingError("Timing milestone requires started case work")
+    if kind == "development_handoff":
+        stage_finishes = [
+            parse_timestamp(stage["finished_at"], field=f"{stage['id']}.finished_at")
+            for stage in ledger.get("stages", [])
+            if stage.get("finished_at") is not None
+        ]
+        if stage_finishes and milestone_at < max(stage_finishes):
+            raise AutomationTimingError("Development handoff precedes stage completion")
+        publications = [
+            parse_timestamp(item["at"], field="publication.at")
+            for item in milestones
+            if item.get("kind") == "publication"
+        ]
+        if not publications or (stage_finishes and max(publications) < max(stage_finishes)):
+            raise AutomationTimingError(
+                "Development handoff requires a publication after final edits"
+            )
+    external_read_back = (
+        {
+            "system": external_system.strip(),
+            "item_id": external_item_id.strip(),
+            "read_back_at": parse_timestamp(
+                read_back_at, field="milestone.external_read_back.read_back_at"
+            ).isoformat(),
+        }
+        if external_system is not None
+        else None
+    )
+    milestone: dict[str, Any] = {
+        "kind": kind,
+        "at": timestamp,
+        "evidence_ref": evidence_ref.strip(),
+        "external_read_back": external_read_back,
+        "publication_revision": (
+            1 + sum(item.get("kind") == "publication" for item in milestones)
+            if kind == "publication"
+            else None
+        ),
+    }
+    milestones.append(milestone)
+    ledger["events"].append(
+        {
+            "at": timestamp,
+            "kind": f"timing_{kind}",
+            "publication_revision": milestone["publication_revision"],
+            "evidence_ref": milestone["evidence_ref"],
+        }
+    )
+    errors = validate_ledger(ledger)
+    if errors:
+        milestones.pop()
+        ledger["events"].pop()
+        raise AutomationTimingError("; ".join(errors))
+    return milestone
+
+
+def live_active_seconds(stage: dict[str, Any], at: datetime) -> int:
+    value = int(stage.get("active_seconds", 0))
+    active_started_at = stage.get("active_started_at")
+    if active_started_at is not None:
+        started = parse_timestamp(active_started_at, field=f"{stage.get('id')}.active_started_at")
+        segment = int((at - started).total_seconds())
+        if segment < 0:
+            raise AutomationTimingError("Checkpoint precedes an active timer")
+        value += segment
+    return value
+
+
+def live_critical_path_seconds(stages: list[dict[str, Any]], at: datetime) -> int:
+    by_id = {stage["id"]: stage for stage in stages}
+    totals: dict[str, int] = {}
+
+    def total(stage_id: str) -> int:
+        if stage_id in totals:
+            return totals[stage_id]
+        stage = by_id[stage_id]
+        dependency_total = max((total(item) for item in stage["depends_on"]), default=0)
+        totals[stage_id] = dependency_total + live_active_seconds(stage, at)
+        return totals[stage_id]
+
+    return max((total(stage_id) for stage_id in by_id), default=0)
+
+
+def build_checkpoint(ledger: dict[str, Any], *, at: str | None = None) -> dict[str, Any]:
+    """Build a deterministic last-known snapshot suitable for external mirroring."""
+    errors = validate_ledger(ledger)
+    if errors:
+        raise AutomationTimingError("; ".join(errors))
+    if ledger.get("timer_model") != "dual":
+        raise AutomationTimingError("Timing checkpoints require a dual timer")
+    timestamp = parse_timestamp(normalized_timestamp(at), field="checkpoint.at")
+    stages = ledger["stages"]
+    starts = [
+        parse_timestamp(stage["started_at"], field=f"{stage['id']}.started_at")
+        for stage in stages
+        if stage.get("started_at") is not None
+    ]
+    handoff = next(
+        (
+            item
+            for item in ledger.get("milestones", [])
+            if item.get("kind") == "development_handoff"
+        ),
+        None,
+    )
+    elapsed_end = (
+        parse_timestamp(handoff["at"], field="development_handoff.at")
+        if handoff is not None
+        else timestamp
+    )
+    elapsed = int((elapsed_end - min(starts)).total_seconds()) if starts else 0
+    if elapsed < 0:
+        raise AutomationTimingError("Checkpoint precedes case start")
+    if handoff is not None:
+        state = "handed_off"
+    elif any(stage.get("active_started_at") is not None for stage in stages):
+        state = "active"
+    elif any(stage.get("pause_started_at") is not None for stage in stages):
+        state = "paused"
+    elif all(stage.get("status") in TERMINAL_STATUSES for stage in stages):
+        state = "awaiting_handoff"
+    else:
+        state = "pending"
+    checkpoint: dict[str, Any] = {
+        "schema": SCHEMA_VERSION,
+        "purpose": "human_information_only",
+        "case_id": ledger["case_id"],
+        "plan_fingerprint": ledger["plan_fingerprint"],
+        "checkpoint_revision": len(ledger.get("events", [])),
+        "ledger_fingerprint": canonical_fingerprint(ledger),
+        "state": state,
+        "generated_at": timestamp.isoformat(),
+        "active_critical_path_seconds": live_critical_path_seconds(stages, timestamp),
+        "active_stage_sum_seconds": sum(live_active_seconds(stage, timestamp) for stage in stages),
+        "elapsed_seconds": elapsed,
+        "publication_count": sum(
+            item.get("kind") == "publication" for item in ledger.get("milestones", [])
+        ),
+        "development_handoff_at": handoff.get("at") if handoff is not None else None,
+    }
+    checkpoint["fingerprint"] = canonical_fingerprint(checkpoint)
+    return checkpoint
+
+
+def reconcile_checkpoint(
+    ledger: dict[str, Any], external: Any, *, at: str | None = None
+) -> dict[str, Any]:
+    """Compare local canonical history with one external last-known snapshot."""
+    if not isinstance(external, dict) or external.get("fingerprint") != canonical_fingerprint(
+        external
+    ):
+        raise AutomationTimingError("External timing checkpoint fingerprint mismatch")
+    local = build_checkpoint(ledger, at=at)
+    if external.get("case_id") != local["case_id"] or external.get(
+        "plan_fingerprint"
+    ) != local["plan_fingerprint"]:
+        raise AutomationTimingError("External timing checkpoint belongs to another case")
+    local_revision = local["checkpoint_revision"]
+    external_revision = external.get("checkpoint_revision")
+    if not isinstance(external_revision, int):
+        raise AutomationTimingError("External timing checkpoint revision is invalid")
+    if external_revision < local_revision:
+        status = "local_ahead"
+    elif external_revision > local_revision:
+        status = "external_ahead_partial_recovery_required"
+    elif external.get("ledger_fingerprint") == local["ledger_fingerprint"]:
+        live_fields = (
+            "state",
+            "active_critical_path_seconds",
+            "active_stage_sum_seconds",
+            "elapsed_seconds",
+            "publication_count",
+            "development_handoff_at",
+        )
+        status = (
+            "in_sync"
+            if all(external.get(field) == local.get(field) for field in live_fields)
+            else "local_clock_advanced"
+        )
+    else:
+        status = "conflict_same_revision"
+    return {
+        "status": status,
+        "local": local,
+        "external": external,
+        "safe_to_overwrite_external": status in {
+            "local_ahead",
+            "local_clock_advanced",
+        },
+        "training_eligible": status in {
+            "in_sync",
+            "local_ahead",
+            "local_clock_advanced",
+        },
+    }
 
 
 def critical_path_seconds(stages: list[dict[str, Any]], value_key: str) -> int:
@@ -951,35 +1547,93 @@ def critical_path_seconds(stages: list[dict[str, Any]], value_key: str) -> int:
     return max((total(stage_id) for stage_id in by_id), default=0)
 
 
+def runtime_critical_path_seconds(stages: list[dict[str, Any]]) -> int | None:
+    """Return active critical-path fact once every stage is terminal."""
+    if not stages or any(
+        stage.get("status") not in TERMINAL_STATUSES
+        or not isinstance(stage.get("actual_seconds"), int)
+        for stage in stages
+    ):
+        return None
+    by_id = {stage["id"]: stage for stage in stages}
+    totals: dict[str, int] = {}
+
+    def total(stage_id: str) -> int:
+        if stage_id in totals:
+            return totals[stage_id]
+        stage = by_id[stage_id]
+        dependency_total = max((total(item) for item in stage["depends_on"]), default=0)
+        totals[stage_id] = dependency_total + int(stage["actual_seconds"])
+        return totals[stage_id]
+
+    return max((total(stage_id) for stage_id in by_id), default=0)
+
+
 def summarize(ledger: dict[str, Any]) -> dict[str, Any]:
     """Build a stable machine-readable forecast and actual summary."""
     errors = validate_ledger(ledger)
     if errors:
         raise AutomationTimingError("; ".join(errors))
     stages = ledger["stages"]
-    forecast = {
-        key.replace("_seconds", "_critical_path_seconds"): critical_path_seconds(stages, key)
-        for key in ("optimistic_seconds", "likely_seconds", "pessimistic_seconds")
-    }
-    forecast["likely_stage_sum_seconds"] = sum(
-        stage["estimate"]["likely_seconds"] for stage in stages
+    has_manual_estimates = bool(stages) and all(
+        isinstance(stage.get("estimate"), dict) for stage in stages
     )
+    if has_manual_estimates:
+        forecast = {
+            key.replace("_seconds", "_critical_path_seconds"): critical_path_seconds(stages, key)
+            for key in ("optimistic_seconds", "likely_seconds", "pessimistic_seconds")
+        }
+        forecast["likely_stage_sum_seconds"] = sum(
+            stage["estimate"]["likely_seconds"] for stage in stages
+        )
+    else:
+        forecast = {
+            "optimistic_critical_path_seconds": None,
+            "likely_critical_path_seconds": None,
+            "pessimistic_critical_path_seconds": None,
+            "likely_stage_sum_seconds": None,
+        }
 
     terminal = [stage for stage in stages if stage["status"] in TERMINAL_STATUSES]
     completed = [stage for stage in stages if stage["status"] == "completed"]
+    timed_terminal = [
+        stage
+        for stage in terminal
+        if stage.get("started_at") is not None and stage.get("finished_at") is not None
+    ]
     starts = [
         parse_timestamp(stage["started_at"], field=f"{stage['id']}.started_at")
-        for stage in terminal
+        for stage in timed_terminal
     ]
     finishes = [
         parse_timestamp(stage["finished_at"], field=f"{stage['id']}.finished_at")
-        for stage in terminal
+        for stage in timed_terminal
     ]
-    actual_elapsed = int((max(finishes) - min(starts)).total_seconds()) if terminal else None
+    handoff = next(
+        (
+            item
+            for item in ledger.get("milestones", [])
+            if isinstance(item, dict) and item.get("kind") == "development_handoff"
+        ),
+        None,
+    )
+    elapsed_finish = (
+        parse_timestamp(handoff["at"], field="development_handoff.at")
+        if handoff is not None
+        else (max(finishes) if finishes else None)
+    )
+    actual_elapsed = (
+        int((elapsed_finish - min(starts)).total_seconds())
+        if starts and elapsed_finish is not None
+        else None
+    )
     likely = forecast["likely_critical_path_seconds"]
     estimate_ratio = (
         round(actual_elapsed / likely, 4)
-        if actual_elapsed is not None and likely > 0 and len(terminal) == len(stages)
+        if actual_elapsed is not None
+        and isinstance(likely, int)
+        and likely > 0
+        and len(terminal) == len(stages)
         else None
     )
     counts = {status: 0 for status in sorted(STAGE_STATUSES)}
@@ -997,10 +1651,21 @@ def summarize(ledger: dict[str, Any]) -> dict[str, Any]:
         "forecast": forecast,
         "actual": {
             "elapsed_seconds": actual_elapsed,
-            "stage_sum_seconds": sum(stage["actual_seconds"] for stage in terminal),
-            "completed_stage_sum_seconds": sum(stage["actual_seconds"] for stage in completed),
+            "active_critical_path_seconds": runtime_critical_path_seconds(stages),
+            "stage_sum_seconds": sum(
+                stage["actual_seconds"]
+                for stage in terminal
+                if isinstance(stage.get("actual_seconds"), int)
+            ),
+            "completed_stage_sum_seconds": sum(
+                stage["actual_seconds"]
+                for stage in completed
+                if isinstance(stage.get("actual_seconds"), int)
+            ),
             "likely_estimate_ratio": estimate_ratio,
         },
+        "timer_model": ledger.get("timer_model", "legacy"),
+        "milestones": ledger.get("milestones", []),
         "status_counts": counts,
         "terminal_stage_count": len(terminal),
         "stage_count": len(stages),
@@ -1030,6 +1695,7 @@ def render_summary(summary: dict[str, Any]) -> str:
         f"{forecast['likely_critical_path_seconds']} / "
         f"{forecast['pessimistic_critical_path_seconds']} seconds",
         f"- actual elapsed: `{actual['elapsed_seconds']}` seconds",
+        f"- actual active critical path: `{actual['active_critical_path_seconds']}` seconds",
         f"- stages terminal: `{summary['terminal_stage_count']}/{summary['stage_count']}`",
         "- checklist completed: "
         f"`{summary['completed_checklist_item_count']}/{summary['checklist_item_count']}`",
@@ -1071,7 +1737,9 @@ def aggregate(roots: list[Path]) -> dict[str, Any]:
         if isinstance(ratio, (int, float)):
             ratios.append(float(ratio))
         for stage in ledger["stages"]:
-            if stage["status"] == "completed":
+            if stage["status"] == "completed" and isinstance(
+                stage.get("actual_seconds"), int
+            ):
                 stage_actuals.setdefault(stage["title"], []).append(stage["actual_seconds"])
 
     by_stage = {
@@ -1101,6 +1769,58 @@ def build_parser() -> argparse.ArgumentParser:
     start_parser.add_argument("--case-root", required=True)
     start_parser.add_argument("--stage", required=True)
     start_parser.add_argument("--at")
+
+    pause_parser = subparsers.add_parser(
+        "pause",
+        help="Pause one stage or every active stage; elapsed time keeps running",
+    )
+    pause_parser.add_argument("--case-root", required=True)
+    pause_parser.add_argument("--stage")
+    pause_parser.add_argument("--reason", choices=sorted(PAUSE_REASONS), required=True)
+    pause_parser.add_argument("--at")
+
+    resume_parser = subparsers.add_parser(
+        "resume",
+        help="Resume one stage or every paused stage",
+    )
+    resume_parser.add_argument("--case-root", required=True)
+    resume_parser.add_argument("--stage")
+    resume_parser.add_argument("--at")
+
+    reopen_parser = subparsers.add_parser(
+        "reopen", help="Reopen a completed stage for post-publication edits"
+    )
+    reopen_parser.add_argument("--case-root", required=True)
+    reopen_parser.add_argument("--stage", required=True)
+    reopen_parser.add_argument("--evidence", required=True)
+    reopen_parser.add_argument("--at")
+
+    milestone_parser = subparsers.add_parser(
+        "milestone", help="Record a publication or explicit development handoff"
+    )
+    milestone_parser.add_argument("--case-root", required=True)
+    milestone_parser.add_argument(
+        "--kind", choices=("publication", "development_handoff"), required=True
+    )
+    milestone_parser.add_argument("--evidence", required=True)
+    milestone_parser.add_argument("--external-system")
+    milestone_parser.add_argument("--external-item-id")
+    milestone_parser.add_argument("--read-back-at")
+    milestone_parser.add_argument("--at")
+
+    checkpoint_parser = subparsers.add_parser(
+        "checkpoint", help="Build a last-known snapshot for an external mirror"
+    )
+    checkpoint_parser.add_argument("--case-root", required=True)
+    checkpoint_parser.add_argument("--write")
+    checkpoint_parser.add_argument("--at")
+
+    reconcile_parser = subparsers.add_parser(
+        "reconcile", help="Compare local history with an external checkpoint read-back"
+    )
+    reconcile_parser.add_argument("--case-root", required=True)
+    reconcile_parser.add_argument("--external-checkpoint", required=True)
+    reconcile_parser.add_argument("--at")
 
     begin_parser = subparsers.add_parser(
         "begin",
@@ -1157,12 +1877,100 @@ def main() -> int:
     """Run CLI."""
     args = build_parser().parse_args()
     try:
-        if args.command in {"start", "begin", "check", "stop", "validate", "summary"}:
+        if args.command in {
+            "start",
+            "pause",
+            "resume",
+            "reopen",
+            "milestone",
+            "checkpoint",
+            "reconcile",
+            "begin",
+            "check",
+            "stop",
+            "validate",
+            "summary",
+        }:
             path, ledger = load_ledger(Path(args.case_root))
         if args.command == "start":
             start_stage(ledger, args.stage, at=args.at)
             save_ledger(path, ledger)
             print(f"PASS stage={args.stage} status=running")
+            return 0
+        if args.command == "pause":
+            stage_ids = (
+                [args.stage]
+                if args.stage
+                else [
+                    stage["id"]
+                    for stage in ledger["stages"]
+                    if stage.get("status") == "running"
+                    and stage.get("active_started_at") is not None
+                ]
+            )
+            if not stage_ids:
+                raise AutomationTimingError("No active stages to pause")
+            for stage_id in stage_ids:
+                pause_stage(ledger, stage_id, reason=args.reason, at=args.at)
+            save_ledger(path, ledger)
+            print(f"PASS paused={','.join(stage_ids)} reason={args.reason}")
+            return 0
+        if args.command == "resume":
+            stage_ids = (
+                [args.stage]
+                if args.stage
+                else [
+                    stage["id"]
+                    for stage in ledger["stages"]
+                    if stage.get("status") == "running"
+                    and stage.get("pause_started_at") is not None
+                ]
+            )
+            if not stage_ids:
+                raise AutomationTimingError("No paused stages to resume")
+            for stage_id in stage_ids:
+                resume_stage(ledger, stage_id, at=args.at)
+            save_ledger(path, ledger)
+            print(f"PASS resumed={','.join(stage_ids)}")
+            return 0
+        if args.command == "reopen":
+            reopen_stage(
+                ledger,
+                args.stage,
+                evidence_ref=args.evidence,
+                at=args.at,
+            )
+            save_ledger(path, ledger)
+            print(f"PASS reopened={args.stage}")
+            return 0
+        if args.command == "milestone":
+            milestone = record_milestone(
+                ledger,
+                kind=args.kind,
+                evidence_ref=args.evidence,
+                external_system=args.external_system,
+                external_item_id=args.external_item_id,
+                read_back_at=args.read_back_at,
+                at=args.at,
+            )
+            save_ledger(path, ledger)
+            checkpoint = build_checkpoint(ledger, at=args.at)
+            print(
+                f"PASS milestone={args.kind} "
+                f"publication_revision={milestone.get('publication_revision')} "
+                f"checkpoint_revision={checkpoint['checkpoint_revision']}"
+            )
+            return 0
+        if args.command == "checkpoint":
+            result = build_checkpoint(ledger, at=args.at)
+            if args.write:
+                atomic_json(Path(args.write), result)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return 0
+        if args.command == "reconcile":
+            external = json.loads(Path(args.external_checkpoint).read_text(encoding="utf-8"))
+            result = reconcile_checkpoint(ledger, external, at=args.at)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         if args.command == "begin":
             changed = begin_checklist_item(

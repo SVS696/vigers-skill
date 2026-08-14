@@ -28,8 +28,11 @@ approved planning handoff либо явно выбранный `--intent review`
 Сквозное правило выполнения: перед входом в каждый approved `Pxx` запусти
 `automation_timing.py start`; после его exit criteria и проверки — `stop --status
 completed`. При terminal failure закрой этап `failed|blocked|cancelled` с причиной.
-Не запускай task-manager timer и не переноси эти данные в checklist: точный
-контракт задан в `{baseDir}/references/automation-timing.md`.
+При `user_pause|limit_exhausted|external_wait|interrupted` сразу вызови `pause`,
+после продолжения — `resume`: active остановится, elapsed продолжит идти. При
+timing disabled те же stage-команды ведут progress без длительностей. Не запускай
+task-manager timer и не переноси эти данные в checklist: точный контракт задан в
+`{baseDir}/references/automation-timing.md`.
 
 Перед содержательной работой вызови `automation_timing.py begin` для выбранного
 `Pxx-Cxx`; выбирать пункты разрешено не по порядку списка. Если другой пункт уже
@@ -71,8 +74,9 @@ ledger через `check --user-confirmed`.
 pack.
 
 1. Получи bounded package командой `case_pipeline.py context --role
-   system-analyst` без `--block` и запусти `vigers-system-analyst` в свежем
-   контексте.
+   system-analyst --contract-surface solution-boundary --contract-surface
+   diagram --contract-surface reader-projection` без `--block` и запусти
+   `vigers-system-analyst` в свежем контексте.
 2. Передай контракт роли, закреплённую методическую выжимку и входные
    артефакты; не заменяй выжимку пересказом маршрута.
 3. Включи `business-context`, если неизвестна потребность, участники, процесс,
@@ -86,11 +90,17 @@ pack.
    probe, подтверждённый горизонт, current scope, seams, deferred и triggers.
    Сохрани принятый JSON block в существующий `decisions.md`; отдельный артефакт
    не создавай.
-7. Проверь `diagram_gate` по `{baseDir}/references/diagram-contract.md`: каждая
+7. Проверь `simplicity_authoring`: модель строилась от минимального текущего
+   решения после полного понимания потока; зафиксированы `root_owner`,
+   `chosen_rung`, protected-floor check и применимые
+   `ceiling|revisit_trigger|upgrade_path`. Каждый спорный статус, сущность,
+   настройка, dimension доступа или вариант имеет текущую semantic-ссылку, а
+   необоснованное удалено/отложено без потери доказанной extension seam.
+8. Проверь `diagram_gate` по `{baseDir}/references/diagram-contract.md`: каждая
    сложная поверхность имеет решение `required|not-required|blocked`, вопрос,
    подходящий тип представления, source IDs и решение о декомпозиции. Не
    считай объём текста самостоятельным основанием для диаграммы.
-8. Сохрани возвращённую модель требований в case package.
+9. Сохрани возвращённую модель требований в case package.
 
 Если аналитик во время прохода вернул доказанный `status: replan` с
 `planning_delta`, немедленно останови текущий pipeline и перейди в фазу
@@ -109,10 +119,16 @@ replanning из `planning-pipeline.md`. Не сохраняй частичную
 2. Горизонты `tactical` и `generalized-capability` всегда включают design gate.
    `bounded-systemic` сам по себе архитектора не требует.
 3. Если гейт не сработал, зафиксируй `architecture_gate.required: false`.
-4. Если сработал, запусти `vigers-solution-architect` в режиме `design` в
-   свежем контексте.
+4. Если сработал, получи `context --role solution-architect --role-mode design
+   --contract-surface solution-boundary --contract-surface diagram
+   --contract-surface reader-projection` и запусти `vigers-solution-architect`
+   в свежем контексте.
 5. Не позволяй архитектору менять бизнес-цель или придумывать требования.
-6. `decision-required` вынеси пользователю, только если выбор существенно
+6. Проверь `simplicity_authoring` архитектора: каждый новый компонент,
+   хранилище, событие, очередь, конфигуратор или иной механизм имеет текущий
+   requirement/constraint ref; указаны `chosen_rung`, protected-floor check и
+   предел осознанного упрощения; необоснованное удалено или отложено.
+7. `decision-required` вынеси пользователю, только если выбор существенно
    меняет scope, необратимость, стоимость или архитектурный канон.
 
 **Выход:** архитектура не требуется либо существует согласованная
@@ -123,10 +139,14 @@ architecture design note с ограничениями для редактора
 **Вход:** модель требований, architecture design note при наличии, профиль и
 проектный шаблон.
 
-1. Запусти `vigers-spec-editor` в свежем контексте.
+1. Получи `context --role spec-editor --role-mode document --contract-surface
+   diagram --contract-surface reader-projection` и запусти `vigers-spec-editor`
+   в свежем контексте.
 2. Не передавай ему сырой диалог, если смысл уже зафиксирован артефактами.
 3. Редактор собирает документ, но не закрывает открытые вопросы и не добавляет
    новые требования, поля, числа, технологии или архитектурные решения.
+   Он не возвращает элементы, удалённые или отложенные принятым
+   `simplicity_authoring`.
 4. Редактор реализует принятый `diagram_gate` и возвращает матрицу
    `diagram question → source_ids → section → working source → current stage →
    QA render → publication gate`.
@@ -137,8 +157,11 @@ architecture design note с ограничениями для редактора
    self-check. UI-сценарий называет экран входа; подтверждённый путь указывается,
    если source описывает навигацию, а для уже открытого экрана не
    реконструируется. Переход на новую поверхность назван, поля сопоставляют
-   видимую подпись с technical ID, неизменный путь не повторяется. Сырой
-   reasoning corpus и служебные IDs ему не передаются.
+   видимую подпись с technical ID, неизменный путь не повторяется. Каждый UI AC
+   содержит прямую ссылку на точный сценарий/ветвь с этим контекстом либо
+   собственные подтверждённые экран/точку входа и минимальный маршрут. API-,
+   batch- и system-only AC называют сценарий или системную точку входа без
+   фиктивного UI. Сырой reasoning corpus и служебные IDs ему не передаются.
 6. Координатор сохраняет текст как draft, не публикуя его.
 7. Если profile требует working projection, обнови каждый связанный target этим
    draft через project adapter. Явно пометь unresolved и непроверенные разделы,
@@ -154,26 +177,39 @@ architecture design note с ограничениями для редактора
 
 **Вход:** черновик.
 
-1. Выполни обязательные проходы профиля в указанном порядке.
-2. Сначала проверь границу на оба запаха `particular-case` и
-   `speculative-generalization`; только затем запускай проход на простоту.
-3. Простота проверяет необходимость элементов решения, а не красоту текста и не
-   удаляет доказанную точку расширения.
-4. Логический контроль проверяет связность разделов и трассировку.
-5. Стилевой проход не меняет факты, идентификаторы и решения.
-6. После каждого изменения повторно проверь затронутую трассировку.
-7. После существенного author-pass обнови обязательную working projection и
+1. Сначала выполни machine/document precheck, чтобы не тратить контрольный
+   проход на структурно сломанный draft.
+2. Проверь границу на оба запаха `particular-case` и
+   `speculative-generalization`, затем независимо от profile выполни ровно один
+   полный контроль `simplicity-spec` по собранному решению.
+3. Контроль проверяет необходимость элементов решения, а не красоту текста, и
+   не удаляет доказанную extension seam. Запиши `clean|corrected|decision-required`
+   как evidence существующего `author_passes`; новую роль и review gate не
+   создавай. В статусе/выдаче покажи человеку этот итог одной строкой, а для
+   `corrected` — короткую дельту; не вставляй служебный отчёт в постановку.
+4. Findings о сценариях, правилах, данных и состояниях верни аналитику;
+   архитектурные — архитектору. Редактор применяет только принятую bounded
+   дельту. Не открывай общий research и не проси «пересмотреть всё».
+5. После собственной bounded-коррекции не запускай второй полный simplicity
+   pass. Поздняя правка получает только delta-check, если вводит новый элемент
+   решения; изменение бизнес-смысла, scope, публичного контракта или канона —
+   `decision-required`.
+6. Выполни остальные обязательные проходы профиля в указанном порядке.
+   Логический контроль проверяет связность и трассировку; стилевой не меняет
+   факты, идентификаторы и решения.
+7. После каждого изменения повторно проверь затронутую трассировку.
+8. После существенного author-pass обнови обязательную working projection и
    запиши новый read-back хеш. Косметические изменения можно объединить одним
    update текущего gate.
-8. Для каждой required-диаграммы сверь смысл с source IDs, отрендери способом
+9. Для каждой required-диаграммы сверь смысл с source IDs, отрендери способом
    текущей рабочей стадии из profile `diagram_delivery` и прочитай фактический
    render на целевой ширине. Не создавай publication render/source до явного
    publication gate. Обрезка,
    наложения, неразличимые подписи, сломанные стрелки либо одна перегруженная
    схема вместо требуемой декомпозиции блокируют author gate.
-9. Закрой `author_passes` только после machine validation boundary-блока и
+10. Закрой `author_passes` только после machine validation boundary-блока и
    успешного visual read-back всех required-диаграмм.
-10. До независимого глобального review выполни machine check reader projection.
+11. До независимого глобального review выполни machine check reader projection.
     Не расходуй reviewer pass на draft с внутренними IDs, dangling/plain refs
     или нарушенным project document contract.
 
@@ -184,9 +220,11 @@ architecture design note с ограничениями для редактора
 **Вход:** финальный черновик author-pass, evidence pack, модель требований,
 закреплённый method context, профиль и architecture design note.
 
-1. Получи новый bounded package командой `case_pipeline.py context --role
-   spec-reviewer` без `--block`, запусти `vigers-spec-reviewer` в новом
-   контексте и передай закреплённые `method-context.json/md`.
+1. Получи bounded package командой `case_pipeline.py context --role
+   spec-reviewer --role-mode global|final --contract-surface solution-boundary
+   --contract-surface diagram --contract-surface reader-projection
+   --contract-surface project-rules` без `--block`, запусти fresh reviewer и
+   передай закреплённые `method-context.json/md`.
 2. Не передавай рассуждения редактора, самооценку и предыдущие review findings.
 3. Требуй findings по handoff-контракту: место, доказательство, последствие и
    минимальное исправление.
@@ -194,9 +232,11 @@ architecture design note с ограничениями для редактора
 5. Требуй независимую проверку `diagram_gate`: покрытие сложных поверхностей,
    семантическое соответствие source IDs, корректность декомпозиции и evidence
    чтения финального render.
-6. Отдельным свежим запуском reviewer в режиме `project-conformance` проверь
-   только затронутые соглашения профиля: API/HTTP, identifiers/casing,
-   терминологию, шаблон, frontmatter, ссылки и имена файлов.
+6. В `high` отдельным fresh reviewer `project-conformance` проверь локальные
+   соглашения. В `standard` один reviewer `final` покрывает global и применимые
+   project surfaces; report объявляет `covered_gates: [integration_review,
+   global_review, project_conformance]`. В `lite` semantic
+   reviewer запускается только при обнаруженном изменении смысла.
 7. Если применимых поверхностей нет, зафиксируй gate `project_conformance` как
    `not_required` с причиной; иначе сохрани evidence и закрой findings.
 8. Для каждого отчёта проверь reported counts, `research_reopen` и
@@ -214,8 +254,10 @@ architecture design note с ограничениями для редактора
 **Вход:** готовый черновик и `architecture_gate.required`.
 
 1. Если гейт не сработал и reviewer не нашёл архитектурного влияния, пропусти.
-2. Иначе запусти новый экземпляр `vigers-solution-architect` в режиме
-   `conformance`.
+2. Иначе получи `context --role solution-architect --role-mode conformance
+   --contract-surface solution-boundary --contract-surface diagram
+   --contract-surface reader-projection` и запусти новый экземпляр
+   `vigers-solution-architect`.
 3. Не передавай ему design-рассуждения; передай решение как утверждённый
    артефакт, проектный канон, evidence pack и draft.
 4. Классифицируй результат:
@@ -259,12 +301,31 @@ architecture design note с ограничениями для редактора
 3. Внешние трекеры, базы знаний и статусы изменяй только по явной просьбе и
    через профильный инструмент.
 4. После внешней записи выполни read-back. Превью или HTTP 200 не доказывают
-   корректную публикацию.
+   корректную публикацию. При measured timing зафиксируй `milestone
+   --kind publication`. Если после него пришли правки, выполни `reopen` последнего
+   completed stage, затем снова `stop` и новую publication revision.
+5. Явную передачу в разработку не выводи из факта публикации. После отдельного
+   подтверждения пользователя запиши `milestone --kind development_handoff`,
+   а при включённом timing и доступном `work-metrics` сначала согласуй все
+   объявленные case-related журналы разных сессий/харнесов. Передавай
+   `--logs-complete` только при доказанной полноте; eligible reconciliation
+   добавь в `timing_model.py update`, partial сохрани лишь для ретроспективы.
+   Затем сформируй calibration record и обнови project timing model. При включённом
+   passport history append-only добавь forecast, публикации, handoff и delta;
+   при task-note projection обнови last-known checkpoint Singularity и прочитай
+   обе записи обратно.
+6. После первого development handoff не переоткрывай основной timing sample.
+   Новые факты от разработки оформляй отдельным follow-up case с новым началом
+   в момент фактического возобновления анализа и ссылкой на исходный case.
+   Ожидание между handoff и follow-up в длительность анализа не включай.
 
 **Выход:** пользователь получил проверенный результат; состояние внешних
 систем описано фактически.
 
 Перед выдачей закрой последний active `Pxx`, затем выполни
 `automation_timing.py validate --final` и `case_pipeline.py validate --final`.
+До development handoff финальная проверка постановки допустима, но sample ещё не
+попадает в timing model. Forecast не передавай роли и не добавляй в постановку;
+при task-note projection он остаётся только в личном плане.
 Гейты, которые обоснованно не применимы, должны иметь состояние `not_required`,
 а не `pending`.

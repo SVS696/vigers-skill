@@ -39,6 +39,24 @@ python3 {baseDir}/scripts/planning_case.py init \
 изменены, кроме profile-required пустых учётных anchors и явно разрешённого
 создания самого passport.
 
+### Fast planning path
+
+После intake разрешён `fast-plan`, если координатор может детерминированно
+построить bounded search matrix из profile и intake, выполнить её read-only и
+материализовать один source cluster до вызова planner. Scope ограничен, нет
+конфликтов и признаков публичного контракта, данных/миграции,
+прав/безопасности, cross-service ownership, необратимости, compliance или
+архитектуры.
+
+Только после получения query log, negative results и `SRC-NNN` передай planner
+режим `fast-plan`. Координатор всё равно выполняет фазы 2–4: сохраняет source documents, проверяет
+coverage, материализует `source-map.json`, `research.md`, `plan.json`,
+`plan.md`, `artifact-plan.json`, `handoff.md` и проводит те же state
+transitions. Объединяется только модельная работа. При втором source cluster,
+конфликте, неограниченном gap или новом risk trigger planner возвращает
+`full-planning-required`; продолжи отдельными режимами без переиспользования
+неполного synthesis как утверждённого результата.
+
 ## Фаза 2. Research design
 
 **Вход:** state `researching`, заполнен intake.
@@ -67,7 +85,8 @@ python3 {baseDir}/scripts/planning_case.py context --case-root "<planning-root>"
 
 **Вход:** завершены запланированные поиски или зафиксирована недоступность.
 
-1. Передай planner режим `research-synthesis` отдельно от research-design.
+1. В полном маршруте передай planner режим `research-synthesis` отдельно от
+   research-design. В `fast-plan` возьми одноимённую часть общего envelope.
 2. Заполни `source-map.json` и `research.md`: факты, конфликты, gaps,
    planning implications и `sufficient|partial|blocked`.
 3. При `blocked` переведи case в `blocked`, покажи пользователю точную причину и
@@ -89,15 +108,16 @@ python3 {baseDir}/scripts/planning_case.py context --case-root "<planning-root>"
 
 **Вход:** state `researched`.
 
-1. Передай planner режим `plan` в новом контексте.
+1. В полном маршруте передай planner режим `plan` в новом контексте. В
+   `fast-plan` материализуй plan-часть того же envelope только после успешного
+   coverage gate.
 2. Построй `plan.json` schema 4 как DAG этапов с outcome, `depends_on`, exit
-   criteria, source refs и checklist. Для каждого этапа добавь трёхточечный
-   `automation_estimate` по `{baseDir}/references/automation-timing.md`. Общий
-   автоматизированный срок считай по critical path, а не суммой параллельных
-   этапов. Обязательно задай `execution_use: human_information_only`: цифры
-   показываются человеку, не входят в ролевой context и не управляют темпом,
-   порядком, scope, остановкой, покрытием или проверками модели. Не копируй
-   структуру будущей постановки
+   criteria, source refs и checklist. Не проси planner оценивать время. После
+   materialized preliminary plan и mode decision отдельный `timing_model.py`
+   выбирает похожие завершённые кейсы только текущего проекта и формирует два
+   human-only диапазона: active без пауз и elapsed с паузами. Forecast не входит
+   в ролевой context и не управляет темпом, порядком, scope, остановкой,
+   покрытием или проверками модели. Не копируй структуру будущей постановки
    механически.
 3. Выяви предварительные `PUS-*` и `PDOD-*` по research basis. Добавь их в
    `preliminary_requirements` со статусом `preliminary`, source refs, confidence
@@ -125,7 +145,13 @@ python3 {baseDir}/scripts/planning_case.py context --case-root "<planning-root>"
    без пользовательского voice profile. Не вызывай отдельного агента для
    каждого пункта; обрабатывай checklist целиком. Подробный пункт допустим, если
    сокращение теряет условие или критерий готовности.
-9. Переведи case в `artifacts_planned`.
+9. После готового plan вызови `spec_pipeline.py suggest-mode` без immutable
+   `--write` и передай полученный JSON вместе с `plan.json` в
+   `timing_model.py predict`, только если pinned preferences включают timing
+   model. До этого шага искать похожие кейсы запрещено. Если включены
+   `task_manager` и `timing_projection=task-note`, добавь `human_note` в draft
+   описания плана через project adapter; сам forecast не включай в model context.
+10. Переведи case в `artifacts_planned`.
 
 **Выход:** план минимален, зависим, основан на источниках и готов к проектной
 публикации.
@@ -150,7 +176,13 @@ python3 {baseDir}/scripts/planning_case.py bind \
   --read-back-at "<timestamp>" [--action "create|update|link"] [--replace]
 ```
 
-5. Переведи case в `published_for_review`; команда создаст immutable snapshot.
+5. Переведи case в `published_for_review`. Перед snapshot команда
+   детерминированно соберёт `approval-summary.md` из `plan.json` и
+   `source-map.json`: предварительные User Story в форме role-goal-value,
+   preliminary DoD, укрупнённые этапы полного анализа и coverage/gaps.
+   Сводка обязана явно говорить, что состав и формулировки историй могут быть
+   подтверждены, изменены, разделены, отклонены или дополнены полным анализом.
+   Затем команда создаст immutable snapshot вместе с этой сводкой.
 
 **Выход:** пользователь видит план и реальные draft objects; IDs/read-back
 зафиксированы.
@@ -159,8 +191,14 @@ python3 {baseDir}/scripts/planning_case.py bind \
 
 **Вход:** state `published_for_review`.
 
-1. Покажи plan.md, source coverage/gaps, passport и ссылки на external bindings.
-2. Не переходи дальше без явного комментария или approval пользователя.
+1. Покажи `approval-summary.md` как основной материал для решения, затем при
+   необходимости дай `plan.md`, passport и ссылки на external bindings для
+   детализации. Не заставляй пользователя собирать предварительные US из
+   машинного JSON или чек-листа.
+2. Сформулируй границу решения явно: approval подтверждает направление,
+   coverage и план полного анализа, но не утверждает финальный состав US,
+   требования, AC или DoD. Не переходи дальше без явного комментария или
+   approval пользователя.
 3. Запиши verdict:
 
 ```text
@@ -195,7 +233,10 @@ python3 {baseDir}/scripts/planning_case.py export \
   --case-root "<planning-root>" --write "<vigers-case-root>"
 ```
 
-3. Материализуй `mode-decision.json` и `method-context.json/md` в тот же root.
+3. Материализуй финальный `mode-decision.json` по approved revision и
+   `method-context.json/md` в тот же root. Если feature fingerprint отличается
+   от предварительного прогноза, пересчитай human note и сделай read-back; это не
+   открывает новый model review.
 4. Запусти `case_pipeline.py init` с точными `--intent`, `--cwd`, profile и
    `--route-id "<route_id>"`, без `--allow-unplanned`. Он проверит planning
    approval, project root и fingerprints, затем создаст связанный

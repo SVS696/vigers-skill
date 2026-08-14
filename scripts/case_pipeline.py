@@ -9,6 +9,7 @@ import json
 import re
 import shutil
 import sys
+import unicodedata
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -22,7 +23,11 @@ from automation_timing import (
 )
 from document_conformance import validate_contract, validate_markdown_file
 from mode_decision import (
+    ASSURANCE_LEVELS,
+    CHANGE_SCOPES,
     MODE_DECISION_FILENAME,
+    PROJECTION_SYNC_POLICIES,
+    TRACKING_POLICIES,
     ModeDecisionError,
     validate_mode_decision,
 )
@@ -56,10 +61,13 @@ ROLE_MANIFEST_JSON = "role-manifest.json"
 ROLE_MANIFEST_SCHEMA = 1
 WORKING_PROJECTION_JSON = "working-projection.json"
 WORKING_PROJECTION_SCHEMA = 1
+AGENT_LEDGER_JSON = "agent-ledger.json"
+AGENT_LEDGER_SCHEMA = 1
 PROJECT_CONFORMANCE_CONTRACT_JSON = "project-conformance-contract.json"
 EXTERNAL_READBACK_RECEIPT_SCHEMA = 1
 CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BLOCK_ID_RE = re.compile(r"^B[0-9]{2,3}$")
+FINDING_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 SEMANTIC_ID_RE = re.compile(
     r"^(GOAL|ACT|SCN|RULE|DATA|STATE|IF|QUAL|REQ|AC|DOD|ASM|Q|DEC|CON)-"
     r"(B[0-9]{2,3})-[0-9]{3}$"
@@ -143,6 +151,20 @@ REVISIONED_REVIEW_GATES = {
     "project_conformance",
     "architecture_conformance",
 }
+
+REVIEW_STRATEGIES = {
+    "lite": "machine-first",
+    "standard": "combined-final",
+    "high": "layered-independent",
+}
+CONTRACT_SURFACES = {
+    "solution-boundary",
+    "diagram",
+    "reader-projection",
+    "project-rules",
+}
+REMEDIATION_SCOPES = {"targeted", "full-block"}
+REMEDIATION_SEVERITIES = {"blocker", "major"}
 
 
 class CaseError(RuntimeError):
@@ -263,8 +285,22 @@ def planning_role_context(payload: dict[str, Any]) -> dict[str, Any]:
         ),
         "preliminary_requirements": payload.get("preliminary_requirements"),
         "approval": payload.get("approval"),
-        "timing_visibility": "human_information_only",
-        "excluded_fields": ["automation_plan", "automation_estimation", "estimates"],
+        "timing_visibility": (
+            "excluded" if "execution_preferences" in payload else "human_information_only"
+        ),
+        "excluded_fields": (
+            [
+                "automation_plan",
+                "automation_estimation",
+                "estimates",
+                "timing_forecast",
+                "timing_model",
+                "execution_preferences",
+                "runtime_ledger",
+            ]
+            if "execution_preferences" in payload
+            else ["automation_plan", "automation_estimation", "estimates"]
+        ),
     }
     if payload.get("solution_boundary_probe") is not None:
         result["solution_boundary_probe"] = payload["solution_boundary_probe"]
@@ -451,6 +487,105 @@ def role_context_fingerprint(payload: dict[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def assurance_level(manifest: dict[str, Any]) -> str:
+    """Return explicit assurance or preserve legacy cases as high assurance."""
+    value = manifest.get("assurance_level")
+    return value if value in ASSURANCE_LEVELS else "high"
+
+
+def tracking_policy(manifest: dict[str, Any]) -> str:
+    """Return explicit tracking or preserve legacy checklist-level tracking."""
+    value = manifest.get("tracking")
+    return value if value in TRACKING_POLICIES else "fine"
+
+
+def projection_sync_policy(manifest: dict[str, Any]) -> str:
+    """Return explicit projection cadence or preserve legacy per-block barriers."""
+    value = manifest.get("projection_sync")
+    return value if value in PROJECTION_SYNC_POLICIES else "per-block"
+
+
+def runtime_automation_plan(
+    automation_plan: dict[str, Any] | None,
+    policy: str,
+) -> dict[str, Any] | None:
+    """Project a detailed planning estimate into the selected runtime tracking."""
+    if automation_plan is None:
+        return None
+    if policy == "fine":
+        return automation_plan
+    projected = {
+        key: value
+        for key, value in automation_plan.items()
+        if key not in {"stages", "fingerprint"}
+    }
+    projected["stages"] = []
+    stages = [stage for stage in automation_plan.get("stages", []) if isinstance(stage, dict)]
+    stage_by_id = {
+        stage["id"]: stage
+        for stage in stages
+        if isinstance(stage.get("id"), str)
+    }
+    user_stage_ids = {
+        stage["id"]
+        for stage in stages
+        if isinstance(stage.get("id"), str)
+        and any(
+            isinstance(item, dict) and item.get("completion_owner") == "user"
+            for item in stage.get("checklist", [])
+        )
+    }
+
+    def inherited_user_dependencies(stage_id: str) -> list[str]:
+        found: set[str] = set()
+        pending = list(stage_by_id.get(stage_id, {}).get("depends_on", []))
+        while pending:
+            dependency = pending.pop()
+            if dependency in found:
+                continue
+            if dependency in user_stage_ids:
+                found.add(dependency)
+            else:
+                pending.extend(stage_by_id.get(dependency, {}).get("depends_on", []))
+        return sorted(found)
+
+    for stage in automation_plan.get("stages", []):
+        if not isinstance(stage, dict):
+            continue
+        user_gates = [
+            item
+            for item in stage.get("checklist", [])
+            if isinstance(item, dict) and item.get("completion_owner") == "user"
+        ]
+        if policy == "off" and not user_gates:
+            continue
+        checklist = user_gates if policy == "off" else [
+            {
+                "id": f"{stage['id']}-MILESTONE",
+                "text": f"Complete milestone: {stage['title']}",
+                "required": True,
+                "done_when": "Stage result and evidence are recorded",
+                "completion_owner": "agent",
+            },
+            *user_gates,
+        ]
+        projected["stages"].append(
+            {
+                **{key: value for key, value in stage.items() if key != "checklist"},
+                **(
+                    {"depends_on": inherited_user_dependencies(stage["id"])}
+                    if policy == "off"
+                    else {}
+                ),
+                "checklist": checklist,
+            }
+        )
+    from automation_timing import canonical_fingerprint
+
+    projected["fingerprint"] = canonical_fingerprint(projected)
+    return projected
+
+
 def role_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     """Project the coordinator manifest without timing-derived fields."""
     planning = manifest.get("planning_handoff")
@@ -498,6 +633,13 @@ def role_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         "gates": manifest.get("gates"),
         "timing_visibility": "excluded",
     }
+    if "assurance_level" in manifest:
+        result.update(
+            assurance_level=assurance_level(manifest),
+            review_strategy=REVIEW_STRATEGIES[assurance_level(manifest)],
+            tracking=tracking_policy(manifest),
+            projection_sync=projection_sync_policy(manifest),
+        )
     encoded = json.dumps(
         result,
         ensure_ascii=False,
@@ -544,7 +686,7 @@ def validate_working_projection_state(payload: Any) -> list[str]:
     updates = payload.get("updates")
     if not isinstance(updates, list):
         return [*errors, "working projection updates must be an array"]
-    seen_updates: set[tuple[str, str, str, str]] = set()
+    previous_key_by_target: dict[str, tuple[str, str, str, str]] = {}
     for update in updates:
         if not isinstance(update, dict):
             errors.append("working projection updates must be objects")
@@ -578,9 +720,34 @@ def validate_working_projection_state(payload: Any) -> list[str]:
             str(source_hash),
             str(content_hash),
         )
-        if key in seen_updates:
+        if previous_key_by_target.get(str(target_id)) == key:
             errors.append(f"duplicate working projection update: {target_id}/{update.get('source')}")
-        seen_updates.add(key)
+        previous_key_by_target[str(target_id)] = key
+        bindings = update.get("source_bindings", [])
+        if not isinstance(bindings, list):
+            errors.append(f"working projection update {target_id}: source_bindings must be an array")
+            continue
+        seen_bindings: set[tuple[str, str]] = set()
+        for binding in bindings:
+            if not isinstance(binding, dict):
+                errors.append(f"working projection update {target_id}: source binding must be an object")
+                continue
+            binding_source = binding.get("source")
+            binding_hash = binding.get("source_sha256")
+            bound_at = binding.get("bound_at")
+            if not isinstance(binding_source, str) or not (
+                BLOCK_ID_RE.fullmatch(binding_source)
+                or binding_source in {"draft", "integration"}
+            ):
+                errors.append(f"working projection update {target_id}: invalid bound source")
+            if not isinstance(binding_hash, str) or not SHA256_RE.fullmatch(binding_hash):
+                errors.append(f"working projection update {target_id}: invalid bound source hash")
+            if not isinstance(bound_at, str) or not bound_at.strip():
+                errors.append(f"working projection update {target_id}: invalid bound_at")
+            binding_key = (str(binding_source), str(binding_hash))
+            if binding_key in seen_bindings:
+                errors.append(f"working projection update {target_id}: duplicate source binding")
+            seen_bindings.add(binding_key)
     return errors
 
 
@@ -763,14 +930,20 @@ def projection_evidence_errors(
 
 def projection_update_sources(payload: dict[str, Any], target_id: str) -> dict[str, str]:
     """Return the latest recorded subject hash for each projected source."""
-    return {
-        item["source"]: item["source_sha256"]
-        for item in payload.get("updates", [])
-        if isinstance(item, dict)
-        and item.get("target_id") == target_id
-        and isinstance(item.get("source"), str)
-        and isinstance(item.get("source_sha256"), str)
-    }
+    result: dict[str, str] = {}
+    for item in payload.get("updates", []):
+        if not isinstance(item, dict) or item.get("target_id") != target_id:
+            continue
+        if isinstance(item.get("source"), str) and isinstance(item.get("source_sha256"), str):
+            result[item["source"]] = item["source_sha256"]
+        for binding in item.get("source_bindings", []):
+            if (
+                isinstance(binding, dict)
+                and isinstance(binding.get("source"), str)
+                and isinstance(binding.get("source_sha256"), str)
+            ):
+                result[binding["source"]] = binding["source_sha256"]
+    return result
 
 
 def working_projection_errors(
@@ -823,6 +996,8 @@ def working_projection_errors(
                 f"{target_id}: working projection has no current "
                 f"{required_document_source} read-back"
             )
+        if projection_sync_policy(manifest) != "per-block":
+            continue
         for block in ledger.get("blocks", []):
             if block.get("status") not in {"reviewed", "integrated"}:
                 continue
@@ -949,10 +1124,9 @@ def project_conformance_review_freshness_errors(
     documents, resolution_errors = project_conformance_documents(root, manifest, contract)
     errors.extend(resolution_errors)
     watched = [path for _, path in documents]
-    if "working_projection" in set(contract.get("checks", [])):
-        projection_relative = manifest.get("artifacts", {}).get("working_projection")
-        if isinstance(projection_relative, str):
-            watched.append(case_file(root, projection_relative))
+    # working-projection.json is a runtime ledger. Its mtime can change when a
+    # source is bound to an unchanged read-back, so freshness follows the actual
+    # draft/visible documents resolved above rather than ledger bookkeeping.
     if errors:
         return errors
     try:
@@ -979,8 +1153,8 @@ def project_conformance_review_freshness_errors(
     return errors
 
 
-def initial_gates(mode: str) -> dict[str, dict[str, Any]]:
-    """Create gate state, skipping block-only gates in compact mode."""
+def initial_gates(mode: str, assurance: str) -> dict[str, dict[str, Any]]:
+    """Create gates from independent scale and assurance decisions."""
     gates = {
         name: {
             "status": "pending",
@@ -994,7 +1168,40 @@ def initial_gates(mode: str) -> dict[str, dict[str, Any]]:
     if mode == "compact":
         gates["semantic_integration"]["status"] = "not_required"
         gates["integration_review"]["status"] = "not_required"
+    elif assurance != "high":
+        gates["integration_review"].update(
+            status="not_required",
+            note="covered by the combined final review",
+        )
+    if assurance == "lite":
+        gates["global_review"].update(
+            status="not_required",
+            note="machine-first lite assurance; semantic change escalates to standard",
+        )
+        gates["project_conformance"].update(
+            status="not_required",
+            note="editorial lite assurance uses deterministic project checks",
+        )
     return gates
+
+
+def required_gates(manifest: dict[str, Any]) -> set[str]:
+    """Return gates that policy never permits callers to waive manually."""
+    required = {
+        name
+        for name, gate in initial_gates(
+            str(manifest.get("mode")),
+            assurance_level(manifest),
+        ).items()
+        if gate["status"] != "not_required"
+        and name not in {"architecture_design", "architecture_conformance"}
+    }
+    if (
+        manifest.get("profile_id") == "generic"
+        and manifest.get("project_conformance_contract") is None
+    ):
+        required.discard("project_conformance")
+    return required
 
 
 def init_case(
@@ -1007,6 +1214,9 @@ def init_case(
     route_id: str,
     project_root: str | None,
     document_contract: dict[str, Any] | None = None,
+    assurance: str | None = None,
+    tracking: str | None = None,
+    projection_sync: str | None = None,
     allow_unrecorded_mode: bool = False,
     allow_unrecorded_method: bool = False,
     allow_unplanned: bool = False,
@@ -1042,6 +1252,7 @@ def init_case(
         raise CaseError(f"Refusing to initialize a non-empty directory: {root}")
 
     decision_binding: dict[str, str] | None = None
+    decision_payload: dict[str, Any] | None = None
     decision_path = root / MODE_DECISION_FILENAME
     if decision_path.exists() or decision_path.is_symlink():
         resolved_decision_path = case_file(root, MODE_DECISION_FILENAME)
@@ -1064,6 +1275,40 @@ def init_case(
         raise CaseError(
             f"Missing {MODE_DECISION_FILENAME}; run spec_pipeline.py suggest-mode first"
         )
+
+    if decision_payload is not None and "selected_assurance" in decision_payload:
+        decided_assurance = decision_payload["selected_assurance"]
+        decided_tracking = decision_payload["selected_tracking"]
+        decided_projection_sync = decision_payload["selected_projection_sync"]
+    else:
+        # Missing fields identify a legacy decision and retain the previous,
+        # deliberately expensive semantics.
+        decided_assurance = "high"
+        decided_tracking = "fine"
+        decided_projection_sync = "per-block"
+    selected_assurance = assurance or decided_assurance
+    selected_tracking = tracking or decided_tracking
+    selected_projection_sync = projection_sync or decided_projection_sync
+    if selected_assurance not in ASSURANCE_LEVELS:
+        raise CaseError(f"Invalid assurance level: {selected_assurance!r}")
+    if selected_tracking not in TRACKING_POLICIES:
+        raise CaseError(f"Invalid tracking policy: {selected_tracking!r}")
+    if selected_projection_sync not in PROJECTION_SYNC_POLICIES:
+        raise CaseError(f"Invalid projection sync: {selected_projection_sync!r}")
+    if decision_payload is not None and "selected_assurance" in decision_payload:
+        mismatches = [
+            label
+            for label, actual, expected in (
+                ("assurance", selected_assurance, decided_assurance),
+                ("tracking", selected_tracking, decided_tracking),
+                ("projection sync", selected_projection_sync, decided_projection_sync),
+            )
+            if actual != expected
+        ]
+        if mismatches:
+            raise CaseError(
+                "Case runtime overrides conflict with mode decision: " + ", ".join(mismatches)
+            )
 
     method_binding: dict[str, str] | None = None
     method_metadata_path = root / METHOD_CONTEXT_JSON
@@ -1207,6 +1452,9 @@ def init_case(
         "schema": SCHEMA_VERSION,
         "case_id": case_id,
         "mode": mode,
+        "assurance_level": selected_assurance,
+        "tracking": selected_tracking,
+        "projection_sync": selected_projection_sync,
         "intent": intent,
         "profile_id": profile_id,
         "route_id": route_id,
@@ -1215,6 +1463,11 @@ def init_case(
         "method_context": method_binding,
         "project_conformance_contract": contract_binding,
         "planning_handoff": planning_binding,
+        **(
+            {"execution_preferences": dict(planning_payload["execution_preferences"])}
+            if isinstance((planning_payload or {}).get("execution_preferences"), dict)
+            else {}
+        ),
         "created_at": now_utc(),
         "updated_at": now_utc(),
         "kernel": {
@@ -1224,6 +1477,7 @@ def init_case(
         },
         "artifacts": {
             "automation_timing": AUTOMATION_TIMING_FILENAME,
+            "agent_ledger": AGENT_LEDGER_JSON,
             "role_manifest": ROLE_MANIFEST_JSON,
             "planning_role_context": (
                 PLANNING_ROLE_CONTEXT_JSON if planning_binding is not None else None
@@ -1241,7 +1495,8 @@ def init_case(
             "architecture_conformance": "reviews/architecture.md",
             "consistency_report": "consistency.json",
         },
-        "gates": initial_gates(mode),
+        "gates": initial_gates(mode, selected_assurance),
+        "gate_history": {},
         "events": [
             event(
                 "case_initialized",
@@ -1262,7 +1517,10 @@ def init_case(
     ledger = {"schema": SCHEMA_VERSION, "blocks": []}
     automation_ledger = initialize_automation_timing(
         case_id=case_id,
-        automation_plan=(planning_payload or {}).get("automation_plan"),
+        automation_plan=runtime_automation_plan(
+            (planning_payload or {}).get("automation_plan"),
+            selected_tracking,
+        ),
         planning_case_id=(planning_payload or {}).get("planning_case_id"),
         planning_revision=(planning_payload or {}).get("planning_revision"),
         passport=(planning_payload or {}).get("passport"),
@@ -1271,6 +1529,10 @@ def init_case(
     atomic_json(root / ROLE_MANIFEST_JSON, role_manifest(manifest))
     atomic_json(root / "ledger.json", ledger)
     atomic_json(root / AUTOMATION_TIMING_FILENAME, automation_ledger)
+    atomic_json(
+        root / AGENT_LEDGER_JSON,
+        {"schema": AGENT_LEDGER_SCHEMA, "case_id": case_id, "runs": []},
+    )
     render_status(root, manifest, ledger)
 
 
@@ -1454,7 +1716,10 @@ def migrate_planning_handoff(
 
     replacement_timing = initialize_automation_timing(
         case_id=manifest["case_id"],
-        automation_plan=new_payload.get("automation_plan"),
+        automation_plan=runtime_automation_plan(
+            new_payload.get("automation_plan"),
+            tracking_policy(manifest),
+        ),
         planning_case_id=new_payload.get("planning_case_id"),
         planning_revision=new_revision,
         passport=new_payload.get("passport"),
@@ -1564,6 +1829,143 @@ def save_case(root: Path, manifest: dict[str, Any], ledger: dict[str, Any]) -> N
     render_status(root, manifest, ledger)
 
 
+def validate_agent_ledger(payload: Any, *, case_id: str) -> list[str]:
+    """Validate telemetry shape without pretending missing provider counters exist."""
+    if not isinstance(payload, dict):
+        return ["agent-ledger.json must be an object"]
+    if payload.get("schema") != AGENT_LEDGER_SCHEMA or payload.get("case_id") != case_id:
+        return ["agent-ledger.json identity is invalid"]
+    runs = payload.get("runs")
+    if not isinstance(runs, list):
+        return ["agent-ledger.json runs must be an array"]
+    errors: list[str] = []
+    for index, run in enumerate(runs):
+        label = f"agent-ledger run {index + 1}"
+        if not isinstance(run, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        for field in ("at", "role", "role_mode", "model"):
+            if not isinstance(run.get(field), str) or not run[field].strip():
+                errors.append(f"{label} requires {field}")
+        if run.get("assurance_level") not in ASSURANCE_LEVELS:
+            errors.append(f"{label} has invalid assurance_level")
+        if not isinstance(run.get("subject_sha256"), str) or not SHA256_RE.fullmatch(
+            run["subject_sha256"]
+        ):
+            errors.append(f"{label} has invalid subject_sha256")
+        for field in ("input_bytes", "input_tokens", "output_tokens"):
+            value = run.get(field)
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+            ):
+                errors.append(f"{label} {field} must be non-negative or null")
+        duration = run.get("duration_seconds")
+        if (
+            not isinstance(duration, (int, float))
+            or isinstance(duration, bool)
+            or duration < 0
+        ):
+            errors.append(f"{label} has invalid duration_seconds")
+        retries = run.get("retries")
+        if not isinstance(retries, int) or isinstance(retries, bool) or retries < 0:
+            errors.append(f"{label} has invalid retries")
+        findings = run.get("findings")
+        if not isinstance(findings, dict):
+            errors.append(f"{label} findings must be an object")
+        else:
+            for severity in ("blocker", "major", "minor"):
+                value = findings.get(severity)
+                if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                    errors.append(f"{label} findings.{severity} is invalid")
+        if run.get("cache_status") not in {"hit", "miss", "unknown"}:
+            errors.append(f"{label} has invalid cache_status")
+    return errors
+
+
+def record_agent_run(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    role: str,
+    role_mode: str,
+    model: str,
+    subject_sha256: str,
+    input_bytes: int | None,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    duration_seconds: float,
+    retries: int,
+    reported_blocker: int,
+    reported_major: int,
+    reported_minor: int,
+    cache_status: str,
+) -> None:
+    """Append cost and finding-yield telemetry without exposing it to roles."""
+    relative = manifest.get("artifacts", {}).get("agent_ledger")
+    if not isinstance(relative, str):
+        raise CaseError("Case has no agent ledger; legacy cases keep legacy telemetry")
+    if not role.strip() or not role_mode.strip() or not model.strip():
+        raise CaseError("Agent role, role mode, and model are required")
+    normalized_subject = subject_sha256.strip().lower()
+    if not SHA256_RE.fullmatch(normalized_subject):
+        raise CaseError("Agent subject hash must be a lowercase SHA-256 value")
+    integer_fields = {
+        "input_bytes": input_bytes,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "retries": retries,
+        "reported_blocker": reported_blocker,
+        "reported_major": reported_major,
+        "reported_minor": reported_minor,
+    }
+    for label, value in integer_fields.items():
+        if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
+            raise CaseError(f"Agent telemetry {label} must be a non-negative integer or null")
+    if duration_seconds < 0:
+        raise CaseError("Agent telemetry duration must be non-negative")
+    if cache_status not in {"hit", "miss", "unknown"}:
+        raise CaseError("Agent telemetry cache status must be hit, miss, or unknown")
+    path = case_file(root, relative)
+    payload = read_json(path)
+    ledger_errors = validate_agent_ledger(payload, case_id=str(manifest.get("case_id")))
+    if ledger_errors:
+        raise CaseError("agent-ledger.json is invalid: " + "; ".join(ledger_errors))
+    run = {
+        "at": now_utc(),
+        "role": role.strip(),
+        "role_mode": role_mode.strip(),
+        "assurance_level": assurance_level(manifest),
+        "model": model.strip(),
+        "subject_sha256": normalized_subject,
+        "input_bytes": input_bytes,
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "duration_seconds": duration_seconds,
+        "retries": retries,
+        "findings": {
+            "blocker": reported_blocker,
+            "major": reported_major,
+            "minor": reported_minor,
+        },
+        "cache_status": cache_status,
+    }
+    payload["runs"].append(run)
+    atomic_json(path, payload)
+    manifest["events"].append(
+        event(
+            "agent_run_recorded",
+            role=run["role"],
+            role_mode=run["role_mode"],
+            subject_sha256=normalized_subject,
+            reported_blocker=reported_blocker,
+            reported_major=reported_major,
+            reported_minor=reported_minor,
+        )
+    )
+    save_case(root, manifest, ledger)
+
+
 def record_working_projection_update(
     root: Path,
     manifest: dict[str, Any],
@@ -1632,19 +2034,52 @@ def record_working_projection_update(
         "evidence_sha256": evidence_hash,
         "read_back_at": read_back_at.strip(),
     }
-    duplicate = next(
-        (
-            item
-            for item in payload["updates"]
-            if isinstance(item, dict)
-            and item.get("target_id") == target_id
-            and item.get("source") == candidate["source"]
+    target_updates = [
+        item
+        for item in payload["updates"]
+        if isinstance(item, dict) and item.get("target_id") == target_id
+    ]
+    latest = target_updates[-1] if target_updates else None
+    if (
+        isinstance(latest, dict)
+        and latest.get("source") == candidate["source"]
+        and latest.get("source_sha256") == normalized_source_hash
+        and latest.get("content_sha256") == normalized_content_hash
+        and latest.get("evidence_kind") == normalized_evidence_kind
+        and latest.get("evidence_sha256") == evidence_hash
+    ):
+        return
+    if (
+        projection_sync_policy(manifest) == "milestones"
+        and isinstance(latest, dict)
+        and latest.get("content_sha256") == normalized_content_hash
+        and latest.get("evidence_kind") == normalized_evidence_kind
+        and latest.get("evidence_sha256") == evidence_hash
+    ):
+        binding = {
+            "source": normalized_source,
+            "source_sha256": normalized_source_hash,
+            "bound_at": read_back_at.strip(),
+        }
+        bindings = latest.setdefault("source_bindings", [])
+        if not any(
+            isinstance(item, dict)
+            and item.get("source") == normalized_source
             and item.get("source_sha256") == normalized_source_hash
-            and item.get("content_sha256") == normalized_content_hash
-        ),
-        None,
-    )
-    if duplicate is not None:
+            for item in bindings
+        ):
+            bindings.append(binding)
+            atomic_json(path, payload)
+            manifest["events"].append(
+                event(
+                    "working_projection_source_bound",
+                    target_id=target_id,
+                    source=normalized_source,
+                    source_sha256=normalized_source_hash,
+                    content_sha256=normalized_content_hash,
+                )
+            )
+            save_case(root, manifest, ledger)
         return
     payload["updates"].append(candidate)
     atomic_json(path, payload)
@@ -1737,6 +2172,10 @@ def add_block(
         "artifact_sha256": None,
         "index_sha256": None,
         "review_sha256": None,
+        "review_history": [],
+        "remediation_contract": "targeted-v1",
+        "remediations": [],
+        "active_remediation": None,
         "status_before_stale": None,
         "note": None,
         "updated_at": now_utc(),
@@ -1798,23 +2237,139 @@ def downstream_closure(ledger: dict[str, Any], seeds: set[str]) -> set[str]:
     return affected
 
 
+def archive_passed_gate(
+    manifest: dict[str, Any],
+    gate_name: str,
+    *,
+    reason: str,
+) -> None:
+    """Preserve one passed gate before invalidation so bounded re-review can reuse it."""
+    gate = manifest.get("gates", {}).get(gate_name)
+    if not isinstance(gate, dict) or gate.get("status") != "pass":
+        return
+    history_by_gate = manifest.setdefault("gate_history", {})
+    if not isinstance(history_by_gate, dict):
+        raise CaseError("manifest gate_history must be an object")
+    history = history_by_gate.setdefault(gate_name, [])
+    if not isinstance(history, list):
+        raise CaseError(f"manifest gate_history.{gate_name} must be an array")
+    snapshot = json.loads(json.dumps(gate, ensure_ascii=False))
+    if history and isinstance(history[-1], dict):
+        latest = history[-1]
+        if (
+            latest.get("subject_sha256") == snapshot.get("subject_sha256")
+            and latest.get("evidence_sha256") == snapshot.get("evidence_sha256")
+        ):
+            return
+    snapshot["archived_at"] = now_utc()
+    snapshot["archive_reason"] = reason
+    history.append(snapshot)
+
+
+def gate_history_errors(root: Path, manifest: dict[str, Any]) -> list[str]:
+    """Validate archived whole-case review states and their immutable evidence."""
+    history_by_gate = manifest.get("gate_history", {})
+    if not isinstance(history_by_gate, dict):
+        return ["manifest gate_history must be an object"]
+    errors: list[str] = []
+    for gate_name, history in history_by_gate.items():
+        if gate_name not in REVISIONED_REVIEW_GATES or not isinstance(history, list):
+            errors.append(f"manifest gate_history.{gate_name} is invalid")
+            continue
+        for index, snapshot in enumerate(history, start=1):
+            label = f"gate history {gate_name} r{index:03d}"
+            if not isinstance(snapshot, dict) or snapshot.get("status") != "pass":
+                errors.append(f"{label} is not a passed gate snapshot")
+                continue
+            evidence = snapshot.get("evidence")
+            if not isinstance(evidence, str):
+                errors.append(f"{label} has no evidence")
+                continue
+            path = case_file(root, evidence)
+            if not artifact_ready(path):
+                errors.append(f"{label} evidence is missing")
+            elif sha256(path) != snapshot.get("evidence_sha256"):
+                errors.append(f"{label} evidence changed after archive")
+            if not SHA256_RE.fullmatch(str(snapshot.get("subject_sha256", ""))):
+                errors.append(f"{label} has invalid subject hash")
+            if snapshot.get("semantic_snapshot") is not None and not isinstance(
+                snapshot.get("semantic_snapshot"), dict
+            ):
+                errors.append(f"{label} has invalid semantic snapshot")
+    return errors
+
+
 def refresh_kernel(
     root: Path,
     manifest: dict[str, Any],
     ledger: dict[str, Any],
     affected_ids: list[str],
+    *,
+    change_scope: str | None = None,
+    invalidate_all: bool = False,
+    reason: str | None = None,
 ) -> list[str]:
-    """Advance the kernel revision and invalidate affected completed work."""
+    """Advance kernel revision with explicit impact for new assurance-aware cases."""
     _, current_hash = current_kernel(root, manifest)
     if current_hash == manifest["kernel"]["sha256"]:
         return []
 
     blocks = blocks_by_id(ledger)
-    seeds = set(affected_ids) if affected_ids else set(blocks)
+    legacy_refresh = change_scope is None
+    if change_scope is not None and change_scope not in CHANGE_SCOPES:
+        raise CaseError(f"Invalid kernel change scope: {change_scope!r}")
+    if change_scope in {"editorial", "projection-only"}:
+        if affected_ids or invalidate_all:
+            raise CaseError(f"{change_scope} kernel refresh cannot invalidate semantic blocks")
+        seeds: set[str] = set()
+    elif change_scope == "semantic-local":
+        if invalidate_all:
+            raise CaseError("semantic-local refresh uses --affects, not --invalidate-all")
+        if blocks and not affected_ids:
+            raise CaseError("semantic-local refresh requires at least one --affects block")
+        seeds = set(affected_ids)
+    elif change_scope in {"semantic-crosscutting", "architecture"}:
+        if not invalidate_all:
+            raise CaseError(f"{change_scope} refresh requires explicit --invalidate-all")
+        if affected_ids:
+            raise CaseError(f"{change_scope} refresh cannot combine --affects and --invalidate-all")
+        seeds = set(blocks)
+    else:
+        # Backward compatibility for existing callers and legacy runtime cases.
+        seeds = set(affected_ids) if affected_ids else set(blocks)
     unknown = sorted(seeds - set(blocks))
     if unknown:
         raise CaseError(f"Unknown affected blocks: {', '.join(unknown)}")
     affected = downstream_closure(ledger, seeds)
+
+    previous_assurance = assurance_level(manifest)
+    escalated_assurance = previous_assurance
+    if change_scope == "architecture" and previous_assurance != "high":
+        escalated_assurance = "high"
+    elif (
+        change_scope in {"semantic-local", "semantic-crosscutting"}
+        and previous_assurance == "lite"
+    ):
+        escalated_assurance = "standard"
+    if escalated_assurance != previous_assurance:
+        manifest["assurance_level"] = escalated_assurance
+        for gate_name in ("global_review", "project_conformance"):
+            gate = manifest["gates"][gate_name]
+            if gate.get("status") == "not_required":
+                gate.update(status="pending", note="assurance escalated after semantic delta")
+        if escalated_assurance == "high" and manifest.get("mode") == "block":
+            gate = manifest["gates"]["integration_review"]
+            if gate.get("status") == "not_required":
+                gate.update(status="pending", note="high assurance requires separate integration review")
+        manifest["events"].append(
+            event(
+                "assurance_escalated",
+                previous_assurance=previous_assurance,
+                assurance_level=escalated_assurance,
+                change_scope=change_scope,
+                reason=reason.strip() if isinstance(reason, str) and reason.strip() else None,
+            )
+        )
 
     manifest["kernel"]["revision"] += 1
     manifest["kernel"]["sha256"] = current_hash
@@ -1828,19 +2383,40 @@ def refresh_kernel(
             block["updated_at"] = now_utc()
             stale.append(block_id)
 
-    if stale:
-        for gate_name in (
+    rebased: list[str] = []
+    for block_id, block in sorted(blocks.items()):
+        if block_id in affected:
+            continue
+        if block.get("status") in {"analyzed", "reviewed", "integrated"}:
+            block["kernel_revision"] = manifest["kernel"]["revision"]
+            block["kernel_sha256"] = current_hash
+            rebased.append(block_id)
+
+    if stale or change_scope in {"semantic-crosscutting", "architecture"}:
+        invalidated_gates = [
             "author_passes",
             "semantic_integration",
             "consistency",
             "integration_review",
             "global_review",
             "project_conformance",
-            "architecture_conformance",
-        ):
+        ]
+        if legacy_refresh or change_scope == "architecture":
+            invalidated_gates.extend(("architecture_design", "architecture_conformance"))
+        for gate_name in invalidated_gates:
             gate = manifest["gates"][gate_name]
             if gate["status"] != "not_required":
-                gate.update(status="pending", evidence=None, note="kernel changed")
+                if gate_name in REVISIONED_REVIEW_GATES:
+                    archive_passed_gate(
+                        manifest,
+                        gate_name,
+                        reason=f"kernel changed: {change_scope or 'legacy-full'}",
+                    )
+                gate.update(
+                    status="pending",
+                    evidence=None,
+                    note=f"kernel changed: {change_scope or 'legacy-full'}",
+                )
                 gate["evidence_sha256"] = None
                 gate["subject_sha256"] = None
     manifest["events"].append(
@@ -1849,6 +2425,10 @@ def refresh_kernel(
             revision=manifest["kernel"]["revision"],
             affected=sorted(affected),
             stale=stale,
+            rebased=rebased,
+            change_scope=change_scope or "legacy-full",
+            invalidate_all=invalidate_all,
+            reason=reason.strip() if isinstance(reason, str) and reason.strip() else None,
         )
     )
     save_case(root, manifest, ledger)
@@ -1913,6 +2493,451 @@ def validate_index(path: Path, expected_block: str) -> tuple[list[str], list[dic
     return ids, traces
 
 
+def immutable_copy(source: Path, target: Path) -> None:
+    """Copy one case artifact without allowing an existing revision to change."""
+    if target.exists():
+        raise CaseError(f"Immutable history artifact already exists: {target}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_suffix(target.suffix + ".tmp")
+    shutil.copy2(source, temporary)
+    temporary.replace(target)
+
+
+def block_review_subject_hash(
+    root: Path,
+    manifest: dict[str, Any],
+    block: dict[str, Any],
+) -> str:
+    """Hash the exact block subject attested by one local review revision."""
+    digest = hashlib.sha256()
+    digest.update(str(block.get("id", "")).encode("utf-8"))
+    digest.update(str(manifest.get("kernel", {}).get("sha256", "")).encode("ascii"))
+    for field in ("artifact", "semantic_index"):
+        relative = block.get(field)
+        if not isinstance(relative, str):
+            digest.update(b"<missing-path>")
+            continue
+        path = case_file(root, relative)
+        digest.update(relative.encode("utf-8"))
+        digest.update(path.read_bytes() if path.is_file() else b"<missing>")
+    return digest.hexdigest()
+
+
+def record_block_review_revision(
+    root: Path,
+    manifest: dict[str, Any],
+    block: dict[str, Any],
+    *,
+    outcome: str,
+    remediation_id: str | None = None,
+) -> dict[str, Any]:
+    """Snapshot one local review so a later retry cannot erase prior coverage."""
+    source = case_file(root, block["review"])
+    if not artifact_ready(source):
+        raise CaseError(f"{block['id']}: review artifact is missing or still a placeholder")
+    history = block.setdefault("review_history", [])
+    if not isinstance(history, list):
+        raise CaseError(f"{block['id']}: review_history must be an array")
+    subject_hash = block_review_subject_hash(root, manifest, block)
+    evidence_hash = sha256(source)
+    if history:
+        latest = history[-1]
+        if (
+            isinstance(latest, dict)
+            and latest.get("subject_sha256") == subject_hash
+            and latest.get("evidence_sha256") == evidence_hash
+            and latest.get("outcome") == outcome
+            and latest.get("remediation_id") == remediation_id
+        ):
+            return latest
+    revision = len(history) + 1
+    suffix = source.suffix or ".md"
+    relative = f"reviews/history/{block['id']}-r{revision:03d}{suffix}"
+    target = case_file(root, relative)
+    immutable_copy(source, target)
+    record = {
+        "revision": revision,
+        "recorded_at": now_utc(),
+        "outcome": outcome,
+        "evidence": relative,
+        "evidence_sha256": evidence_hash,
+        "subject_sha256": subject_hash,
+        "remediation_id": remediation_id,
+    }
+    history.append(record)
+    return record
+
+
+def parse_remediation_findings(values: list[str]) -> list[dict[str, str]]:
+    """Parse repeated FINDING=severity CLI values into a stable record."""
+    findings: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for value in values:
+        finding_id, separator, severity = value.rpartition("=")
+        if not separator or not FINDING_ID_RE.fullmatch(finding_id):
+            raise CaseError(
+                "Each --finding must use FINDING_ID=blocker|major with a stable id"
+            )
+        if severity not in REMEDIATION_SEVERITIES:
+            raise CaseError(f"Invalid remediation severity for {finding_id}: {severity}")
+        if finding_id in seen:
+            raise CaseError(f"Duplicate remediation finding: {finding_id}")
+        seen.add(finding_id)
+        findings.append({"id": finding_id, "severity": severity})
+    return findings
+
+
+def begin_block_remediation(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    block_id: str,
+    findings: list[dict[str, str]],
+    semantic_ids: list[str],
+    evidence: str,
+    reason: str,
+    full_block: bool = False,
+) -> dict[str, Any]:
+    """Open a bounded correction while preserving prior review and subject snapshots."""
+    ensure_kernel_synced(root, manifest)
+    blocks = blocks_by_id(ledger)
+    if block_id not in blocks:
+        raise CaseError(f"Unknown block: {block_id}")
+    block = blocks[block_id]
+    if block.get("status") not in {"analyzed", "reviewed", "integrated"}:
+        raise CaseError(
+            f"{block_id}: remediation requires analyzed, reviewed, or integrated status"
+        )
+    if not reason.strip():
+        raise CaseError("Remediation requires a reason")
+    if not findings:
+        raise CaseError("Remediation requires at least one blocker or major finding")
+    normalized_findings: list[dict[str, str]] = []
+    finding_ids: set[str] = set()
+    for item in findings:
+        if not isinstance(item, dict):
+            raise CaseError("Remediation findings must be objects")
+        finding_id = item.get("id")
+        severity = item.get("severity")
+        if not isinstance(finding_id, str) or not FINDING_ID_RE.fullmatch(finding_id):
+            raise CaseError(f"Invalid remediation finding id: {finding_id!r}")
+        if severity not in REMEDIATION_SEVERITIES:
+            raise CaseError(f"Invalid remediation severity for {finding_id}: {severity!r}")
+        if finding_id in finding_ids:
+            raise CaseError(f"Duplicate remediation finding: {finding_id}")
+        finding_ids.add(finding_id)
+        normalized_findings.append({"id": finding_id, "severity": str(severity)})
+
+    scope = "full-block" if full_block else "targeted"
+    unique_semantic_ids = list(dict.fromkeys(semantic_ids))
+    current_ids, _ = validate_index(case_file(root, block["semantic_index"]), block_id)
+    unknown_semantic_ids = sorted(set(unique_semantic_ids) - set(current_ids))
+    if unknown_semantic_ids:
+        raise CaseError(
+            f"{block_id}: remediation names unknown semantic ids: "
+            + ", ".join(unknown_semantic_ids)
+        )
+    if scope == "targeted" and not unique_semantic_ids:
+        raise CaseError("Targeted remediation requires at least one --semantic-id")
+
+    evidence_path = case_file(root, evidence)
+    if not artifact_ready(evidence_path):
+        raise CaseError(f"Remediation evidence is missing or incomplete: {evidence}")
+    projection_errors = working_projection_errors(
+        root,
+        manifest,
+        ledger,
+        require_any_update=False,
+        exclude_sources={block_id},
+    )
+    if projection_errors:
+        raise CaseError(
+            "Working projection is behind reviewed content: "
+            + "; ".join(projection_errors)
+        )
+
+    remediations = block.setdefault("remediations", [])
+    if not isinstance(remediations, list):
+        raise CaseError(f"{block_id}: remediations must be an array")
+    active_id = block.get("active_remediation")
+    for previous in remediations:
+        if isinstance(previous, dict) and previous.get("id") == active_id:
+            if previous.get("status") == "in_progress":
+                previous["status"] = "retry_required"
+                previous["completed_at"] = now_utc()
+            break
+    same_finding_cycles = sum(
+        1
+        for previous in remediations
+        if isinstance(previous, dict)
+        and set(previous.get("finding_ids", [])) == finding_ids
+    )
+    cycle = same_finding_cycles + 1
+    if cycle > 2:
+        raise CaseError(
+            "The same blocker/major already used two targeted correction cycles; "
+            "record user-decision instead of starting a third"
+        )
+
+    revision = len(remediations) + 1
+    remediation_id = f"R{revision:03d}"
+    baseline_artifact = f"blocks/history/{block_id}-{remediation_id}.md"
+    baseline_index = f"blocks/history/{block_id}-{remediation_id}.index.json"
+    evidence_suffix = evidence_path.suffix or ".md"
+    evidence_snapshot = (
+        f"reviews/history/{block_id}-{remediation_id}-finding{evidence_suffix}"
+    )
+    immutable_copy(case_file(root, block["artifact"]), case_file(root, baseline_artifact))
+    immutable_copy(case_file(root, block["semantic_index"]), case_file(root, baseline_index))
+    immutable_copy(evidence_path, case_file(root, evidence_snapshot))
+    prior_review = None
+    review_history = block.get("review_history")
+    if isinstance(review_history, list) and review_history:
+        latest_review = review_history[-1]
+        if isinstance(latest_review, dict) and isinstance(latest_review.get("evidence"), str):
+            prior_review = latest_review["evidence"]
+    if prior_review is None:
+        prior_review = evidence_snapshot
+
+    remediation = {
+        "id": remediation_id,
+        "scope": scope,
+        "status": "in_progress",
+        "cycle": cycle,
+        "finding_ids": sorted(finding_ids),
+        "findings": normalized_findings,
+        "semantic_ids": unique_semantic_ids,
+        "reason": reason.strip(),
+        "opened_at": now_utc(),
+        "status_before": block.get("status"),
+        "baseline_artifact": baseline_artifact,
+        "baseline_artifact_sha256": sha256(case_file(root, baseline_artifact)),
+        "baseline_index": baseline_index,
+        "baseline_index_sha256": sha256(case_file(root, baseline_index)),
+        "finding_evidence": evidence_snapshot,
+        "finding_evidence_sha256": sha256(case_file(root, evidence_snapshot)),
+        "coverage_evidence": prior_review if scope == "targeted" else None,
+    }
+    remediations.append(remediation)
+    block["active_remediation"] = remediation_id
+    block["status"] = "in_progress"
+    block["review_sha256"] = None
+    block["note"] = f"{scope} remediation {remediation_id}: {reason.strip()}"
+    block["updated_at"] = now_utc()
+    manifest["events"].append(
+        event(
+            "block_remediation_started",
+            block_id=block_id,
+            remediation_id=remediation_id,
+            scope=scope,
+            cycle=cycle,
+            finding_ids=sorted(finding_ids),
+            semantic_ids=unique_semantic_ids,
+            evidence=evidence_snapshot,
+            reason=reason.strip(),
+        )
+    )
+    save_case(root, manifest, ledger)
+    return remediation
+
+
+def active_block_remediation(block: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the currently open remediation record, if any."""
+    active_id = block.get("active_remediation")
+    if not isinstance(active_id, str):
+        return None
+    for item in block.get("remediations", []):
+        if isinstance(item, dict) and item.get("id") == active_id:
+            return item
+    return None
+
+
+def semantic_delta_ids(root: Path, remediation: dict[str, Any], block: dict[str, Any]) -> set[str]:
+    """Return semantic ids whose definition or trace row changed since remediation start."""
+    baseline = read_json(case_file(root, remediation["baseline_index"]))
+    current = read_json(case_file(root, block["semantic_index"]))
+
+    def definitions(payload: Any) -> dict[str, str]:
+        if not isinstance(payload, dict) or not isinstance(payload.get("definitions"), list):
+            raise CaseError("Remediation semantic snapshot has invalid definitions")
+        result: dict[str, str] = {}
+        for item in payload["definitions"]:
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                raise CaseError("Remediation semantic snapshot has an invalid definition")
+            result[item["id"]] = json.dumps(item, ensure_ascii=False, sort_keys=True)
+        return result
+
+    before_definitions = definitions(baseline)
+    after_definitions = definitions(current)
+    changed = {
+        semantic_id
+        for semantic_id in set(before_definitions) | set(after_definitions)
+        if before_definitions.get(semantic_id) != after_definitions.get(semantic_id)
+    }
+
+    def trace_rows(payload: Any) -> dict[str, dict[str, Any]]:
+        if not isinstance(payload, dict) or not isinstance(payload.get("trace"), list):
+            raise CaseError("Remediation semantic snapshot has invalid trace")
+        result: dict[str, dict[str, Any]] = {}
+        for item in payload["trace"]:
+            if not isinstance(item, dict) or not isinstance(item.get("from"), str):
+                raise CaseError("Remediation semantic snapshot has an invalid trace row")
+            canonical = json.dumps(item, ensure_ascii=False, sort_keys=True)
+            result[canonical] = item
+        return result
+
+    before_trace = trace_rows(baseline)
+    after_trace = trace_rows(current)
+    for canonical in set(before_trace) ^ set(after_trace):
+        row = before_trace.get(canonical) or after_trace.get(canonical)
+        if not isinstance(row, dict):
+            continue
+        source = row.get("from")
+        if isinstance(source, str):
+            changed.add(source)
+        changed.update(item for item in row.get("to", []) if isinstance(item, str))
+    return changed
+
+
+def parse_report_list(text: str, field: str) -> list[str] | None:
+    """Read one simple YAML-like inline list from a review report."""
+    match = re.search(rf"(?m)^\s*{re.escape(field)}\s*:\s*\[([^\]]*)\]\s*$", text)
+    if not match:
+        return None
+    return [
+        item.strip().strip("'\"")
+        for item in match.group(1).split(",")
+        if item.strip().strip("'\"")
+    ]
+
+
+def remediation_review_errors(
+    root: Path,
+    block: dict[str, Any],
+    report_path: Path,
+) -> list[str]:
+    """Validate bounded re-review markers and prevent undeclared semantic expansion."""
+    remediation = active_block_remediation(block)
+    if remediation is None:
+        return []
+    errors: list[str] = []
+    expected_scope = (
+        "targeted-remediation"
+        if remediation.get("scope") == "targeted"
+        else "full-block"
+    )
+    text = report_path.read_text(encoding="utf-8")
+    scope_match = re.search(r"(?m)^\s*review_scope\s*:\s*(\S+)\s*$", text)
+    if not scope_match or scope_match.group(1) != expected_scope:
+        errors.append(f"review_scope must be {expected_scope}")
+    verified = parse_report_list(text, "verified_findings")
+    expected_findings = sorted(remediation.get("finding_ids", []))
+    if verified is None or sorted(verified) != expected_findings:
+        errors.append(
+            "verified_findings must exactly match " + ", ".join(expected_findings)
+        )
+    coverage_match = re.search(r"(?m)^\s*coverage_reused\s*:\s*(\S+)\s*$", text)
+    expected_coverage = (
+        remediation.get("coverage_evidence")
+        if remediation.get("scope") == "targeted"
+        else "none"
+    )
+    if not coverage_match or coverage_match.group(1) != expected_coverage:
+        errors.append(f"coverage_reused must be {expected_coverage}")
+    if remediation.get("scope") == "targeted":
+        changed = semantic_delta_ids(root, remediation, block)
+        declared = set(remediation.get("semantic_ids", []))
+        undeclared = sorted(changed - declared)
+        if undeclared:
+            errors.append(
+                "targeted remediation changed undeclared semantic ids: "
+                + ", ".join(undeclared)
+            )
+    return errors
+
+
+def block_review_state_errors(root: Path, block: dict[str, Any]) -> list[str]:
+    """Validate immutable local review history and remediation bindings."""
+    block_id = str(block.get("id", "<unknown>"))
+    errors: list[str] = []
+    history = block.get("review_history", [])
+    if not isinstance(history, list):
+        return [f"{block_id}: review_history must be an array"]
+    for index, record in enumerate(history, start=1):
+        label = f"{block_id}: review history r{index:03d}"
+        if not isinstance(record, dict) or record.get("revision") != index:
+            errors.append(f"{label} has invalid revision metadata")
+            continue
+        relative = record.get("evidence")
+        if not isinstance(relative, str) or not relative.startswith("reviews/history/"):
+            errors.append(f"{label} has invalid evidence path")
+            continue
+        path = case_file(root, relative)
+        if not path.is_file():
+            errors.append(f"{label} evidence is missing")
+        elif sha256(path) != record.get("evidence_sha256"):
+            errors.append(f"{label} evidence changed after snapshot")
+        if not SHA256_RE.fullmatch(str(record.get("subject_sha256", ""))):
+            errors.append(f"{label} has invalid subject hash")
+
+    remediations = block.get("remediations", [])
+    if not isinstance(remediations, list):
+        return errors + [f"{block_id}: remediations must be an array"]
+    remediation_ids: set[str] = set()
+    for index, remediation in enumerate(remediations, start=1):
+        label = f"{block_id}: remediation R{index:03d}"
+        if not isinstance(remediation, dict) or remediation.get("id") != f"R{index:03d}":
+            errors.append(f"{label} has invalid identity")
+            continue
+        remediation_ids.add(remediation["id"])
+        if remediation.get("scope") not in REMEDIATION_SCOPES:
+            errors.append(f"{label} has invalid scope")
+        if remediation.get("status") not in {
+            "in_progress",
+            "retry_required",
+            "verified",
+        }:
+            errors.append(f"{label} has invalid status")
+        for field, hash_field, prefix in (
+            ("baseline_artifact", "baseline_artifact_sha256", "blocks/history/"),
+            ("baseline_index", "baseline_index_sha256", "blocks/history/"),
+            ("finding_evidence", "finding_evidence_sha256", "reviews/history/"),
+        ):
+            relative = remediation.get(field)
+            if not isinstance(relative, str) or not relative.startswith(prefix):
+                errors.append(f"{label} has invalid {field}")
+                continue
+            path = case_file(root, relative)
+            if not path.is_file():
+                errors.append(f"{label} {field} is missing")
+            elif sha256(path) != remediation.get(hash_field):
+                errors.append(f"{label} {field} changed after snapshot")
+        finding_ids = remediation.get("finding_ids")
+        if not isinstance(finding_ids, list) or not finding_ids:
+            errors.append(f"{label} has no findings")
+        semantic_ids = remediation.get("semantic_ids")
+        if remediation.get("scope") == "targeted" and (
+            not isinstance(semantic_ids, list) or not semantic_ids
+        ):
+            errors.append(f"{label} has no targeted semantic ids")
+    active = block.get("active_remediation")
+    if active is not None and active not in remediation_ids:
+        errors.append(f"{block_id}: active remediation does not resolve")
+    if isinstance(active, str):
+        active_record = next(
+            (
+                item
+                for item in remediations
+                if isinstance(item, dict) and item.get("id") == active
+            ),
+            None,
+        )
+        if active_record is not None and active_record.get("status") != "in_progress":
+            errors.append(f"{block_id}: active remediation is not in progress")
+    return errors
+
+
 def transition_block(
     root: Path,
     manifest: dict[str, Any],
@@ -1933,6 +2958,21 @@ def transition_block(
     old_status = block["status"]
     if new_status not in ALLOWED_TRANSITIONS[old_status]:
         raise CaseError(f"Invalid transition {old_status} -> {new_status} for {block_id}")
+    if (
+        new_status == "in_progress"
+        and block.get("remediation_contract") == "targeted-v1"
+        and (
+            old_status in {"reviewed", "integrated"}
+            or (
+                old_status == "analyzed"
+                and artifact_ready(case_file(root, block["review"]))
+            )
+        )
+    ):
+        raise CaseError(
+            f"{block_id}: use begin-remediation so prior review coverage and the "
+            "accepted finding are preserved"
+        )
 
     if new_status in {"in_progress", "reviewed", "integrated"}:
         rollback_source = (
@@ -1978,7 +3018,8 @@ def transition_block(
         block["index_sha256"] = sha256(index_path)
         block["review_sha256"] = None
     if new_status == "reviewed":
-        if not artifact_ready(case_file(root, block["review"])):
+        review_path = case_file(root, block["review"])
+        if not artifact_ready(review_path):
             raise CaseError(f"{block_id}: review artifact is missing or still a placeholder")
         if block["kernel_sha256"] != manifest["kernel"]["sha256"]:
             raise CaseError(f"{block_id}: analysis is stale against the kernel")
@@ -1986,7 +3027,35 @@ def transition_block(
             raise CaseError(f"{block_id}: analysis changed after analyzed state")
         if sha256(case_file(root, block["semantic_index"])) != block["index_sha256"]:
             raise CaseError(f"{block_id}: semantic index changed after analyzed state")
-        block["review_sha256"] = sha256(case_file(root, block["review"]))
+        remediation_errors = remediation_review_errors(root, block, review_path)
+        if remediation_errors:
+            raise CaseError(
+                f"{block_id}: remediation review is invalid: "
+                + "; ".join(remediation_errors)
+            )
+        remediation = active_block_remediation(block)
+        remediation_id = remediation.get("id") if remediation is not None else None
+        review_revision = record_block_review_revision(
+            root,
+            manifest,
+            block,
+            outcome="pass",
+            remediation_id=remediation_id,
+        )
+        block["review_sha256"] = sha256(review_path)
+        if remediation is not None:
+            remediation["status"] = "verified"
+            remediation["completed_at"] = now_utc()
+            remediation["review_revision"] = review_revision["revision"]
+            block["active_remediation"] = None
+            manifest["events"].append(
+                event(
+                    "block_remediation_verified",
+                    block_id=block_id,
+                    remediation_id=remediation_id,
+                    review_revision=review_revision["revision"],
+                )
+            )
     if new_status == "integrated":
         if not artifact_ready(case_file(root, manifest["artifacts"]["draft"])):
             raise CaseError("Integrated draft is missing or still a placeholder")
@@ -2080,6 +3149,8 @@ def gate_subject_hash(
         draft = case_file(root, manifest["artifacts"]["draft"])
         digest.update(draft.read_bytes() if draft.is_file() else b"<missing>")
         digest.update(manifest["kernel"]["sha256"].encode("ascii"))
+        if name in {"integration_review", "global_review"} and manifest.get("mode") == "block":
+            digest.update(block_subject_hash(root, ledger).encode("ascii"))
         if name in {"global_review", "architecture_conformance"}:
             boundary, boundary_errors = solution_boundary_errors(
                 root,
@@ -2115,6 +3186,340 @@ def snapshot_review_evidence(root: Path, gate_name: str, source: Path) -> str:
     temporary.write_bytes(source.read_bytes())
     temporary.replace(target)
     return target.relative_to(root).as_posix()
+
+
+def rebase_nonsemantic_change(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    change_scope: str,
+    reason: str,
+) -> list[str]:
+    """Carry passed review evidence over an explicitly non-semantic delta."""
+    if change_scope not in {"editorial", "projection-only"}:
+        raise CaseError("record-change supports only editorial or projection-only deltas")
+    if not reason.strip():
+        raise CaseError("record-change requires a reason")
+    if manifest.get("gates", {}).get("consistency", {}).get("status") != "pass":
+        raise CaseError("Run a successful consistency check before record-change")
+    draft_path = case_file(root, manifest["artifacts"]["draft"])
+    report_path = case_file(root, manifest["artifacts"]["consistency_report"])
+    if not report_path.is_file() or report_path.stat().st_mtime_ns < draft_path.stat().st_mtime_ns:
+        raise CaseError("Consistency report is older than the current draft")
+    report = read_json(report_path)
+    if (
+        not isinstance(report, dict)
+        or report.get("errors") != []
+        or report.get("kernel_sha256") != manifest.get("kernel", {}).get("sha256")
+        or report.get("draft_sha256") != sha256(draft_path)
+    ):
+        raise CaseError("Consistency report does not match the current kernel and draft")
+    current_snapshot = report.get("semantic_snapshot")
+    if not isinstance(current_snapshot, dict):
+        raise CaseError("Consistency report has no semantic snapshot")
+    projection_errors = working_projection_errors(
+        root,
+        manifest,
+        ledger,
+        require_any_update=True,
+    )
+    if projection_errors:
+        raise CaseError("Working projection is not current: " + "; ".join(projection_errors))
+    document_errors = project_conformance_errors(root, manifest)
+    if document_errors:
+        raise CaseError("Project document conformance failed: " + "; ".join(document_errors))
+    rebased: list[str] = []
+    for gate_name, gate in manifest.get("gates", {}).items():
+        if gate.get("status") != "pass" or not gate.get("subject_sha256"):
+            continue
+        previous = gate["subject_sha256"]
+        current = gate_subject_hash(root, manifest, ledger, gate_name)
+        if previous == current:
+            continue
+        baseline = gate.get("semantic_snapshot")
+        if not isinstance(baseline, dict) or set(baseline) != set(current_snapshot):
+            raise CaseError(f"{gate_name} has no comparable semantic snapshot")
+        changed_paths: list[str] = []
+        for relative in sorted(current_snapshot):
+            before = baseline.get(relative)
+            after = current_snapshot.get(relative)
+            if not isinstance(before, dict) or not isinstance(after, dict):
+                changed_paths.append(relative)
+                continue
+            comparison = (
+                "sha256" if change_scope == "projection-only" else "editorial_sha256"
+            )
+            if relative.startswith("blocks/"):
+                comparison = "sha256"
+            if before.get(comparison) != after.get(comparison):
+                changed_paths.append(relative)
+        if changed_paths:
+            raise CaseError(
+                f"{change_scope} delta changed semantic content since {gate_name}: "
+                + ", ".join(changed_paths)
+            )
+        gate["subject_sha256"] = current
+        gate["semantic_snapshot"] = current_snapshot
+        rebased.append(gate_name)
+        manifest["events"].append(
+            event(
+                "gate_rebased",
+                gate=gate_name,
+                change_scope=change_scope,
+                previous_subject_sha256=previous,
+                subject_sha256=current,
+                reason=reason.strip(),
+            )
+        )
+    manifest["events"].append(
+        event(
+            "nonsemantic_change_recorded",
+            change_scope=change_scope,
+            reason=reason.strip(),
+            rebased_gates=rebased,
+        )
+    )
+    save_case(root, manifest, ledger)
+    return rebased
+
+
+def prior_passed_gate_state(
+    manifest: dict[str, Any],
+    gate_name: str,
+) -> dict[str, Any] | None:
+    """Return the current or most recently archived passed state for one gate."""
+    current = manifest.get("gates", {}).get(gate_name)
+    if isinstance(current, dict) and current.get("status") == "pass":
+        return current
+    history = manifest.get("gate_history", {}).get(gate_name, [])
+    if not isinstance(history, list):
+        raise CaseError(f"manifest gate_history.{gate_name} must be an array")
+    for item in reversed(history):
+        if isinstance(item, dict) and item.get("status") == "pass":
+            return item
+    return None
+
+
+def record_semantic_remediation(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    block_id: str,
+    remediation_id: str | None,
+    reason: str,
+) -> list[str]:
+    """Reuse prior whole-case coverage after a machine-bounded targeted correction."""
+    if not reason.strip():
+        raise CaseError("record-remediation requires a reason")
+    blocks = blocks_by_id(ledger)
+    if block_id not in blocks:
+        raise CaseError(f"Unknown block: {block_id}")
+    block = blocks[block_id]
+    remediations = block.get("remediations", [])
+    if not isinstance(remediations, list):
+        raise CaseError(f"{block_id}: remediations must be an array")
+    selected = None
+    for item in reversed(remediations):
+        if not isinstance(item, dict):
+            continue
+        if remediation_id is None or item.get("id") == remediation_id:
+            selected = item
+            break
+    if selected is None:
+        raise CaseError(f"{block_id}: remediation does not exist")
+    if selected.get("scope") != "targeted":
+        raise CaseError("Full-block remediation requires fresh full-block and whole-case review")
+    if selected.get("status") != "verified":
+        raise CaseError("Targeted remediation must pass its bounded review first")
+    if selected.get("coverage_rebased_at") is not None:
+        return list(selected.get("rebased_gates", []))
+    if block.get("active_remediation") is not None:
+        raise CaseError("Cannot reuse coverage while another remediation is active")
+    if block.get("status") not in {"reviewed", "integrated"}:
+        raise CaseError(f"{block_id}: targeted remediation is not in a reviewed state")
+
+    consistency = manifest.get("gates", {}).get("consistency", {})
+    if consistency.get("status") != "pass":
+        raise CaseError("Run a successful consistency check before record-remediation")
+    draft_path = case_file(root, manifest["artifacts"]["draft"])
+    report_path = case_file(root, manifest["artifacts"]["consistency_report"])
+    if not report_path.is_file() or report_path.stat().st_mtime_ns < draft_path.stat().st_mtime_ns:
+        raise CaseError("Consistency report is older than the current draft")
+    report = read_json(report_path)
+    if (
+        not isinstance(report, dict)
+        or report.get("errors") != []
+        or report.get("kernel_sha256") != manifest.get("kernel", {}).get("sha256")
+        or report.get("draft_sha256") != sha256(draft_path)
+    ):
+        raise CaseError("Consistency report does not match the current kernel and draft")
+    current_snapshot = report.get("semantic_snapshot")
+    if not isinstance(current_snapshot, dict):
+        raise CaseError("Consistency report has no semantic snapshot")
+    delta_errors = remediation_review_errors(
+        root,
+        {**block, "active_remediation": selected["id"]},
+        case_file(root, block["review"]),
+    )
+    if delta_errors:
+        raise CaseError("Targeted remediation is no longer bounded: " + "; ".join(delta_errors))
+    projection_errors = working_projection_errors(
+        root,
+        manifest,
+        ledger,
+        require_any_update=True,
+    )
+    if projection_errors:
+        raise CaseError("Working projection is not current: " + "; ".join(projection_errors))
+    document_errors = project_conformance_errors(root, manifest)
+    if document_errors:
+        raise CaseError("Project document conformance failed: " + "; ".join(document_errors))
+
+    for prerequisite in ("semantic_integration", "author_passes"):
+        gate = manifest.get("gates", {}).get(prerequisite, {})
+        if gate.get("status") == "not_required":
+            continue
+        if gate.get("status") != "pass" or gate.get("subject_sha256") != gate_subject_hash(
+            root,
+            manifest,
+            ledger,
+            prerequisite,
+        ):
+            raise CaseError(
+                f"Gate {prerequisite} must be freshly passed for the corrected subject"
+            )
+
+    allowed_changed_paths = {
+        str(manifest["kernel"]["path"]),
+        str(manifest["artifacts"]["draft"]),
+        str(block["artifact"]),
+        str(block["semantic_index"]),
+    }
+    eligible_gates = (
+        "architecture_design",
+        "integration_review",
+        "global_review",
+        "project_conformance",
+        "architecture_conformance",
+    )
+    rebased: list[str] = []
+    review_revision = next(
+        (
+            item
+            for item in reversed(block.get("review_history", []))
+            if isinstance(item, dict)
+            and item.get("remediation_id") == selected.get("id")
+        ),
+        None,
+    )
+    if not isinstance(review_revision, dict):
+        raise CaseError("Targeted remediation has no immutable verification review")
+    receipts_dir = root / "reviews" / "history"
+    receipts_dir.mkdir(parents=True, exist_ok=True)
+    for gate_name in eligible_gates:
+        prior = prior_passed_gate_state(manifest, gate_name)
+        if prior is None:
+            continue
+        current_subject = gate_subject_hash(root, manifest, ledger, gate_name)
+        current_gate = manifest["gates"][gate_name]
+        if (
+            current_gate.get("status") == "pass"
+            and current_gate.get("subject_sha256") == current_subject
+        ):
+            continue
+        baseline = prior.get("semantic_snapshot")
+        if not isinstance(baseline, dict) or set(baseline) != set(current_snapshot):
+            raise CaseError(f"{gate_name} has no comparable prior semantic snapshot")
+        changed_paths = sorted(
+            relative
+            for relative in current_snapshot
+            if baseline.get(relative, {}).get("sha256")
+            != current_snapshot.get(relative, {}).get("sha256")
+        )
+        outside = sorted(set(changed_paths) - allowed_changed_paths)
+        if outside:
+            raise CaseError(
+                f"{gate_name} prior coverage cannot be reused; unrelated paths changed: "
+                + ", ".join(outside)
+            )
+        prior_evidence = prior.get("evidence")
+        if not isinstance(prior_evidence, str):
+            raise CaseError(f"{gate_name} prior coverage has no evidence")
+        prior_evidence_path = case_file(root, prior_evidence)
+        if (
+            not artifact_ready(prior_evidence_path)
+            or sha256(prior_evidence_path) != prior.get("evidence_sha256")
+        ):
+            raise CaseError(f"{gate_name} prior evidence is missing or changed")
+        receipt_relative = (
+            f"reviews/history/{gate_name}-{block_id}-{selected['id']}-reuse.json"
+        )
+        receipt_path = case_file(root, receipt_relative)
+        receipt = {
+            "schema": 1,
+            "case_id": manifest["case_id"],
+            "gate": gate_name,
+            "block_id": block_id,
+            "remediation_id": selected["id"],
+            "recorded_at": now_utc(),
+            "reason": reason.strip(),
+            "previous_evidence": prior_evidence,
+            "previous_evidence_sha256": prior["evidence_sha256"],
+            "previous_subject_sha256": prior["subject_sha256"],
+            "verification_review": review_revision["evidence"],
+            "verification_review_sha256": review_revision["evidence_sha256"],
+            "finding_evidence": selected["finding_evidence"],
+            "finding_evidence_sha256": selected["finding_evidence_sha256"],
+            "consistency_report": manifest["artifacts"]["consistency_report"],
+            "consistency_report_sha256": sha256(report_path),
+            "changed_paths": changed_paths,
+            "semantic_ids": selected["semantic_ids"],
+            "subject_sha256": current_subject,
+        }
+        if receipt_path.exists():
+            existing = read_json(receipt_path)
+            comparable = dict(receipt)
+            comparable["recorded_at"] = existing.get("recorded_at") if isinstance(existing, dict) else None
+            if existing != comparable:
+                raise CaseError(f"Remediation receipt already exists: {receipt_relative}")
+        else:
+            atomic_json(receipt_path, receipt)
+        manifest["gates"][gate_name] = {
+            "status": "pass",
+            "evidence": receipt_relative,
+            "evidence_sha256": sha256(receipt_path),
+            "subject_sha256": current_subject,
+            "semantic_snapshot": current_snapshot,
+            "note": f"prior coverage reused after {block_id} {selected['id']}",
+        }
+        manifest["events"].append(
+            event(
+                "gate_rebased_after_targeted_remediation",
+                gate=gate_name,
+                block_id=block_id,
+                remediation_id=selected["id"],
+                previous_subject_sha256=prior["subject_sha256"],
+                subject_sha256=current_subject,
+                receipt=receipt_relative,
+            )
+        )
+        rebased.append(gate_name)
+    selected["coverage_rebased_at"] = now_utc()
+    selected["rebased_gates"] = rebased
+    selected["coverage_rebase_reason"] = reason.strip()
+    manifest["events"].append(
+        event(
+            "targeted_remediation_recorded",
+            block_id=block_id,
+            remediation_id=selected["id"],
+            rebased_gates=rebased,
+            reason=reason.strip(),
+        )
+    )
+    save_case(root, manifest, ledger)
+    return rebased
 
 
 def set_gate(
@@ -2156,6 +3561,8 @@ def set_gate(
             raise CaseError(
                 f"{name} must pass for {boundary.get('solution_horizon')} horizon"
             )
+        if name in required_gates(manifest):
+            raise CaseError(f"Gate {name} is required by the execution policy")
     if status == "pass" and not evidence:
         raise CaseError("A passed gate requires --evidence")
     if status == "pass" and name == "author_passes":
@@ -2223,6 +3630,26 @@ def set_gate(
         path = case_file(root, evidence)
         if not artifact_ready(path):
             raise CaseError(f"Gate evidence is missing or still a placeholder: {evidence}")
+        if assurance_level(manifest) == "standard" and name in {
+            "global_review",
+            "project_conformance",
+        }:
+            report_text = path.read_text(encoding="utf-8")
+            match = re.search(r"covered_gates\s*:\s*\[([^\]]+)\]", report_text)
+            covered = {
+                item.strip().strip("'\"")
+                for item in match.group(1).split(",")
+            } if match else set()
+            expected_covered = {
+                "integration_review",
+                "global_review",
+                "project_conformance",
+            }
+            if covered != expected_covered:
+                raise CaseError(
+                    "Standard final report must declare exact covered_gates: "
+                    + ", ".join(sorted(expected_covered))
+                )
         if name == "project_conformance":
             freshness_errors = project_conformance_review_freshness_errors(
                 root,
@@ -2234,17 +3661,28 @@ def set_gate(
                     "Project-conformance review is stale: "
                     + "; ".join(freshness_errors)
                 )
+        current_gate = manifest.get("gates", {}).get(name, {})
+        current_subject = gate_subject_hash(root, manifest, ledger, name)
+        if (
+            current_gate.get("status") == "pass"
+            and current_gate.get("evidence_sha256") == sha256(path)
+            and current_gate.get("subject_sha256") == current_subject
+        ):
+            return
         if name in REVISIONED_REVIEW_GATES:
             evidence = snapshot_review_evidence(root, name, path)
             path = case_file(root, evidence)
         evidence_hash = sha256(path)
-        subject_hash = gate_subject_hash(root, manifest, ledger, name)
+        subject_hash = current_subject
 
     manifest["gates"][name] = {
         "status": status,
         "evidence": evidence,
         "evidence_sha256": evidence_hash,
         "subject_sha256": subject_hash,
+        "semantic_snapshot": (
+            semantic_state_snapshot(root, manifest, ledger) if status == "pass" else None
+        ),
         "note": note,
     }
     manifest["events"].append(
@@ -2321,6 +3759,25 @@ def validate_case(
                     )
                     if decision_binding.get("fingerprint") != decision_payload["fingerprint"]:
                         errors.append("manifest mode_decision fingerprint mismatch")
+                    if "selected_assurance" in decision_payload:
+                        selected_assurance = decision_payload["selected_assurance"]
+                        actual_assurance = assurance_level(manifest)
+                        escalation_allowed = (
+                            selected_assurance == "lite"
+                            and actual_assurance in {"standard", "high"}
+                        ) or (
+                            selected_assurance == "standard"
+                            and actual_assurance == "high"
+                        )
+                        if actual_assurance != selected_assurance and not escalation_allowed:
+                            errors.append("manifest assurance conflicts with mode decision")
+                        if tracking_policy(manifest) != decision_payload["selected_tracking"]:
+                            errors.append("manifest tracking conflicts with mode decision")
+                        if (
+                            projection_sync_policy(manifest)
+                            != decision_payload["selected_projection_sync"]
+                        ):
+                            errors.append("manifest projection sync conflicts with mode decision")
                 except (CaseError, ModeDecisionError) as exc:
                     errors.append(f"Invalid mode decision: {exc}")
     method_binding = manifest.get("method_context")
@@ -2377,6 +3834,10 @@ def validate_case(
                     errors.append("manifest planning_handoff fingerprint mismatch")
                 if planning_binding.get("content_sha256") != planning_payload["content_sha256"]:
                     errors.append("manifest planning_handoff content hash mismatch")
+                if manifest.get("execution_preferences") != planning_payload.get(
+                    "execution_preferences"
+                ):
+                    errors.append("manifest execution preferences differ from planning handoff")
                 role_context_path = planning_binding.get("role_context_path")
                 if role_context_path != PLANNING_ROLE_CONTEXT_JSON:
                     errors.append("manifest planning role-context path is invalid")
@@ -2424,13 +3885,31 @@ def validate_case(
                     timing_payload,
                     final=final,
                     expected_case_id=manifest.get("case_id"),
-                    expected_plan=(planning_payload or {}).get("automation_plan"),
+                    expected_plan=runtime_automation_plan(
+                        (planning_payload or {}).get("automation_plan"),
+                        tracking_policy(manifest),
+                    ),
                     expected_planning_case_id=(planning_payload or {}).get("planning_case_id"),
                     expected_planning_revision=(planning_payload or {}).get("planning_revision"),
                 )
                 errors.extend(timing_errors)
             except (CaseError, AutomationTimingError) as exc:
                 errors.append(f"Invalid automation timing: {exc}")
+    agent_ledger_relative = manifest.get("artifacts", {}).get("agent_ledger")
+    if agent_ledger_relative is not None:
+        if not isinstance(agent_ledger_relative, str) or agent_ledger_relative != AGENT_LEDGER_JSON:
+            errors.append("manifest agent_ledger path is invalid")
+        else:
+            try:
+                agent_ledger = read_json(case_file(root, agent_ledger_relative))
+                errors.extend(
+                    validate_agent_ledger(
+                        agent_ledger,
+                        case_id=str(manifest.get("case_id")),
+                    )
+                )
+            except CaseError as exc:
+                errors.append(f"Invalid agent ledger: {exc}")
     role_manifest_relative = manifest.get("artifacts", {}).get("role_manifest")
     if role_manifest_relative != ROLE_MANIFEST_JSON:
         errors.append("manifest role_manifest path is invalid")
@@ -2442,6 +3921,7 @@ def validate_case(
                 errors.append("role-manifest.json differs from coordinator manifest projection")
         except CaseError as exc:
             errors.append(f"Invalid role manifest: {exc}")
+    errors.extend(gate_history_errors(root, manifest))
     try:
         ensure_acyclic(ledger)
     except CaseError as exc:
@@ -2464,6 +3944,7 @@ def validate_case(
             continue
         if block.get("kind") not in BLOCK_KINDS:
             errors.append(f"{block_id}: invalid kind {block.get('kind')!r}")
+        errors.extend(block_review_state_errors(root, block))
         if block.get("status") not in BLOCK_STATUSES:
             errors.append(f"{block_id}: invalid status {block.get('status')!r}")
             continue
@@ -2539,6 +4020,13 @@ def validate_case(
             if status not in {"pass", "not_required"}:
                 errors.append(f"Gate {gate_name} is {status or 'missing'}")
                 continue
+            if (
+                status == "not_required"
+                and gate_name
+                in required_gates(manifest)
+            ):
+                errors.append(f"Gate {gate_name} is required by the execution policy")
+                continue
             if status == "pass":
                 gate = manifest["gates"][gate_name]
                 evidence_path = gate.get("evidence")
@@ -2556,6 +4044,41 @@ def validate_case(
                 ):
                     errors.append(f"Gate {gate_name} subject changed after pass")
     return errors
+
+
+def semantic_state_snapshot(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+) -> dict[str, dict[str, str]]:
+    """Capture exact and whitespace-normalized hashes of semantic artifacts."""
+    relatives = {
+        str(manifest["kernel"]["path"]),
+        str(manifest["artifacts"]["evidence"]),
+        str(manifest["artifacts"]["decisions"]),
+        str(manifest["artifacts"]["draft"]),
+    }
+    for block in ledger.get("blocks", []):
+        if not isinstance(block, dict):
+            continue
+        for field in ("artifact", "semantic_index"):
+            if isinstance(block.get(field), str):
+                relatives.add(block[field])
+    snapshot: dict[str, dict[str, str]] = {}
+    for relative in sorted(relatives):
+        path = case_file(root, relative)
+        if not path.is_file():
+            continue
+        text = unicodedata.normalize(
+            "NFKC",
+            path.read_text(encoding="utf-8", errors="replace"),
+        )
+        editorial = " ".join(text.split())
+        snapshot[relative] = {
+            "sha256": sha256(path),
+            "editorial_sha256": hashlib.sha256(editorial.encode("utf-8")).hexdigest(),
+        }
+    return snapshot
 
 
 def run_check(
@@ -2590,6 +4113,7 @@ def run_check(
         "kernel_sha256": manifest["kernel"]["sha256"],
         "block_subject_sha256": block_subject_hash(root, ledger),
         "draft_sha256": sha256(case_file(root, manifest["artifacts"]["draft"])),
+        "semantic_snapshot": semantic_state_snapshot(root, manifest, ledger),
         "errors": errors,
     }
     report_path = case_file(root, manifest["artifacts"]["consistency_report"])
@@ -2601,6 +4125,7 @@ def run_check(
         "subject_sha256": (
             gate_subject_hash(root, manifest, ledger, "consistency") if not errors else None
         ),
+        "semantic_snapshot": report["semantic_snapshot"] if not errors else None,
         "note": None if not errors else "; ".join(errors[:5]),
     }
     manifest["events"].append(
@@ -2616,8 +4141,48 @@ def context_bundle(
     *,
     block_id: str | None,
     role: str,
+    role_mode: str | None = None,
+    contract_surfaces: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build a bounded, role-specific list of case inputs."""
+    selected_surfaces = set(contract_surfaces or [])
+    unknown_surfaces = sorted(selected_surfaces - CONTRACT_SURFACES)
+    if unknown_surfaces:
+        raise CaseError("Unknown contract surfaces: " + ", ".join(unknown_surfaces))
+    assurance = assurance_level(manifest)
+    if assurance == "high":
+        selected_surfaces.update(
+            {"solution-boundary", "diagram", "reader-projection", "project-rules"}
+        )
+
+    contract_inputs = [
+        f"agents/contracts/{role}.md",
+        "references/prompt-contract.md",
+        "references/handoff-contract.md",
+        "references/convergence-contract.md",
+    ]
+    surface_paths = {
+        "solution-boundary": "references/solution-boundary-contract.md",
+        "diagram": "references/diagram-contract.md",
+        "reader-projection": "references/reader-projection-contract.md",
+    }
+    contract_inputs.extend(
+        surface_paths[surface]
+        for surface in sorted(selected_surfaces)
+        if surface in surface_paths
+    )
+
+    def covered_gates_for(effective_mode: str) -> list[str]:
+        if role != "spec-reviewer":
+            return []
+        if effective_mode == "final":
+            return ["integration_review", "global_review", "project_conformance"]
+        return {
+            "integration": ["integration_review"],
+            "global": ["global_review"],
+            "project-conformance": ["project_conformance"],
+        }.get(effective_mode, [])
+
     common = [ROLE_MANIFEST_JSON, "kernel.md", "evidence.md", "decisions.md"]
     if isinstance(manifest.get("artifacts", {}).get("working_projection"), str):
         common.insert(1, WORKING_PROJECTION_JSON)
@@ -2629,23 +4194,91 @@ def context_bundle(
     if manifest.get("method_context") is not None:
         method_inputs = [METHOD_CONTEXT_JSON, METHOD_CONTEXT_MARKDOWN]
     if block_id is None:
-        if manifest.get("mode") != "compact":
-            raise CaseError("Block mode context requires --block")
+        whole_case_block_role = manifest.get("mode") == "block" and (
+            (
+                role == "spec-reviewer"
+                and role_mode in {"integration", "global", "final", "project-conformance"}
+            )
+            or (role == "spec-editor" and role_mode == "integrate")
+            or (
+                role == "solution-architect"
+                and role_mode in {"design", "conformance"}
+            )
+        )
+        if manifest.get("mode") != "compact" and not whole_case_block_role:
+            raise CaseError("Block mode context requires --block except for whole-case reviewer modes")
         if role == "system-analyst":
+            effective_role_mode = role_mode or "document"
             inputs = common + method_inputs
             excluded = ["draft.md", "reviews/global.md", "author reasoning"]
         elif role == "spec-editor":
-            inputs = common + ["draft.md"]
+            effective_role_mode = role_mode or (
+                "integrate" if manifest.get("mode") == "block" else "document"
+            )
+            block_inputs = [
+                str(value)
+                for block in ledger.get("blocks", [])
+                if isinstance(block, dict)
+                for value in (block.get("artifact"), block.get("semantic_index"))
+                if isinstance(value, str)
+            ]
+            inputs = common + ["draft.md", *block_inputs]
             excluded = [*method_inputs, "reviews/global.md", "author reasoning"]
         elif role == "spec-reviewer":
-            inputs = common + method_inputs + ["draft.md"]
-            excluded = ["reviews/global.md", "author reasoning", "previous findings"]
+            effective_role_mode = role_mode or "global"
+            if effective_role_mode == "final" and assurance == "high":
+                raise CaseError("High assurance uses separate integration/global/project reviews")
+            indexes = [
+                str(block.get("semantic_index"))
+                for block in ledger.get("blocks", [])
+                if isinstance(block, dict) and isinstance(block.get("semantic_index"), str)
+            ]
+            inputs = common + method_inputs + ["draft.md", *indexes]
+            if "project-rules" in selected_surfaces:
+                contract_relative = manifest.get("artifacts", {}).get(
+                    "project_conformance_contract"
+                )
+                if isinstance(contract_relative, str):
+                    inputs.append(contract_relative)
+            excluded = [
+                "reviews/*.md",
+                "reviews/history/*",
+                "author reasoning",
+                "previous findings",
+            ]
+        elif role == "solution-architect":
+            effective_role_mode = role_mode or "design"
+            if effective_role_mode not in {"design", "conformance"}:
+                raise CaseError("Architect role mode must be design or conformance")
+            semantic_inputs = [
+                str(value)
+                for block in ledger.get("blocks", [])
+                if isinstance(block, dict)
+                for value in (block.get("artifact"), block.get("semantic_index"))
+                if isinstance(value, str)
+            ]
+            inputs = common + semantic_inputs
+            if effective_role_mode == "conformance":
+                inputs.append("draft.md")
+            excluded = [
+                *method_inputs,
+                "reviews/*.md",
+                "reviews/history/*",
+                "author reasoning",
+                "previous findings",
+            ]
         else:
             raise CaseError(f"Unsupported compact role: {role}")
         return {
             "case_id": manifest["case_id"],
             "target": "whole-case",
             "role": role,
+            "role_mode": effective_role_mode,
+            "assurance_level": assurance,
+            "review_strategy": REVIEW_STRATEGIES[assurance],
+            "covered_gates": covered_gates_for(effective_role_mode),
+            "contract_surfaces": sorted(selected_surfaces),
+            "contract_inputs": list(dict.fromkeys(contract_inputs)),
             "case_inputs": list(dict.fromkeys(inputs)),
             "external_inputs": [
                 "resolved project profile",
@@ -2666,25 +4299,75 @@ def context_bundle(
         for value in (dependency["artifact"], dependency["semantic_index"])
     ]
     if role == "system-analyst":
+        effective_role_mode = role_mode or "block"
         inputs = common + method_inputs + dependency_files
         excluded = [block["review"], "draft.md", "reviews/global.md"]
     elif role == "spec-editor":
+        effective_role_mode = role_mode or "block-render"
         inputs = common + dependency_files + [block["artifact"], block["semantic_index"]]
         excluded = [block["review"], "reviews/global.md"]
     elif role == "spec-reviewer":
+        effective_role_mode = role_mode or "block"
+        if effective_role_mode != "block":
+            raise CaseError("A reviewer with --block must use role mode block")
+        remediation = active_block_remediation(block)
+        remediation_inputs: list[str] = []
+        if remediation is not None:
+            remediation_inputs = [
+                str(remediation["baseline_artifact"]),
+                str(remediation["baseline_index"]),
+                str(remediation["finding_evidence"]),
+            ]
+            coverage_evidence = remediation.get("coverage_evidence")
+            if isinstance(coverage_evidence, str):
+                remediation_inputs.append(coverage_evidence)
         inputs = (
             common
             + method_inputs
             + dependency_files
             + [block["artifact"], block["semantic_index"]]
+            + remediation_inputs
         )
         excluded = [block["review"], "reviews/global.md", "author reasoning"]
+        if remediation is None:
+            excluded.extend(["reviews/history/*", "previous findings"])
+        else:
+            excluded.append("unbound reviews/history/*")
+    elif role == "solution-architect":
+        effective_role_mode = role_mode or "design"
+        if effective_role_mode != "design":
+            raise CaseError("A block-scoped architect must use role mode design")
+        inputs = common + dependency_files + [block["artifact"], block["semantic_index"]]
+        excluded = [
+            *method_inputs,
+            block["review"],
+            "reviews/*.md",
+            "author reasoning",
+            "previous findings",
+        ]
     else:
         raise CaseError(f"Unsupported block role: {role}")
+    remediation = (
+        active_block_remediation(block)
+        if role == "spec-reviewer"
+        else None
+    )
     return {
         "case_id": manifest["case_id"],
         "block": block,
         "role": role,
+        "role_mode": effective_role_mode,
+        "assurance_level": assurance,
+        "review_strategy": REVIEW_STRATEGIES[assurance],
+        "review_scope": (
+            "targeted-remediation"
+            if remediation is not None and remediation.get("scope") == "targeted"
+            else "full-block"
+        ),
+        "remediation": remediation,
+        "covered_gates": covered_gates_for(effective_role_mode),
+        "contract_surfaces": sorted(selected_surfaces),
+        "contract_inputs": list(dict.fromkeys(contract_inputs)),
         "case_inputs": list(dict.fromkeys(inputs)),
         "external_inputs": [
             "resolved project profile",
@@ -2701,6 +4384,9 @@ def render_status(root: Path, manifest: dict[str, Any], ledger: dict[str, Any]) 
         f"# Case {manifest['case_id']}",
         "",
         f"- mode: `{manifest['mode']}`",
+        f"- assurance: `{assurance_level(manifest)}`",
+        f"- tracking: `{tracking_policy(manifest)}`",
+        f"- projection sync: `{projection_sync_policy(manifest)}`",
         f"- intent: `{manifest['intent']}`",
         f"- profile: `{manifest['profile_id']}`",
         f"- route: `{manifest['route_id']}`",
@@ -2843,9 +4529,29 @@ def build_parser() -> argparse.ArgumentParser:
     transition_parser.add_argument("--status", choices=sorted(BLOCK_STATUSES), required=True)
     transition_parser.add_argument("--note")
 
+    remediation_parser = subparsers.add_parser(
+        "begin-remediation",
+        help="Open a bounded blocker/major correction without discarding prior review",
+    )
+    remediation_parser.add_argument("--case-root", required=True)
+    remediation_parser.add_argument("--id", required=True)
+    remediation_parser.add_argument(
+        "--finding",
+        action="append",
+        default=[],
+        help="Stable finding and severity as FINDING_ID=blocker|major",
+    )
+    remediation_parser.add_argument("--semantic-id", action="append", default=[])
+    remediation_parser.add_argument("--evidence", required=True)
+    remediation_parser.add_argument("--reason", required=True)
+    remediation_parser.add_argument("--full-block", action="store_true")
+
     refresh_parser = subparsers.add_parser("refresh-kernel", help="Record a kernel edit")
     refresh_parser.add_argument("--case-root", required=True)
     refresh_parser.add_argument("--affects", action="append", default=[])
+    refresh_parser.add_argument("--change-scope", choices=sorted(CHANGE_SCOPES))
+    refresh_parser.add_argument("--invalidate-all", action="store_true")
+    refresh_parser.add_argument("--reason")
 
     gate_parser = subparsers.add_parser("set-gate", help="Record a workflow gate")
     gate_parser.add_argument("--case-root", required=True)
@@ -2853,6 +4559,27 @@ def build_parser() -> argparse.ArgumentParser:
     gate_parser.add_argument("--status", choices=sorted(GATE_STATUSES), required=True)
     gate_parser.add_argument("--evidence")
     gate_parser.add_argument("--note")
+
+    change_parser = subparsers.add_parser(
+        "record-change",
+        help="Carry passed gates over an explicitly non-semantic delta",
+    )
+    change_parser.add_argument("--case-root", required=True)
+    change_parser.add_argument(
+        "--change-scope",
+        choices=("editorial", "projection-only"),
+        required=True,
+    )
+    change_parser.add_argument("--reason", required=True)
+
+    remediation_record_parser = subparsers.add_parser(
+        "record-remediation",
+        help="Reuse prior whole-case review coverage after a bounded targeted correction",
+    )
+    remediation_record_parser.add_argument("--case-root", required=True)
+    remediation_record_parser.add_argument("--id", required=True)
+    remediation_record_parser.add_argument("--remediation-id")
+    remediation_record_parser.add_argument("--reason", required=True)
 
     projection_parser = subparsers.add_parser(
         "projection-update",
@@ -2876,8 +4603,43 @@ def build_parser() -> argparse.ArgumentParser:
     context_parser.add_argument("--block", help="Required in block mode; omit in compact mode")
     context_parser.add_argument(
         "--role",
-        choices=("system-analyst", "spec-editor", "spec-reviewer"),
+        choices=(
+            "system-analyst",
+            "solution-architect",
+            "spec-editor",
+            "spec-reviewer",
+        ),
         required=True,
+    )
+    context_parser.add_argument("--role-mode")
+    context_parser.add_argument(
+        "--contract-surface",
+        action="append",
+        choices=sorted(CONTRACT_SURFACES),
+        default=[],
+    )
+
+    agent_parser = subparsers.add_parser(
+        "record-agent-run",
+        help="Append model cost and finding-yield telemetry",
+    )
+    agent_parser.add_argument("--case-root", required=True)
+    agent_parser.add_argument("--role", required=True)
+    agent_parser.add_argument("--role-mode", required=True)
+    agent_parser.add_argument("--model", required=True)
+    agent_parser.add_argument("--subject-sha256", required=True)
+    agent_parser.add_argument("--input-bytes", type=int)
+    agent_parser.add_argument("--input-tokens", type=int)
+    agent_parser.add_argument("--output-tokens", type=int)
+    agent_parser.add_argument("--duration-seconds", type=float, required=True)
+    agent_parser.add_argument("--retries", type=int, default=0)
+    agent_parser.add_argument("--reported-blocker", type=int, default=0)
+    agent_parser.add_argument("--reported-major", type=int, default=0)
+    agent_parser.add_argument("--reported-minor", type=int, default=0)
+    agent_parser.add_argument(
+        "--cache-status",
+        choices=("hit", "miss", "unknown"),
+        default="unknown",
     )
 
     check_parser = subparsers.add_parser("check", help="Run checks and update consistency gate")
@@ -2959,8 +4721,37 @@ def main() -> int:
             )
             print(f"PASS block={args.id} status={args.status}")
             return 0
+        if args.command == "begin-remediation":
+            remediation = begin_block_remediation(
+                root,
+                manifest,
+                ledger,
+                block_id=args.id,
+                findings=parse_remediation_findings(args.finding),
+                semantic_ids=args.semantic_id,
+                evidence=args.evidence,
+                reason=args.reason,
+                full_block=args.full_block,
+            )
+            print(
+                f"PASS block={args.id} remediation={remediation['id']} "
+                f"scope={remediation['scope']} cycle={remediation['cycle']}"
+            )
+            return 0
         if args.command == "refresh-kernel":
-            stale = refresh_kernel(root, manifest, ledger, args.affects)
+            if "assurance_level" in manifest and args.change_scope is None:
+                raise CaseError(
+                    "Assurance-aware cases require --change-scope for refresh-kernel"
+                )
+            stale = refresh_kernel(
+                root,
+                manifest,
+                ledger,
+                args.affects,
+                change_scope=args.change_scope,
+                invalidate_all=args.invalidate_all,
+                reason=args.reason,
+            )
             print(
                 f"PASS revision={manifest['kernel']['revision']} "
                 f"stale={','.join(stale) if stale else '-'}"
@@ -2977,6 +4768,33 @@ def main() -> int:
                 note=args.note,
             )
             print(f"PASS gate={args.name} status={args.status}")
+            return 0
+        if args.command == "record-change":
+            rebased = rebase_nonsemantic_change(
+                root,
+                manifest,
+                ledger,
+                change_scope=args.change_scope,
+                reason=args.reason,
+            )
+            print(
+                "PASS nonsemantic-change="
+                f"{args.change_scope} rebased={','.join(rebased) if rebased else '-'}"
+            )
+            return 0
+        if args.command == "record-remediation":
+            rebased = record_semantic_remediation(
+                root,
+                manifest,
+                ledger,
+                block_id=args.id,
+                remediation_id=args.remediation_id,
+                reason=args.reason,
+            )
+            print(
+                f"PASS remediation={args.remediation_id or 'latest'} "
+                f"rebased={','.join(rebased) if rebased else '-'}"
+            )
             return 0
         if args.command == "projection-update":
             record_working_projection_update(
@@ -3001,11 +4819,34 @@ def main() -> int:
                         ledger,
                         block_id=args.block,
                         role=args.role,
+                        role_mode=args.role_mode,
+                        contract_surfaces=args.contract_surface,
                     ),
                     ensure_ascii=False,
                     indent=2,
                 )
             )
+            return 0
+        if args.command == "record-agent-run":
+            record_agent_run(
+                root,
+                manifest,
+                ledger,
+                role=args.role,
+                role_mode=args.role_mode,
+                model=args.model,
+                subject_sha256=args.subject_sha256,
+                input_bytes=args.input_bytes,
+                input_tokens=args.input_tokens,
+                output_tokens=args.output_tokens,
+                duration_seconds=args.duration_seconds,
+                retries=args.retries,
+                reported_blocker=args.reported_blocker,
+                reported_major=args.reported_major,
+                reported_minor=args.reported_minor,
+                cache_status=args.cache_status,
+            )
+            print(f"PASS agent-run={args.role}/{args.role_mode}")
             return 0
         if args.command == "check":
             errors = run_check(root, manifest, ledger, final_trace=args.final_trace)

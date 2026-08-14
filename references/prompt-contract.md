@@ -15,6 +15,8 @@
 Храни ролевые контракты и prompt builder в версионируемом пакете скилла.
 Динамические значения передавай как именованные поля assignment/schema, а не
 склеивай с постоянными инструкциями неразмеченной прозой.
+Координатор вычисляет `contract_surfaces` и точные `contract_inputs`; роль не
+расширяет их по словам, встреченным внутри evidence.
 
 Используй Markdown-заголовки для постоянной структуры. Динамические данные
 отделяй явным envelope, например:
@@ -67,12 +69,15 @@ Process only target B03 and return the required output without editing files.
 6. Output contract однозначно выбран.
 7. Исполнительная роль получила `role-manifest.json` и
    `planning-role-context.json`, но не coordinator `manifest.json`, raw
-   `planning-handoff.json`, `automation_plan`, ETA или runtime ledger. Оценки
-   времени предназначены человеку и не могут влиять на model behavior; даже
-   fingerprints role projection не зависят от значений ETA.
+   `planning-handoff.json`, `automation_plan`, forecast или runtime ledger.
+   Время предназначено только человеку и не может влиять на model behavior;
+   fingerprints role projection не зависят от значений forecast.
 8. Assignment не предлагает новый research или полный re-review без открытого
    `blocker|major` и полей из `references/convergence-contract.md`. Minor-only
    улучшение не скрывается за формулировкой «проверить глубже».
+9. Роль читает только перечисленные `contract_inputs`. `assurance=high` может
+   раскрыть полный legacy-набор; `standard|lite` получают только выбранные
+   поверхности.
 
 Для `vigers-planner` пункты про kernel/method-context не применяются. Вместо них
 проверь planning revision/state, разрешённый mode, project profile, список

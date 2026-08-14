@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "id": "process-yagni-no-new-gate",
+  "purpose": "Проверить, что Vigers не создаёт новый reviewer, gate или отчёт, когда риск уже закрывается существующим author pass и deterministic check.",
+  "prompt": "<assignment>\nrole: coordinator\nmode: compact\nphase: after-simplicity-control\nassurance: standard\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"case\">Simplicity-control corrected one architecture mechanism, the semantic owner applied the bounded delta, machine/document checks pass, and the existing final reviewer covers architecture-related global consistency. A suggestion asks to add a permanent simplicity reviewer, a separate debt report and another approval gate for confidence.</document>\n</source_documents>\n\n<final_instruction>\nПримени process-YAGNI и верни минимальный безопасный дальнейший маршрут.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "назвать конкретный риск и проверить существующие механизмы покрытия",
+      "переиспользовать deterministic checks, semantic owner и существующий final reviewer",
+      "сохранить результат simplicity-control в evidence существующего author gate",
+      "перейти дальше после закрытия bounded delta"
+    ],
+    "forbidden_actions": [
+      "создавать отдельного simplicity reviewer",
+      "создавать новый debt report при наличии decision log и passport",
+      "добавлять approval gate только для уверенности",
+      "запускать полный review уже покрытых неизменённых поверхностей"
+    ],
+    "required_output_signals": [
+      "process_yagni: reuse-existing",
+      "no new role gate or artifact",
+      "existing coverage preserved"
+    ],
+    "allowed_research_exception": {
+      "severity": ["blocker", "major"],
+      "required_fields": ["research_question", "missing_evidence", "target_sources", "stop_condition"]
+    }
+  }
+}

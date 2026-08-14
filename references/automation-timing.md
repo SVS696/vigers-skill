@@ -1,234 +1,325 @@
-# Automation timing
+# Таймер и проектная калибровка
 
-Vigers измеряет длительность автоматизированного выполнения отдельно от личного
-учёта времени пользователя и календарного обещания результата. Метрика всегда
-`wall_clock` в секундах: от фактического входа pipeline в этап до его terminal
-status, включая tool waits и технические блокировки внутри этапа.
+Время в Vigers существует только для человека. Оно не является входом модели,
+deadline, timebox, бюджетом токенов, критерием остановки или основанием менять
+scope, assurance, порядок ролей и полноту проверок. Ролевой context исключает
+`automation_plan`, прогноз, runtime ledger и историю калибратора.
 
-Не включай в эту метрику:
+## Когда появляется прогноз
 
-- часы пользователя, CRM timesheet или task-manager timer;
-- ожидание user review до запуска approved pipeline;
-- рабочие дни, выходные и календарную доступность пользователя;
-- срок, который пользователь обещает внешнему получателю.
+Прогноз строится только после предварительного анализа:
 
-## Граница с личным трекером и постановкой
+1. planner завершил research coverage;
+2. материализованы `mode-decision.json` и `plan.json` с этапами/checklists;
+3. отдельный детерминированный `timing_model.py` извлёк структурные признаки;
+4. он выбрал ближайшие завершённые кейсы только того же project root/profile;
+5. project adapter записал человекочитаемый диапазон в task manager и сделал
+   read-back, если это включено настройками.
 
-`automation-timing.json` — внутренний runtime ledger Vigers, а не канонический
-источник требований. Pipeline не публикует его оценки, фактические замеры и
-служебные причины в Redmine, Jira, документ постановки или иной внешний
-артефакт без отдельного явного решения пользователя.
+До готового анализа сравнивать задачу с историей запрещено: недостаточно фактов
+о поверхностях, компонентах, владельцах, рисках и форме плана. При material
+replanning прогноз пересчитывается по новой feature fingerprint.
 
-Личный task manager, включая Singularity, находится вне этого контракта:
-пользователь может хранить там любые оценки, таймеры и черновые заметки. Vigers
-не ограничивает их содержание; человекочитаемый план и прогресс pipeline могут
-быть спроецированы туда по правилам рабочего процесса. Содержимое личного
-трекера не переносится автоматически в Redmine, Jira или итоговую постановку и
-не становится требованием только по факту такой записи.
+Прогноз хранится отдельно от постановки и содержит:
 
-## Прогноз в planning-case
+- диапазон чистой работы без пауз;
+- диапазон календарного времени с паузами;
+- likely-ориентир для обоих диапазонов;
+- число похожих кейсов, confidence и IDs использованных наблюдений;
+- `purpose: human_information_only`.
 
-Новый `plan.json` использует schema 4. Верхний уровень объявляет обязательную
-метрику:
+Это прогноз **оставшегося первичного цикла постановки**: preliminary analysis
+уже выполнен и в ETA не входит; дальше учитываются полный системный анализ,
+применимые design/review gates, исправления, повторные публикации и иные
+доработки до первой фактической `development_handoff`. Исторические samples
+включают реально случившиеся до handoff итерации, поэтому диапазон со временем
+учится на обычной для проекта частоте доработок, хотя конкретную будущую правку
+заранее не выдумывает.
 
-```json
-{
-  "schema": 4,
-  "revision": 5,
-  "automation_estimation": {
-    "policy": "required",
-    "metric": "wall_clock",
-    "unit": "seconds",
-    "execution_use": "human_information_only"
-  },
-  "stages": []
-}
+Если данных проекта нет, результат — `insufficient_data`, без подмешивания
+другого проекта и без выдуманного heuristic.
+
+## Самообучающийся модуль
+
+`scripts/timing_model.py` — эмпирический калибратор, а не LLM-роль. Он получает
+только структурные признаки готового предварительного анализа и завершённые
+числовые замеры. Текст требований, evidence и прогноз не передаются моделям.
+
+По умолчанию модель проекта живёт в:
+
+```text
+<project-root>/.vigers/telemetry/timing-model.json
 ```
 
-Каждый этап содержит трёхточечную оценку:
+Файл привязан одновременно к `profile_id` и fingerprint канонического project
+root. Попытка открыть его из другого проекта отклоняется, даже если profile ID
+совпадает. Обновление по тому же case/fingerprint идемпотентно; изменившийся
+sample требует явного `--replace`.
 
-```json
-{
-  "id": "P03",
-  "automation_estimate": {
-    "optimistic_seconds": 1800,
-    "likely_seconds": 2700,
-    "pessimistic_seconds": 3600,
-    "basis": "heuristic",
-    "confidence": "low",
-    "sample_size": 0
-  }
-}
+Feature schema 2 различает не только количество, но и тип работы:
+
+- точный `change_scope`, включая `semantic-local|semantic-crosscutting`;
+- multi-hot сигнатуру semantic surfaces (`data`, `states`, `scenarios`,
+  `permissions` и другие канонические типы);
+- project-local сигнатуру компонентов с меньшим весом, чтобы не переобучаться
+  на имя одного подсервиса;
+- сигнатуру типов риска, а не только их число.
+
+Для наборов используется Jaccard distance. Surface types имеют больший вес,
+component names — вспомогательный. Старые schema-1 samples сохраняются и
+участвуют в подборе, но получают penalty за неизвестные categorical признаки;
+старые forecast fingerprints по-прежнему разрешаются при завершении уже начатых
+кейсов.
+
+После preliminary analysis:
+
+```text
+python3 {baseDir}/scripts/timing_model.py predict \
+  --profile-id "<profile-id>" --project-root "<project-root>" \
+  --mode-decision "<case-root>/mode-decision.json" \
+  --plan "<planning-root>/plan.json" \
+  --write "<case-root>/timing-forecast.json"
 ```
 
-Допустимые basis: `heuristic`, `analogous`, `historical`. Пока исторических
-наблюдений нет, используй `heuristic`, `low`, `sample_size: 0`; не изображай
-точность. При наличии агрегата укажи реальный basis и число использованных
-наблюдений.
+После финального завершённого dual-timer case:
 
-Общий срок автоматизации считай по critical path DAG, а не суммой всех этапов:
-параллельные этапы не должны искусственно раздувать прогноз. Календарный срок для
-пользователя остаётся отдельным решением вне машинного прогноза.
+```text
+python3 {baseDir}/scripts/timing_model.py update \
+  --profile-id "<profile-id>" --project-root "<project-root>" \
+  --mode-decision "<case-root>/mode-decision.json" \
+  --plan "<planning-root>/plan.json" \
+  --ledger "<case-root>/automation-timing.json" \
+  --forecast "<case-root>/timing-forecast.json"
+```
 
-## Оценка существует только для человека
+Если установлен независимый companion `work-metrics` и coordinator может
+доказать полноту журналов всех относящихся к кейсу сессий/харнесов, сначала
+сформируй post-facto reconciliation:
 
-Любая оценка предварительна, включая `historical`: это информация для plan review,
-сравнения с фактом и калибровки следующих планов. Поле `execution_use` всегда
-равно `human_information_only`. Значения ETA не входят в assignment и bounded
-context системного аналитика, архитектора, редактора или reviewer. Для них
-`case_pipeline.py context` выдаёт `planning-role-context.json` без
-`automation_plan` и без runtime ledger.
+```text
+python3 <work-metrics>/scripts/vigers_adapter.py reconcile \
+  --case-root "<case-root>" \
+  --forecast "<case-root>/timing-forecast.json" \
+  --harness-log "<session-1.jsonl>" \
+  --harness-log "<session-2.jsonl>" \
+  --logs-complete \
+  --write "<case-root>/activity-reconciliation.json"
 
-После старта этапа агенту запрещено использовать optimistic/likely/pessimistic
-как дедлайн, timebox, лимит усилий или сигнал ускориться/остановиться. Оценка не
-может влиять на:
+python3 {baseDir}/scripts/timing_model.py update \
+  --profile-id "<profile-id>" --project-root "<project-root>" \
+  --mode-decision "<case-root>/mode-decision.json" \
+  --plan "<planning-root>/plan.json" \
+  --ledger "<case-root>/automation-timing.json" \
+  --forecast "<case-root>/timing-forecast.json" \
+  --activity-reconciliation "<case-root>/activity-reconciliation.json"
+```
 
-- полноту source coverage и число проверяемых сценариев;
-- обязательные тесты, render, read-back и независимое review;
-- повторы после нестабильного результата;
-- качество артефакта, детализацию evidence и решение об эскалации;
-- продолжение этапа после превышения pessimistic.
-- выбор модели, reasoning effort, token/context budget и порядок независимых
-  ролей.
+Повторяй `--harness-log` для разных сессий и разных харнесов. Адаптер объединяет
+пересечения без двойного счёта, склеивает короткие межсобытийные разрывы,
+считает длинные разрывы inferred idle и принимает `limit_exhausted` как паузу
+до явного `resume` либо следующего наблюдаемого действия. Явные pause intervals
+из runtime ledger сильнее вычисленного состояния.
 
-Этап завершается только по exit criteria, явному blocker/terminal failure либо
-прямому решению пользователя. Превышение оценки само по себе не blocker и не
-terminal reason: pipeline продолжает работу, записывает фактический wall-clock и
-сравнивает его с baseline только после terminal status.
+`--logs-complete` — утверждение о coverage, а не режим оптимизма. Его можно
+передавать только после перечисления всех известных журналов этого work item.
+Partial reconciliation сохраняй для ретроспективы, но не передавай в `update`:
+Vigers отклонит неполный, чужой, нетерминальный или повреждённый результат.
+При отсутствии companion или доказанной полноты обычный dual-timer ledger
+остаётся каноническим fallback и обучение не ломается.
 
-Schema 1 читается как legacy plan без telemetry, schema 2 — как совместимый
-telemetry-plan без обязательных preliminary US/DoD, schema 3 — как совместимый
-план с preliminary US/DoD. Новые revisions используют schema 4 с
-solution-boundary probe.
+Update создаёт case-local `timing-calibration.json`: фактические active/elapsed,
+дельту и ratio к likely, попадание в исходный диапазон, число публикаций и
+development handoff timestamp. Этот же record добавляется sample в project model
+и, при включённом passport history, в историю паспорта.
 
-## Handoff и ledger
+При принятом reconciliation calibration записывает его fingerprint и источник
+измерения. Счётчики `work-metrics` (tokens, retries, findings и будущие providers)
+остаются отдельными наблюдениями: Vigers сейчас читает только `activity-time` и
+не превращает прочие метрики во входы ролевых моделей.
 
-`planning_case.py export` переносит immutable `automation_plan` в
-`planning-handoff.json`. `case_pipeline.py init` проверяет fingerprint и создаёт
-`automation-timing.json`, связанный с:
+Prediction использует не больше двенадцати ближайших наблюдений и сообщает
+реальный sample size. `high` confidence требует не меньше восьми близких samples;
+при меньшей истории модуль не изображает высокую точность.
 
-- Vigers `case_id`;
-- `planning_case_id` и approved revision;
-- fingerprint прогноза;
-- passport ID/path;
-- этапами, dependencies, прогнозами и runtime status.
+## Два таймера
 
-Прогноз внутри ledger неизменяем. Runtime меняет только status, timestamps,
-`actual_seconds`, checklist progress, terminal reason и append-only events. `case_pipeline.py validate`
-сверяет ledger с approved handoff и обнаруживает ручную подмену оценок.
-Runtime-переходы не сравнивают elapsed с прогнозом и не содержат автоматического
-timeout по optimistic/likely/pessimistic.
+Новый policy `measured` ведёт:
 
-## Выполнение
+- `active_seconds` — чистую работу; пользовательская пауза, исчерпание лимита,
+  внешнее ожидание и interruption сюда не входят;
+- `elapsed_seconds` — время от старта этапа до terminal status, включая паузы.
 
-Перед фактическим входом в approved этап:
+`actual_seconds` в measured ledger остаётся совместимым alias чистого времени.
+Summary отдельно показывает active critical path, elapsed case span и stage sum.
+Калибратор учится на active critical path и elapsed span только полностью
+завершённых ledgers.
+
+## Публикация, передача и межсессионная история
+
+Публикация постановки и передача в разработку — разные точки. После первой или
+повторной публикации запиши milestone, но не закрывай последний этап: поставь его
+на `external_wait`, а при правках возобнови. Тогда новые active intervals
+доплюсуются, а elapsed включает межсессионный разрыв и человеческие действия до
+явной передачи.
+
+```text
+python3 {baseDir}/scripts/automation_timing.py milestone \
+  --case-root "<case-root>" --kind publication \
+  --evidence "<redmine-read-back-ref>"
+
+python3 {baseDir}/scripts/automation_timing.py milestone \
+  --case-root "<case-root>" --kind development_handoff \
+  --evidence "<explicit-handoff-ref>"
+```
+
+`development_handoff` допустим только после terminal всех этапов и создаётся
+ровно один раз. Только после него case пригоден для финальной калибровки.
+Если после публикации пришли правки, возобнови последний completed stage без
+переписывания прежнего факта:
+
+```text
+python3 {baseDir}/scripts/automation_timing.py reopen \
+  --case-root "<case-root>" --stage P07 \
+  --evidence "<change-request-ref>"
+```
+
+После правок снова выполни `stop`, зафиксируй следующую publication revision и
+только затем development handoff. Active накапливает новые интервалы, elapsed
+считается от первого старта до handoff.
+
+Первый handoff — жёсткая правая граница основного sample. Ожидание, пока
+разработчик начнёт работу или вернётся с вопросами, после этой точки не входит
+ни в active, ни в elapsed постановки. Если после handoff появились новые данные
+и нужен доанализ, создай новый follow-up case в момент фактического возобновления
+работы. `work-metrics` помечает его `post-handoff-followup` и связывает через
+`parent_id`; основной `timing_model.py` такой sample не принимает. Это оставляет
+follow-up доступным для отдельной будущей аналитики, не превращая полгода
+ожидания разработки в полгода анализа.
+
+Для переноса между сессиями/харнесами сформируй last-known checkpoint:
+
+```text
+python3 {baseDir}/scripts/automation_timing.py checkpoint \
+  --case-root "<case-root>" --write "<checkpoint.json>"
+```
+
+При включённом task-note adapter заменяет в Singularity один timing-блок и
+читает его обратно после `start|pause|resume|stop|milestone`. Checkpoint содержит
+revision, ledger hash, active, elapsed и state. Новый координатор сравнивает его
+с локальным ledger:
+
+```text
+python3 {baseDir}/scripts/automation_timing.py reconcile \
+  --case-root "<case-root>" --external-checkpoint "<read-back.json>"
+```
+
+`local_ahead|local_clock_advanced` разрешают обновить внешний снимок.
+`external_ahead` означает лишь partial recovery, а одинаковая revision с разным
+ledger hash — конфликт без молчаливой перезаписи.
+
+При `timing_history=passport` forecast, публикации, development handoff и итоговая
+calibration append-only записываются также в историю паспорта:
+
+- local ledger — полный машинный event log;
+- паспорт — долговечная история смысловых точек;
+- Singularity — быстро доступный последний снимок.
+
+Старт этапа:
 
 ```text
 python3 {baseDir}/scripts/automation_timing.py start \
-  --case-root "<vigers-case-root>" --stage P03
+  --case-root "<case-root>" --stage P03
 ```
 
-Перед началом содержательной работы выбери любой независимый пункт и явно
-переведи его в `in_progress`; порядок checklist не является dependency:
+Пауза одного этапа или всех активных этапов:
 
 ```text
-python3 {baseDir}/scripts/automation_timing.py begin \
-  --case-root "<vigers-case-root>" --stage P03 --item P03-C02
+python3 {baseDir}/scripts/automation_timing.py pause \
+  --case-root "<case-root>" --reason user_pause
+
+python3 {baseDir}/scripts/automation_timing.py pause \
+  --case-root "<case-root>" --reason limit_exhausted
 ```
 
-Исключение — пункт с `completion_owner: user`: агент его не начинает и не
-отмечает. Он готовит handoff и ждёт, пока пользователь сам поставит внешнюю
-галку. После явного подтверждения и read-back координатор синхронизирует ledger:
+Допустимые причины: `user_pause`, `limit_exhausted`, `external_wait`,
+`interrupted`. Active timer останавливается, elapsed продолжает идти.
+
+Возобновление:
 
 ```text
-python3 {baseDir}/scripts/automation_timing.py check \
-  --case-root "<vigers-case-root>" --stage P03 --item P03-C03 \
-  --user-confirmed --evidence "<user-confirmation-ref>" \
-  --external-system "<system>" --external-item-id "<item-id>" \
-  --read-back-at "<timestamp>"
+python3 {baseDir}/scripts/automation_timing.py resume \
+  --case-root "<case-root>"
 ```
 
-Обычно новый item нельзя начать, пока другой item этого этапа остаётся
-`in_progress`: это ловит забытый completion barrier. Для реально одновременной
-независимой работы разрешён второй `begin --parallel-reason "<reason>"`; не
-используй его как обход несинхронизированной галки.
-
-Как только `done_when` начатого пункта выполнен, прерви обычный ход работы и
-проверь результат. Если этап связан с
-`external_target_id`, сначала отметь внешнюю галку через project adapter и
-прочитай её обратно, затем зафиксируй тот же stable item ID:
-
-```text
-python3 {baseDir}/scripts/automation_timing.py check \
-  --case-root "<vigers-case-root>" --stage P03 --item P03-C02 \
-  --evidence "<artifact-or-check-ref>" \
-  --external-system "<system>" --external-item-id "<item-id>" \
-  --read-back-at "<timestamp>"
-```
-
-Для внутреннего агентского пункта достаточно `--evidence`. Обычный `check`
-принимает только item в `in_progress`; user-owned item допускает прямой переход
-из `pending` только с `--user-confirmed`. Не откладывай агентские галки до конца
-этапа, следующей роли или финального ответа и не объявляй пункт/гейт закрытым до
-успешного `check`. Повтор с тем же evidence/read-back идемпотентен; другая
-попытка переписать уже завершённый item отклоняется.
-
-После выхода и проверки результата:
+Завершение:
 
 ```text
 python3 {baseDir}/scripts/automation_timing.py stop \
-  --case-root "<vigers-case-root>" --stage P03 --status completed
+  --case-root "<case-root>" --stage P03 --status completed
 ```
 
-Для terminal failure используй `failed|blocked|cancelled` и обязательный
-`--reason`. Зависимый этап стартует только после `completed` всех dependencies.
-Pause/resume в первой версии нет: временные tool waits остаются частью wall-clock.
-Не оставляй running stage перед финальной выдачей.
+Остановка этапа во время паузы разрешена: незакрытый pause interval попадает
+только в elapsed.
 
-`stop --status completed` разрешён только после completion всех обязательных
-`Pxx-Cxx`. Прогноз, сообщение роли или субъективная уверенность не являются
-evidence выполнения.
+## Progress не зависит от таймера
 
-Как только во время полного анализа требуется изменить approved plan, останови
-role pass и закрой текущий stage как `blocked` с причиной `replanning required`.
-Открой новую planning revision через `planning_case.py replan` и не переписывай
-старый ledger. Для local delta достаточно coordinator approval, для material —
-user approval; затем создай следующий case. Неизменившиеся выполненные items
-сохраняют stable IDs; перед переносом в новый ledger повторно проверь evidence и
-внешнюю галку.
+Checklists сохраняют stable `Pxx-Cxx` и completion barriers при включённом или
+выключенном времени. Policy `disabled` не записывает длительности, но позволяет
+`start/begin/check/stop` менять progress state. Policy `fine` остаётся portable
+default; `milestones|off` применяются только по явной user/project настройке.
 
-Если pipeline завершился аварийно, при возобновлении прочитай ledger. Продолжение
-того же этапа сохраняет исходный `started_at`, поэтому итог показывает реальное
-время до результата, включая аварию. Если работа по этапу прекращена, закрой его
-terminal status с причиной; не переписывай timestamp вручную.
+Перед содержательной работой:
 
-## Проверка и сводка
+```text
+python3 {baseDir}/scripts/automation_timing.py begin \
+  --case-root "<case-root>" --stage P03 --item P03-C02
+```
+
+Сразу после выполнения `done_when`:
+
+```text
+python3 {baseDir}/scripts/automation_timing.py check \
+  --case-root "<case-root>" --stage P03 --item P03-C02 \
+  --evidence "<artifact-or-check-ref>"
+```
+
+Для внешней галки добавь system/item/read-back. Для user-owned пункта требуется
+`--user-confirmed`. Не откладывай синхронизацию до конца этапа: галки нужны и
+человеку для видимого прогресса, и машине как completion barriers.
+
+## Post-facto recovery
+
+Старые `agent-ledger.json` позволяют восстановить только нижнюю границу:
+
+```text
+python3 {baseDir}/scripts/timing_model.py recover \
+  --agent-ledger "<case-root>/agent-ledger.json" \
+  --write "<case-root>/timing-recovery.json"
+```
+
+Такой результат имеет `coverage: partial`, `quality: recovered_lower_bound` и
+`training_eligible: false`: логи вызовов не доказывают границы всей работы,
+паузы пользователя и ожидание лимитов. Он годится для ручной ретроспективы, но
+не загрязняет модель проекта.
+
+Для полного post-facto восстановления по нескольким журналам используй
+`work-metrics`, описанный выше. Legacy `recover` намеренно остаётся узким
+fallback одного `agent-ledger.json` и не изображает знание о межсессионных
+паузах.
+
+## Совместимость
+
+- legacy `required|optional` plan сохраняет старые трёхточечные estimates и
+  одноконтурный wall-clock;
+- новый `measured` plan не содержит оценок модели и включает dual timer;
+- новый `disabled` plan ведёт только progress;
+- отсутствие нового execution-preferences snapshot означает legacy semantics.
+
+Проверка:
 
 ```text
 python3 {baseDir}/scripts/automation_timing.py validate \
-  --case-root "<vigers-case-root>" --final
+  --case-root "<case-root>" --final
 python3 {baseDir}/scripts/automation_timing.py summary \
-  --case-root "<vigers-case-root>" --json
+  --case-root "<case-root>" --json
 ```
-
-Summary отдельно показывает:
-
-- optimistic/likely/pessimistic critical path;
-- сумму likely по этапам для диагностики параллельности;
-- фактический elapsed всей цепочки;
-- сумму длительностей этапов;
-- число завершённых и остающихся `in_progress` checklist items;
-- отношение actual к likely после terminal завершения.
-
-## Агрегация
-
-```text
-python3 {baseDir}/scripts/automation_timing.py aggregate \
-  --root "<cases-root>"
-```
-
-Aggregate сохраняет case, planning и passport linkage, число наблюдений,
-фактические длительности и error ratio. Он не выдаёт новый прогноз автоматически:
-на первой версии это evidence для следующей оценки, а не самодельная модель с
-ложной уверенностью. Следующий planner использует подходящие наблюдения как
-`historical|analogous` и явно указывает `sample_size` и confidence.
