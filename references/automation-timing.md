@@ -23,8 +23,11 @@ replanning прогноз пересчитывается по новой feature
 Прогноз хранится отдельно от постановки и содержит:
 
 - диапазон чистой работы без пауз;
-- диапазон календарного времени с паузами;
-- likely-ориентир для обоих диапазонов;
+- при project calendar — диапазон `business_elapsed` в рабочих окнах и calendar
+  ETA первой передачи;
+- raw `calendar_elapsed` как фактический срок с ночами, выходными, обычными
+  паузами и deferred-интервалами;
+- likely-ориентир для доступных диапазонов;
 - число похожих кейсов, confidence и IDs использованных наблюдений;
 - `purpose: human_information_only`.
 
@@ -78,6 +81,7 @@ python3 {baseDir}/scripts/timing_model.py predict \
   --profile-id "<profile-id>" --project-root "<project-root>" \
   --mode-decision "<case-root>/mode-decision.json" \
   --plan "<planning-root>/plan.json" \
+  --business-calendar "<project-root>/.vigers/timing-calendar.json" \
   --write "<case-root>/timing-forecast.json"
 ```
 
@@ -102,6 +106,7 @@ python3 <work-metrics>/scripts/vigers_adapter.py reconcile \
   --forecast "<case-root>/timing-forecast.json" \
   --harness-log "<session-1.jsonl>" \
   --harness-log "<session-2.jsonl>" \
+  --business-calendar "<project-root>/.vigers/timing-calendar.json" \
   --logs-complete \
   --write "<case-root>/activity-reconciliation.json"
 
@@ -127,10 +132,11 @@ Vigers отклонит неполный, чужой, нетерминальны
 При отсутствии companion или доказанной полноты обычный dual-timer ledger
 остаётся каноническим fallback и обучение не ломается.
 
-Update создаёт case-local `timing-calibration.json`: фактические active/elapsed,
-дельту и ratio к likely, попадание в исходный диапазон, число публикаций и
-development handoff timestamp. Этот же record добавляется sample в project model
-и, при включённом passport history, в историю паспорта.
+Update создаёт case-local `timing-calibration.json`: фактические active,
+business/calendar elapsed, отдельное ожидание ready → handoff, дельту и ratio к
+likely, попадание в исходный диапазон, число публикаций и development handoff
+timestamp. Этот же record добавляется sample в project model и, при включённом
+passport history, в историю паспорта.
 
 При принятом reconciliation calibration записывает его fingerprint и источник
 измерения. Счётчики `work-metrics` (tokens, retries, findings и будущие providers)
@@ -141,18 +147,44 @@ Prediction использует не больше двенадцати ближ�
 реальный sample size. `high` confidence требует не меньше восьми близких samples;
 при меньшей истории модуль не изображает высокую точность.
 
-## Два таймера
+## Три временные оси
 
 Новый policy `measured` ведёт:
 
 - `active_seconds` — чистую работу; пользовательская пауза, исчерпание лимита,
   внешнее ожидание и interruption сюда не входят;
-- `elapsed_seconds` — время от старта этапа до terminal status, включая паузы.
+- `business_elapsed_seconds` — время в рабочих окнах проекта; явный `deferred`
+  исключается, а наблюдаемая off-schedule работа сохраняется;
+- `calendar_elapsed_seconds` / legacy `elapsed_seconds` — полную стену до
+  terminal/handoff, включая ночи, выходные и все паузы.
 
 `actual_seconds` в measured ledger остаётся совместимым alias чистого времени.
-Summary отдельно показывает active critical path, elapsed case span и stage sum.
-Калибратор учится на active critical path и elapsed span только полностью
-завершённых ledgers.
+Summary отдельно показывает active critical path, raw calendar span и stage sum.
+Business elapsed восстанавливает `work-metrics` по project calendar. Калибратор
+не подменяет отсутствующий business sample сырым elapsed: пока таких замеров нет,
+человек видит active-прогноз и честное отсутствие calendar ETA.
+
+Project-owned `.vigers/timing-calendar.json` имеет schema 1:
+
+```json
+{
+  "schema": 1,
+  "calendar_id": "project-calendar",
+  "timezone": "Europe/Moscow",
+  "working_windows": [
+    {"weekdays": [1, 2, 3, 4, 5], "start": "09:00", "end": "18:00"}
+  ],
+  "handoff_windows": [
+    {"weekdays": [1, 2, 3, 4, 5], "start": "09:00", "end": "18:00"}
+  ],
+  "holidays": []
+}
+```
+
+`working_windows` задают business clock, `handoff_windows` — допустимые моменты
+передачи. Фактические логи имеют приоритет над расписанием: реально сделанная
+вечером или в выходной работа остаётся active и business fact. Holidays —
+project-owned dated input; при их изменении обновляй calendar явно.
 
 ## Публикация, передача и межсессионная история
 
@@ -168,12 +200,18 @@ python3 {baseDir}/scripts/automation_timing.py milestone \
   --evidence "<redmine-read-back-ref>"
 
 python3 {baseDir}/scripts/automation_timing.py milestone \
+  --case-root "<case-root>" --kind ready_for_handoff \
+  --evidence "<analysis-ready-ref>"
+
+python3 {baseDir}/scripts/automation_timing.py milestone \
   --case-root "<case-root>" --kind development_handoff \
   --evidence "<explicit-handoff-ref>"
 ```
 
-`development_handoff` допустим только после terminal всех этапов и создаётся
-ровно один раз. Только после него case пригоден для финальной калибровки.
+`ready_for_handoff` фиксирует момент, когда постановка действительно готова к
+передаче. `development_handoff` допустим только после него, создаётся ровно один
+раз и закрывает primary sample. Разрыв между точками измеряется отдельно: вечер,
+выходные или ожидание человеческого действия не маскируются под анализ.
 Если после публикации пришли правки, возобнови последний completed stage без
 переписывания прежнего факта:
 
@@ -183,9 +221,9 @@ python3 {baseDir}/scripts/automation_timing.py reopen \
   --evidence "<change-request-ref>"
 ```
 
-После правок снова выполни `stop`, зафиксируй следующую publication revision и
-только затем development handoff. Active накапливает новые интервалы, elapsed
-считается от первого старта до handoff.
+После правок снова выполни `stop`, зафиксируй следующую publication revision,
+новую ready revision и только затем development handoff. Active накапливает
+новые интервалы, raw calendar elapsed считается от первого старта до handoff.
 
 Первый handoff — жёсткая правая граница основного sample. Ожидание, пока
 разработчик начнёт работу или вернётся с вопросами, после этой точки не входит
@@ -242,7 +280,30 @@ python3 {baseDir}/scripts/automation_timing.py pause \
 ```
 
 Допустимые причины: `user_pause`, `limit_exhausted`, `external_wait`,
-`interrupted`. Active timer останавливается, elapsed продолжает идти.
+`interrupted`. Active timer останавливается, raw calendar elapsed продолжает идти.
+
+### Явное отложенное состояние
+
+Если пользователь явно не планирует продолжать work item, не оставляй его
+обычной паузой. При `deferred_state=enabled` сначала выполни project projections
+и read-back, затем запиши:
+
+```text
+python3 {baseDir}/scripts/automation_timing.py defer \
+  --case-root "<case-root>" \
+  --reason "<why work is intentionally out of WIP>" \
+  --evidence "<user-or-tracker-ref>" \
+  --projection-readbacks "<readbacks.json>"
+```
+
+Команда останавливает active stages и исключает интервал из обучаемого business
+elapsed, но raw calendar elapsed сохраняет полный исторический срок. Внешний
+project adapter может перевести tracker в deferred status, добавить личный
+task-manager tag и вернуть задачу в backlog. Core хранит только provider-neutral
+read-backs. Каждый defer read-back может содержать `previous_state` — JSON-снимок
+канонического статуса, tags и binding до изменения. Он остаётся в append-only
+`case_deferred` event и служит основанием для точного восстановления, а не для
+безусловного перевода в заранее выбранный статус.
 
 Возобновление:
 
@@ -250,6 +311,12 @@ python3 {baseDir}/scripts/automation_timing.py pause \
 python3 {baseDir}/scripts/automation_timing.py resume \
   --case-root "<case-root>"
 ```
+
+Для обычной stage pause `--evidence` не нужен. Для deferred case передай
+`--evidence "<resume-ref>"` и при внешних проекциях
+`--projection-readbacks "<restored-readbacks.json>"`. Resume возвращает
+состояние до откладывания; project adapter восстанавливает сохранённые внешние
+status/kanban/tag facts и читает их обратно.
 
 Завершение:
 

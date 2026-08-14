@@ -37,6 +37,7 @@ AUTOMATION_TIMING_POLICIES = {"enabled", "disabled"}
 TIMING_PROJECTION_POLICIES = {"none", "task-note"}
 PROGRESS_PROJECTION_POLICIES = {"none", "checklist"}
 TIMING_HISTORY_POLICIES = {"none", "passport"}
+STATE_PROJECTION_POLICIES = {"none", "project"}
 PROFILE_INHERIT = "inherit"
 TASK_MANAGER_RE = re.compile(r"^(?:none|[a-z][a-z0-9_-]{0,63})$")
 REQUIRED_PROFILE_HEADINGS = (
@@ -129,6 +130,9 @@ class ExecutionPreferences:
     task_manager: str
     timing_projection: str
     timing_history: str
+    timing_calendar: str
+    deferred_state: str
+    state_projection: str
     progress_projection: str
     source: str
 
@@ -141,6 +145,9 @@ class ExecutionPreferences:
             "task_manager": self.task_manager,
             "timing_projection": self.timing_projection,
             "timing_history": self.timing_history,
+            "timing_calendar": self.timing_calendar,
+            "deferred_state": self.deferred_state,
+            "state_projection": self.state_projection,
             "progress_projection": self.progress_projection,
             "history_scope": "project-profile",
             "source": self.source,
@@ -166,6 +173,9 @@ DEFAULT_EXECUTION_PREFERENCES = ExecutionPreferences(
     task_manager="none",
     timing_projection="none",
     timing_history="none",
+    timing_calendar="disabled",
+    deferred_state="disabled",
+    state_projection="none",
     progress_projection="none",
     source="package-default",
 )
@@ -189,6 +199,9 @@ def validate_common_preferences(payload: object, source: Path) -> ExecutionPrefe
     task_manager = payload.get("task_manager")
     timing_projection = payload.get("timing_projection")
     timing_history = payload.get("timing_history", "none")
+    timing_calendar = payload.get("timing_calendar", "disabled")
+    deferred_state = payload.get("deferred_state", "disabled")
+    state_projection = payload.get("state_projection", "none")
     progress_projection = payload.get("progress_projection")
     if automation_timing not in AUTOMATION_TIMING_POLICIES:
         raise PipelineError(f"{source}: invalid automation_timing")
@@ -202,6 +215,12 @@ def validate_common_preferences(payload: object, source: Path) -> ExecutionPrefe
         raise PipelineError(f"{source}: invalid timing_projection")
     if timing_history not in TIMING_HISTORY_POLICIES:
         raise PipelineError(f"{source}: invalid timing_history")
+    if timing_calendar not in AUTOMATION_TIMING_POLICIES:
+        raise PipelineError(f"{source}: invalid timing_calendar")
+    if deferred_state not in AUTOMATION_TIMING_POLICIES:
+        raise PipelineError(f"{source}: invalid deferred_state")
+    if state_projection not in STATE_PROJECTION_POLICIES:
+        raise PipelineError(f"{source}: invalid state_projection")
     if progress_projection not in PROGRESS_PROJECTION_POLICIES:
         raise PipelineError(f"{source}: invalid progress_projection")
     if automation_timing == "disabled" and timing_projection != "none":
@@ -214,6 +233,12 @@ def validate_common_preferences(payload: object, source: Path) -> ExecutionPrefe
         )
     if automation_timing == "disabled" and timing_history != "none":
         raise PipelineError(f"{source}: timing history requires automation timing")
+    if automation_timing == "disabled" and timing_calendar != "disabled":
+        raise PipelineError(f"{source}: timing calendar requires automation timing")
+    if timing_calendar == "enabled" and timing_model != "enabled":
+        raise PipelineError(f"{source}: timing calendar requires timing model")
+    if deferred_state == "disabled" and state_projection != "none":
+        raise PipelineError(f"{source}: state projection requires deferred state")
     if task_manager == "none" and (
         timing_projection != "none" or progress_projection != "none"
     ):
@@ -227,6 +252,9 @@ def validate_common_preferences(payload: object, source: Path) -> ExecutionPrefe
         task_manager=task_manager,
         timing_projection=timing_projection,
         timing_history=timing_history,
+        timing_calendar=timing_calendar,
+        deferred_state=deferred_state,
+        state_projection=state_projection,
         progress_projection=progress_projection,
         source=str(source),
     )
@@ -257,6 +285,9 @@ def resolve_execution_preferences(
         "progress_tracking": TRACKING_POLICIES,
         "timing_projection": TIMING_PROJECTION_POLICIES,
         "timing_history": TIMING_HISTORY_POLICIES,
+        "timing_calendar": AUTOMATION_TIMING_POLICIES,
+        "deferred_state": AUTOMATION_TIMING_POLICIES,
+        "state_projection": STATE_PROJECTION_POLICIES,
         "progress_projection": PROGRESS_PROJECTION_POLICIES,
     }
     for field, choices in allowed.items():
@@ -276,6 +307,8 @@ def resolve_execution_preferences(
 
     explicit_timing_projection = metadata.get("timing_projection", PROFILE_INHERIT)
     explicit_timing_history = metadata.get("timing_history", PROFILE_INHERIT)
+    explicit_timing_calendar = metadata.get("timing_calendar", PROFILE_INHERIT)
+    explicit_state_projection = metadata.get("state_projection", PROFILE_INHERIT)
     explicit_progress_projection = metadata.get("progress_projection", PROFILE_INHERIT)
     if values["automation_timing"] == "disabled":
         explicit_timing_model = metadata.get("timing_model", PROFILE_INHERIT)
@@ -296,6 +329,23 @@ def resolve_execution_preferences(
         if explicit_timing_history.strip().casefold() not in {"", PROFILE_INHERIT, "none"}:
             raise PipelineError(f"{source}: timing history requires automation timing")
         values["timing_history"] = "none"
+        if explicit_timing_calendar.strip().casefold() not in {
+            "",
+            PROFILE_INHERIT,
+            "disabled",
+        }:
+            raise PipelineError(f"{source}: timing calendar requires automation timing")
+        values["timing_calendar"] = "disabled"
+    if values["timing_calendar"] == "enabled" and values["timing_model"] != "enabled":
+        raise PipelineError(f"{source}: timing calendar requires timing model")
+    if values["deferred_state"] == "disabled":
+        if explicit_state_projection.strip().casefold() not in {
+            "",
+            PROFILE_INHERIT,
+            "none",
+        }:
+            raise PipelineError(f"{source}: state projection requires deferred state")
+        values["state_projection"] = "none"
     if values["task_manager"] == "none":
         if explicit_timing_projection.strip().casefold() not in {"", PROFILE_INHERIT, "none"}:
             raise PipelineError(f"{source}: timing projection requires a task manager")
@@ -314,6 +364,9 @@ def resolve_execution_preferences(
         task_manager=str(values["task_manager"]),
         timing_projection=str(values["timing_projection"]),
         timing_history=str(values["timing_history"]),
+        timing_calendar=str(values["timing_calendar"]),
+        deferred_state=str(values["deferred_state"]),
+        state_projection=str(values["state_projection"]),
         progress_projection=str(values["progress_projection"]),
         source=(
             f"{common.source}+{source}"
@@ -325,6 +378,9 @@ def resolve_execution_preferences(
                        "task_manager",
                        "timing_projection",
                        "timing_history",
+                       "timing_calendar",
+                       "deferred_state",
+                       "state_projection",
                        "progress_projection",
                    ))
             else common.source
@@ -693,6 +749,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
         "scripts/planning_case.py",
         "scripts/case_pipeline.py",
         "scripts/timing_model.py",
+        "scripts/timing_calendar.py",
         "scripts/install.py",
     )
     for relative in required_files:
@@ -730,6 +787,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/scripts/spec_pipeline.py",
             "{baseDir}/scripts/case_pipeline.py",
             "{baseDir}/scripts/timing_model.py",
+            "{baseDir}/scripts/timing_calendar.py",
         ):
             if link not in skill_text:
                 errors.append(f"SKILL.md missing link: {link}")

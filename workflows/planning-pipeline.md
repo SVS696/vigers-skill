@@ -114,8 +114,10 @@ python3 {baseDir}/scripts/planning_case.py context --case-root "<planning-root>"
 2. Построй `plan.json` schema 4 как DAG этапов с outcome, `depends_on`, exit
    criteria, source refs и checklist. Не проси planner оценивать время. После
    materialized preliminary plan и mode decision отдельный `timing_model.py`
-   выбирает похожие завершённые кейсы только текущего проекта и формирует два
-   human-only диапазона: active без пауз и elapsed с паузами. Forecast не входит
+   выбирает похожие завершённые кейсы только текущего проекта. Без project
+   calendar он сохраняет legacy active/elapsed; при `timing_calendar=enabled`
+   формирует active, business elapsed и calendar ETA по рабочим/handoff-окнам.
+   Forecast не входит
    в ролевой context и не управляет темпом, порядком, scope, остановкой,
    покрытием или проверками модели. Не копируй структуру будущей постановки
    механически.
@@ -148,7 +150,9 @@ python3 {baseDir}/scripts/planning_case.py context --case-root "<planning-root>"
 9. После готового plan вызови `spec_pipeline.py suggest-mode` без immutable
    `--write` и передай полученный JSON вместе с `plan.json` в
    `timing_model.py predict`, только если pinned preferences включают timing
-   model. До этого шага искать похожие кейсы запрещено. Если включены
+   model. При `timing_calendar=enabled` передай также
+   `.vigers/timing-calendar.json`. До этого шага искать похожие кейсы запрещено.
+   Если включены
    `task_manager` и `timing_projection=task-note`, добавь `human_note` в draft
    описания плана через project adapter; сам forecast не включай в model context.
 10. Переведи case в `artifacts_planned`.

@@ -21,6 +21,9 @@ Package defaults:
   "task_manager": "none",
   "timing_projection": "none",
   "timing_history": "none",
+  "timing_calendar": "disabled",
+  "deferred_state": "disabled",
+  "state_projection": "none",
   "progress_projection": "none"
 }
 ```
@@ -42,6 +45,9 @@ Package defaults:
   "task_manager": "singularity",
   "timing_projection": "task-note",
   "timing_history": "passport",
+  "timing_calendar": "enabled",
+  "deferred_state": "enabled",
+  "state_projection": "project",
   "progress_projection": "checklist"
 }
 ```
@@ -61,12 +67,19 @@ progress_tracking: inherit        # fine | milestones | off
 task_manager: inherit             # none | provider-slug
 timing_projection: inherit        # none | task-note
 timing_history: inherit           # none | passport
+timing_calendar: inherit          # enabled | disabled
+deferred_state: inherit           # enabled | disabled
+state_projection: inherit         # none | project
 progress_projection: inherit      # none | checklist
 ```
 
-Project может независимо выключить timing или task manager. При
+Project может независимо выключить timing, calendar/deferred-state или task
+manager. При
 `automation_timing: disabled` timing model, timing projection и passport history
-автоматически выключаются. При `task_manager: none` task-note и checklist
+автоматически выключаются; timing calendar также становится `disabled`. Calendar
+требует включённый timing model. `state_projection: project` разрешён только при
+`deferred_state: enabled`; конкретные Redmine/Singularity/Jira-маппинги остаются
+в project profile и adapter. При `task_manager: none` task-note и checklist
 projections становятся `none`; passport history от task manager не зависит.
 Явная несовместимая комбинация отклоняется, а не молча исправляется.
 
@@ -82,7 +95,10 @@ work item и другим метрикам.
 
 ## Проекция человеку
 
-После preliminary analysis coordinator вызывает `timing_model.py predict`.
+После preliminary analysis coordinator вызывает `timing_model.py predict`. При
+`timing_calendar=enabled` он передаёт project-owned
+`.vigers/timing-calendar.json`; прогноз показывает active, business elapsed и
+calendar ETA с учётом рабочих и handoff-окон.
 Если `timing_projection=task-note`, project adapter добавляет `human_note` в
 описание плана task manager и делает read-back. Если
 `progress_projection=checklist`, adapter сопоставляет стабильные `Pxx-Cxx` с

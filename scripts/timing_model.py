@@ -11,9 +11,11 @@ import sys
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from automation_timing import AutomationTimingError, load_ledger, summarize
 from mode_decision import ModeDecisionError, validate_mode_decision
+import timing_calendar
 
 
 SCHEMA_VERSION = 1
@@ -171,6 +173,22 @@ def validate_model(
                 raise TimingModelError(f"{case_id}: {field} is invalid")
         if sample["elapsed_seconds"] < sample["active_seconds"]:
             raise TimingModelError(f"{case_id}: elapsed time is below active time")
+        business = sample.get("business_elapsed_seconds")
+        if business is not None:
+            if not isinstance(business, int) or isinstance(business, bool) or business < 0:
+                raise TimingModelError(f"{case_id}: business_elapsed_seconds is invalid")
+            if not sample["active_seconds"] <= business <= sample["elapsed_seconds"]:
+                raise TimingModelError(
+                    f"{case_id}: business elapsed must be between active and calendar elapsed"
+                )
+            if not isinstance(sample.get("calendar_fingerprint"), str):
+                raise TimingModelError(f"{case_id}: calendar_fingerprint is missing")
+        for field in ("handoff_wait_seconds", "handoff_wait_business_seconds"):
+            value = sample.get(field)
+            if value is not None and (
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+            ):
+                raise TimingModelError(f"{case_id}: {field} is invalid")
         calibration = sample.get("calibration")
         if not isinstance(calibration, dict) or calibration.get(
             "fingerprint"
@@ -334,6 +352,11 @@ def format_duration(seconds: int) -> str:
     return f"{remaining} мин"
 
 
+def format_local_timestamp(value: str, timezone_name: str) -> str:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.astimezone(ZoneInfo(timezone_name)).strftime("%d.%m.%Y %H:%M")
+
+
 def human_note(prediction: dict[str, Any]) -> str:
     if prediction["status"] == "insufficient_data":
         return (
@@ -342,6 +365,39 @@ def human_note(prediction: dict[str, Any]) -> str:
             "завершённых замеров."
         )
     active = prediction["active"]
+    business = prediction.get("business_elapsed")
+    calendar_elapsed = prediction.get("calendar_elapsed")
+    projected = prediction.get("projected_handoff_at")
+    if prediction.get("calendar_fingerprint") is not None and business is None:
+        return (
+            "Оценка оставшегося времени Vigers после предварительного анализа: "
+            f"чистая работа {format_duration(active['optimistic_seconds'])}–"
+            f"{format_duration(active['pessimistic_seconds'])} "
+            f"(ориентир {format_duration(active['likely_seconds'])}). "
+            "Для срока передачи пока недостаточно завершённых замеров по рабочему "
+            f"календарю проекта. Выборка active: {prediction['sample_size']}, "
+            f"уверенность: {prediction['confidence']}."
+        )
+    if business is not None and calendar_elapsed is not None and isinstance(projected, dict):
+        timezone_name = str(prediction["calendar_timezone"])
+        return (
+            "Оценка оставшегося времени Vigers после предварительного анализа "
+            "до первой передачи в разработку: "
+            f"чистая работа {format_duration(active['optimistic_seconds'])}–"
+            f"{format_duration(active['pessimistic_seconds'])} "
+            f"(ориентир {format_duration(active['likely_seconds'])}); "
+            f"в рабочих окнах проекта {format_duration(business['optimistic_seconds'])}–"
+            f"{format_duration(business['pessimistic_seconds'])} "
+            f"(ориентир {format_duration(business['likely_seconds'])}); "
+            "ожидаемая передача "
+            f"{format_local_timestamp(projected['optimistic'], timezone_name)}–"
+            f"{format_local_timestamp(projected['pessimistic'], timezone_name)} "
+            f"({timezone_name}, ориентир "
+            f"{format_local_timestamp(projected['likely'], timezone_name)}). "
+            f"Выборка: {prediction['business_sample_size']} похожих календарных "
+            f"замеров этого проекта, уверенность: "
+            f"{prediction['business_confidence']}."
+        )
     elapsed = prediction["elapsed"]
     return (
         "Оценка оставшегося времени Vigers после предварительного анализа "
@@ -357,7 +413,25 @@ def human_note(prediction: dict[str, Any]) -> str:
     )
 
 
-def predict(model: dict[str, Any], features: dict[str, Any]) -> dict[str, Any]:
+def predict(
+    model: dict[str, Any],
+    features: dict[str, Any],
+    *,
+    business_calendar: dict[str, Any] | None = None,
+    generated_at: str | None = None,
+) -> dict[str, Any]:
+    if business_calendar is not None:
+        try:
+            timing_calendar.validate_calendar(business_calendar)
+        except timing_calendar.TimingCalendarError as exc:
+            raise TimingModelError(str(exc)) from exc
+    generated = generated_at or now_utc()
+    try:
+        generated_value = datetime.fromisoformat(generated.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise TimingModelError("generated_at must be ISO-8601") from exc
+    if generated_value.tzinfo is None:
+        raise TimingModelError("generated_at requires timezone")
     ranked = sorted(
         (
             (feature_distance(features, sample["features"]), sample)
@@ -383,6 +457,22 @@ def predict(model: dict[str, Any], features: dict[str, Any]) -> dict[str, Any]:
             }
             for distance, sample in ranked
         ],
+        "generated_at": generated_value.astimezone(UTC).replace(microsecond=0).isoformat(),
+        "calendar_fingerprint": (
+            canonical_fingerprint(business_calendar)
+            if business_calendar is not None
+            else None
+        ),
+        "calendar_id": (
+            business_calendar.get("calendar_id")
+            if business_calendar is not None
+            else None
+        ),
+        "calendar_timezone": (
+            business_calendar.get("timezone")
+            if business_calendar is not None
+            else None
+        ),
     }
     if not ranked:
         base.update(
@@ -391,16 +481,63 @@ def predict(model: dict[str, Any], features: dict[str, Any]) -> dict[str, Any]:
             mean_distance=None,
             active=None,
             elapsed=None,
+            business_elapsed=None,
+            business_sample_size=0,
+            business_confidence="low",
+            calendar_elapsed=None,
+            projected_handoff_at=None,
         )
     else:
         mean_distance = round(statistics.fmean(distance for distance, _ in ranked), 4)
+        business_ranked = [
+            (distance, sample)
+            for distance, sample in ranked
+            if isinstance(sample.get("business_elapsed_seconds"), int)
+        ]
+        business_values = [
+            sample["business_elapsed_seconds"] for _, sample in business_ranked
+        ]
         base.update(
             status="forecast",
             confidence=confidence(len(ranked), mean_distance),
             mean_distance=mean_distance,
             active=range_summary([sample["active_seconds"] for _, sample in ranked]),
             elapsed=range_summary([sample["elapsed_seconds"] for _, sample in ranked]),
+            business_elapsed=(range_summary(business_values) if business_values else None),
+            business_sample_size=len(business_values),
+            business_confidence=(
+                confidence(
+                    len(business_ranked),
+                    round(
+                        statistics.fmean(distance for distance, _ in business_ranked),
+                        4,
+                    ),
+                )
+                if business_ranked
+                else "low"
+            ),
+            calendar_elapsed=None,
+            projected_handoff_at=None,
         )
+        if business_calendar is not None and business_values:
+            business_range = base["business_elapsed"]
+            projected: dict[str, str] = {}
+            calendar_seconds: dict[str, int] = {}
+            for label in ("optimistic", "likely", "pessimistic"):
+                try:
+                    projected_value = timing_calendar.project_business_seconds(
+                        business_calendar,
+                        started_at=generated_value,
+                        business_seconds=business_range[f"{label}_seconds"],
+                    )
+                except timing_calendar.TimingCalendarError as exc:
+                    raise TimingModelError(str(exc)) from exc
+                projected[label] = projected_value.isoformat()
+                calendar_seconds[f"{label}_seconds"] = round(
+                    (projected_value - generated_value.astimezone(UTC)).total_seconds()
+                )
+            base["projected_handoff_at"] = projected
+            base["calendar_elapsed"] = calendar_seconds
     base["human_note"] = human_note(base)
     base["fingerprint"] = canonical_fingerprint(base)
     return base
@@ -452,6 +589,11 @@ def measured_sample(
         raise TimingModelError("training requires an explicit development handoff")
     active = summary["actual"].get("active_critical_path_seconds")
     elapsed = summary["actual"].get("elapsed_seconds")
+    business_elapsed: int | None = None
+    calendar_fingerprint: str | None = None
+    handoff_wait_seconds: int | None = None
+    handoff_wait_business_seconds: int | None = None
+    ready_for_handoff_at: str | None = None
     if not isinstance(active, int) or not isinstance(elapsed, int):
         raise TimingModelError("completed ledger has no active/elapsed timing facts")
     measurement = {
@@ -469,11 +611,19 @@ def measured_sample(
         )
         active = reconciled["active_seconds"]
         elapsed = reconciled["elapsed_seconds"]
+        business_elapsed = reconciled.get("business_elapsed_seconds")
+        calendar_fingerprint = reconciled.get("calendar_fingerprint")
+        handoff_wait_seconds = reconciled.get("handoff_wait_seconds")
+        handoff_wait_business_seconds = reconciled.get(
+            "handoff_wait_business_seconds"
+        )
+        ready_for_handoff_at = reconciled.get("ready_for_handoff_at")
         measurement = {
             "source": "work_metrics_activity_reconciliation",
             "activity_reconciliation_fingerprint": activity_reconciliation["fingerprint"],
             "coverage": activity_reconciliation["coverage"]["status"],
             "cycle_kind": "initial-specification",
+            "calendar_fingerprint": calendar_fingerprint,
         }
     if elapsed < active:
         raise TimingModelError("completed ledger elapsed time is below active time")
@@ -483,6 +633,10 @@ def measured_sample(
         features=features,
         active_seconds=active,
         elapsed_seconds=elapsed,
+        business_elapsed_seconds=business_elapsed,
+        handoff_wait_seconds=handoff_wait_seconds,
+        handoff_wait_business_seconds=handoff_wait_business_seconds,
+        ready_for_handoff_at=ready_for_handoff_at,
         milestones=summary.get("milestones", []),
         measurement=measurement,
     )
@@ -495,6 +649,14 @@ def measured_sample(
         "cycle_kind": "initial-specification",
         "calibration": calibration,
     }
+    if business_elapsed is not None:
+        material.update(
+            business_elapsed_seconds=business_elapsed,
+            calendar_fingerprint=calendar_fingerprint,
+            handoff_wait_seconds=handoff_wait_seconds,
+            handoff_wait_business_seconds=handoff_wait_business_seconds,
+            ready_for_handoff_at=ready_for_handoff_at,
+        )
     return {
         **material,
         "source_fingerprint": canonical_fingerprint(material),
@@ -534,7 +696,7 @@ def validate_activity_reconciliation(
     case_id: str,
     project_key: Any,
     development_handoff_at: Any,
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Validate the optional companion contract without importing its package."""
     if not isinstance(payload, dict) or payload.get("schema") != 1:
         raise TimingModelError("activity reconciliation has unsupported schema")
@@ -585,7 +747,7 @@ def validate_activity_reconciliation(
     if len(matching) != 1 or not isinstance(matching[0].get("values"), dict):
         raise TimingModelError("activity reconciliation requires one activity-time metric")
     values = matching[0]["values"]
-    result: dict[str, int] = {}
+    result: dict[str, Any] = {}
     for field in ("active_observed_seconds", "active_seconds", "elapsed_seconds"):
         value = values.get(field)
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
@@ -595,6 +757,39 @@ def validate_activity_reconciliation(
         raise TimingModelError("observed activity exceeds reconciled active time")
     if result["active_seconds"] > result["elapsed_seconds"]:
         raise TimingModelError("reconciled active time exceeds elapsed time")
+    calendar_elapsed = values.get("calendar_elapsed_seconds")
+    if calendar_elapsed is not None:
+        if calendar_elapsed != result["elapsed_seconds"]:
+            raise TimingModelError("calendar elapsed must equal raw elapsed time")
+        result["calendar_elapsed_seconds"] = calendar_elapsed
+    business = values.get("business_elapsed_seconds")
+    if business is not None:
+        if not isinstance(business, int) or isinstance(business, bool) or business < 0:
+            raise TimingModelError("business elapsed is invalid")
+        if not result["active_seconds"] <= business <= result["elapsed_seconds"]:
+            raise TimingModelError(
+                "business elapsed must be between active and calendar elapsed"
+            )
+        calendar_fingerprint = values.get("calendar_fingerprint")
+        if not isinstance(calendar_fingerprint, str) or not calendar_fingerprint:
+            raise TimingModelError("business elapsed requires calendar fingerprint")
+        result["business_elapsed_seconds"] = business
+        result["calendar_fingerprint"] = calendar_fingerprint
+    for field in ("handoff_wait_seconds", "handoff_wait_business_seconds"):
+        value = values.get(field)
+        if value is not None:
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise TimingModelError(f"activity reconciliation {field} is invalid")
+            result[field] = value
+    ready_at = values.get("ready_for_handoff_at")
+    if ready_at is not None:
+        try:
+            ready_value = datetime.fromisoformat(str(ready_at).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise TimingModelError("ready_for_handoff_at is invalid") from exc
+        if ready_value.tzinfo is None or ready_value.astimezone(UTC) > handoff_end:
+            raise TimingModelError("ready_for_handoff_at must precede handoff")
+        result["ready_for_handoff_at"] = ready_value.astimezone(UTC).isoformat()
     return result
 
 
@@ -606,6 +801,10 @@ def build_calibration(
     active_seconds: int,
     elapsed_seconds: int,
     milestones: list[dict[str, Any]],
+    business_elapsed_seconds: int | None = None,
+    handoff_wait_seconds: int | None = None,
+    handoff_wait_business_seconds: int | None = None,
+    ready_for_handoff_at: str | None = None,
     measurement: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if not isinstance(forecast, dict) or forecast.get("fingerprint") != canonical_fingerprint(
@@ -629,6 +828,7 @@ def build_calibration(
         "feature_schema": features["schema"],
         "measurement_scope": forecast_scope,
         "publication_count": sum(item.get("kind") == "publication" for item in milestones),
+        "ready_for_handoff_at": ready_for_handoff_at,
         "development_handoff_at": handoff["at"],
         "measurement": measurement
         or {
@@ -639,6 +839,18 @@ def build_calibration(
         },
         "active": compare_forecast_axis(forecast.get("active"), active_seconds),
         "elapsed": compare_forecast_axis(forecast.get("elapsed"), elapsed_seconds),
+        "calendar_elapsed": compare_forecast_axis(
+            forecast.get("calendar_elapsed"), elapsed_seconds
+        ),
+        "business_elapsed": (
+            compare_forecast_axis(
+                forecast.get("business_elapsed"), business_elapsed_seconds
+            )
+            if business_elapsed_seconds is not None
+            else None
+        ),
+        "handoff_wait_seconds": handoff_wait_seconds,
+        "handoff_wait_business_seconds": handoff_wait_business_seconds,
     }
     record["fingerprint"] = canonical_fingerprint(record)
     return record
@@ -716,6 +928,8 @@ def build_parser() -> argparse.ArgumentParser:
         child.add_argument("--plan", required=True)
         if name == "predict":
             child.add_argument("--write")
+            child.add_argument("--business-calendar")
+            child.add_argument("--generated-at")
         if name == "update":
             child.add_argument("--ledger", required=True)
             child.add_argument("--forecast", required=True)
@@ -758,7 +972,16 @@ def main() -> int:
         plan_payload = read_json(Path(args.plan))
         if args.command == "predict":
             features = build_features(mode_payload, plan_payload)
-            result = predict(model, features)
+            result = predict(
+                model,
+                features,
+                business_calendar=(
+                    read_json(Path(args.business_calendar))
+                    if args.business_calendar
+                    else None
+                ),
+                generated_at=args.generated_at,
+            )
             if args.write:
                 atomic_json(Path(args.write), result)
             print(json.dumps(result, ensure_ascii=False, indent=2))

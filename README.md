@@ -43,8 +43,9 @@ synthesis и plan в один fresh вызов, не убирая source map, co
 cluster или high-risk признак возвращает полный planning route.
 
 После предварительного анализа отдельный project-local калибратор выбирает
-похожие завершённые кейсы только этого проекта и показывает человеку два
-диапазона: чистую работу без пауз и календарное время с паузами. Модели время не
+похожие завершённые кейсы только этого проекта. Без календаря он сохраняет
+legacy active/elapsed; с project calendar показывает чистую работу,
+business elapsed и calendar ETA первой передачи. Модели время не
 получают и не оценивают. После approval оркестратор ведёт
 `automation-timing.json`, а подробные `Pxx-Cxx` остаются независимыми progress
 barriers. Для внешней галки обязателен read-back с `checked=true`.
@@ -218,7 +219,7 @@ workflows, проектные overlays и отсутствие приватны�
 ├── agents/{contracts,codex,claude}
 ├── profiles
 ├── references
-├── scripts/{vigers_context,spec_pipeline,mode_decision,planning_case,case_pipeline,automation_timing,timing_model}.py
+├── scripts/{vigers_context,spec_pipeline,mode_decision,planning_case,case_pipeline,automation_timing,timing_model,timing_calendar}.py
 └── workflows/{planning-pipeline,specification-pipeline,block-pipeline}.md
 ```
 

@@ -24,7 +24,15 @@ CONFIDENCE_LEVELS = {"low", "medium", "high"}
 TERMINAL_STATUSES = {"completed", "failed", "blocked", "cancelled"}
 STAGE_STATUSES = {"pending", "running", *TERMINAL_STATUSES}
 CHECKLIST_STATUSES = {"pending", "in_progress", "completed"}
-PAUSE_REASONS = {"user_pause", "limit_exhausted", "external_wait", "interrupted"}
+PAUSE_REASONS = {
+    "user_pause",
+    "limit_exhausted",
+    "external_wait",
+    "interrupted",
+    "deferred",
+}
+USER_PAUSE_REASONS = PAUSE_REASONS - {"deferred"}
+CASE_STATES = {"active", "deferred", "ready_for_handoff", "handed_off"}
 
 
 class AutomationTimingError(RuntimeError):
@@ -77,6 +85,55 @@ def normalized_timestamp(value: str | None) -> str:
     if value is None:
         return now_utc()
     return parse_timestamp(value, field="timestamp").isoformat()
+
+
+def validate_projection_readbacks(payload: Any, *, prefix: str) -> list[str]:
+    """Validate provider-neutral state projection evidence."""
+    errors: list[str] = []
+    if not isinstance(payload, list):
+        return [f"{prefix} projection_readbacks must be an array"]
+    systems: set[str] = set()
+    for index, item in enumerate(payload, start=1):
+        label = f"{prefix} projection_readbacks[{index}]"
+        if not isinstance(item, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        for field in ("system", "item_id", "state", "read_back_at"):
+            if not isinstance(item.get(field), str) or not item[field].strip():
+                errors.append(f"{label} missing {field}")
+        previous_state = item.get("previous_state")
+        if previous_state is not None and not isinstance(previous_state, dict):
+            errors.append(f"{label} previous_state must be an object or null")
+        system = item.get("system")
+        if isinstance(system, str):
+            if system in systems:
+                errors.append(f"{prefix} has duplicate read-back system {system}")
+            systems.add(system)
+        try:
+            parse_timestamp(item.get("read_back_at"), field=f"{label}.read_back_at")
+        except AutomationTimingError as exc:
+            errors.append(str(exc))
+    return errors
+
+
+def current_case_state(ledger: dict[str, Any]) -> str:
+    """Return explicit lifecycle state or derive the compatible legacy state."""
+    state = ledger.get("case_state")
+    if isinstance(state, dict) and state.get("status") in CASE_STATES:
+        return str(state["status"])
+    if any(
+        item.get("kind") == "development_handoff"
+        for item in ledger.get("milestones", [])
+        if isinstance(item, dict)
+    ):
+        return "handed_off"
+    return "active"
+
+
+def require_active_case(ledger: dict[str, Any], *, action: str) -> None:
+    state = current_case_state(ledger)
+    if state != "active":
+        raise AutomationTimingError(f"Cannot {action} while case state is {state}")
 
 
 def validate_estimate(payload: Any, *, prefix: str) -> list[str]:
@@ -352,6 +409,14 @@ def initialize_ledger(
         "plan_fingerprint": automation_plan["fingerprint"],
         "created_at": timestamp,
         "updated_at": timestamp,
+        "case_state": {
+            "status": "active",
+            "changed_at": timestamp,
+            "reason": None,
+            "evidence_ref": None,
+            "resume_status": None,
+            "projection_readbacks": [],
+        },
         "stages": [
             {
                 "id": stage["id"],
@@ -509,12 +574,53 @@ def validate_ledger(
     except AutomationTimingError as exc:
         errors.append(str(exc))
 
+    case_state = payload.get("case_state")
+    if case_state is not None:
+        if not isinstance(case_state, dict):
+            errors.append("automation timing case_state must be an object")
+        else:
+            status = case_state.get("status")
+            if status not in CASE_STATES:
+                errors.append("automation timing case_state status is invalid")
+            try:
+                parse_timestamp(case_state.get("changed_at"), field="case_state.changed_at")
+            except AutomationTimingError as exc:
+                errors.append(str(exc))
+            reason = case_state.get("reason")
+            evidence_ref = case_state.get("evidence_ref")
+            resume_status = case_state.get("resume_status")
+            if status == "deferred":
+                if not isinstance(reason, str) or not reason.strip():
+                    errors.append("deferred case_state requires reason")
+                if not isinstance(evidence_ref, str) or not evidence_ref.strip():
+                    errors.append("deferred case_state requires evidence_ref")
+                if resume_status not in {"active", "ready_for_handoff"}:
+                    errors.append(
+                        "deferred case_state resume_status must be active or ready_for_handoff"
+                    )
+            elif reason is not None and (
+                not isinstance(reason, str) or not reason.strip()
+            ):
+                errors.append("case_state reason must be non-empty text or null")
+            if status != "deferred" and resume_status is not None:
+                errors.append("non-deferred case_state cannot have resume_status")
+            if evidence_ref is not None and (
+                not isinstance(evidence_ref, str) or not evidence_ref.strip()
+            ):
+                errors.append("case_state evidence_ref must be non-empty text or null")
+            errors.extend(
+                validate_projection_readbacks(
+                    case_state.get("projection_readbacks", []), prefix="case_state"
+                )
+            )
+
     milestones = payload.get("milestones", [])
     if timer_model == "dual":
         if not isinstance(milestones, list):
             errors.append("dual timer milestones must be an array")
             milestones = []
         publication_revisions: list[int] = []
+        ready_revisions: list[int] = []
         handoff_count = 0
         previous_at: datetime | None = None
         for index, milestone in enumerate(milestones, start=1):
@@ -523,7 +629,7 @@ def validate_ledger(
                 errors.append(f"{label} must be an object")
                 continue
             kind = milestone.get("kind")
-            if kind not in {"publication", "development_handoff"}:
+            if kind not in {"publication", "ready_for_handoff", "development_handoff"}:
                 errors.append(f"{label} has invalid kind")
             try:
                 milestone_at = parse_timestamp(milestone.get("at"), field=f"{label}.at")
@@ -542,10 +648,22 @@ def validate_ledger(
                     errors.append(f"{label} has invalid publication_revision")
                 else:
                     publication_revisions.append(revision)
+                if milestone.get("ready_revision") is not None:
+                    errors.append(f"{label} publication cannot have ready_revision")
+            elif kind == "ready_for_handoff":
+                revision = milestone.get("ready_revision")
+                if not isinstance(revision, int) or isinstance(revision, bool) or revision <= 0:
+                    errors.append(f"{label} has invalid ready_revision")
+                else:
+                    ready_revisions.append(revision)
+                if milestone.get("publication_revision") is not None:
+                    errors.append(f"{label} ready milestone cannot have publication_revision")
             elif kind == "development_handoff":
                 handoff_count += 1
                 if milestone.get("publication_revision") is not None:
                     errors.append(f"{label} handoff cannot have publication_revision")
+                if milestone.get("ready_revision") is not None:
+                    errors.append(f"{label} handoff cannot have ready_revision")
             read_back = milestone.get("external_read_back")
             if read_back is not None:
                 if not isinstance(read_back, dict):
@@ -563,8 +681,30 @@ def validate_ledger(
                         errors.append(str(exc))
         if publication_revisions != list(range(1, len(publication_revisions) + 1)):
             errors.append("publication milestones must use contiguous revisions from 1")
+        if ready_revisions != list(range(1, len(ready_revisions) + 1)):
+            errors.append("ready milestones must use contiguous revisions from 1")
         if handoff_count > 1:
             errors.append("dual timer may have only one development_handoff")
+        if case_state is not None:
+            handoff_milestones = [
+                item for item in milestones if item.get("kind") == "development_handoff"
+            ]
+            ready_milestones = [
+                item for item in milestones if item.get("kind") == "ready_for_handoff"
+            ]
+            status = case_state.get("status") if isinstance(case_state, dict) else None
+            if handoff_milestones and not ready_milestones:
+                errors.append("development_handoff requires ready_for_handoff")
+            if status == "handed_off" and len(handoff_milestones) != 1:
+                errors.append("handed_off case_state requires one development_handoff")
+            if status == "ready_for_handoff" and (
+                not ready_milestones or handoff_milestones
+            ):
+                errors.append(
+                    "ready_for_handoff case_state requires ready milestone without handoff"
+                )
+            if status in {"active", "deferred"} and handoff_milestones:
+                errors.append(f"{status} case_state cannot have development_handoff")
     elif milestones:
         errors.append("legacy/disabled timer cannot have measured milestones")
 
@@ -893,6 +1033,7 @@ def begin_checklist_item(
     at: str | None = None,
 ) -> bool:
     """Claim any pending item before work, with explicit concurrent-work evidence."""
+    require_active_case(ledger, action="begin checklist work")
     errors = validate_ledger(ledger)
     if errors:
         raise AutomationTimingError("; ".join(errors))
@@ -963,6 +1104,7 @@ def complete_checklist_item(
     at: str | None = None,
 ) -> bool:
     """Mark one finished item immediately after evidence and external read-back."""
+    require_active_case(ledger, action="complete checklist work")
     errors = validate_ledger(ledger)
     if errors:
         raise AutomationTimingError("; ".join(errors))
@@ -1061,8 +1203,124 @@ def complete_checklist_item(
     return True
 
 
+def normalized_projection_readbacks(payload: Any) -> list[dict[str, Any]]:
+    errors = validate_projection_readbacks(payload, prefix="state transition")
+    if errors:
+        raise AutomationTimingError("; ".join(errors))
+    result: list[dict[str, Any]] = []
+    for item in payload:
+        normalized: dict[str, Any] = {
+            "system": item["system"].strip(),
+            "item_id": item["item_id"].strip(),
+            "state": item["state"].strip(),
+            "read_back_at": parse_timestamp(
+                item["read_back_at"], field="projection_readback.read_back_at"
+            ).isoformat(),
+        }
+        if isinstance(item.get("previous_state"), dict):
+            normalized["previous_state"] = item["previous_state"]
+        result.append(normalized)
+    return result
+
+
+def defer_case(
+    ledger: dict[str, Any],
+    *,
+    reason: str,
+    evidence_ref: str,
+    projection_readbacks: Any | None = None,
+    at: str | None = None,
+) -> None:
+    """Suspend case WIP without teaching the model that backlog time is work."""
+    state = current_case_state(ledger)
+    if state == "deferred":
+        raise AutomationTimingError("Timing case is already deferred")
+    if state == "handed_off":
+        raise AutomationTimingError("Handed-off timing case cannot be deferred")
+    if not isinstance(reason, str) or not reason.strip():
+        raise AutomationTimingError("Deferral requires a reason")
+    if not isinstance(evidence_ref, str) or not evidence_ref.strip():
+        raise AutomationTimingError("Deferral requires evidence_ref")
+    timestamp = normalized_timestamp(at)
+    if ledger.get("timer_model") == "dual":
+        for stage in ledger.get("stages", []):
+            if (
+                isinstance(stage, dict)
+                and stage.get("status") == "running"
+                and stage.get("active_started_at") is not None
+            ):
+                pause_stage(ledger, stage["id"], reason="deferred", at=timestamp)
+    readbacks = normalized_projection_readbacks(projection_readbacks or [])
+    ledger["case_state"] = {
+        "status": "deferred",
+        "changed_at": timestamp,
+        "reason": reason.strip(),
+        "evidence_ref": evidence_ref.strip(),
+        "resume_status": state,
+        "projection_readbacks": readbacks,
+    }
+    ledger["events"].append(
+        {
+            "at": timestamp,
+            "kind": "case_deferred",
+            "reason": reason.strip(),
+            "evidence_ref": evidence_ref.strip(),
+            "resume_status": state,
+            "projection_readbacks": readbacks,
+        }
+    )
+
+
+def resume_case(
+    ledger: dict[str, Any],
+    *,
+    evidence_ref: str,
+    projection_readbacks: Any | None = None,
+    at: str | None = None,
+) -> list[str]:
+    """Resume a deferred case and any stage paused specifically by deferral."""
+    state = ledger.get("case_state")
+    if not isinstance(state, dict) or state.get("status") != "deferred":
+        raise AutomationTimingError("Timing case is not deferred")
+    if not isinstance(evidence_ref, str) or not evidence_ref.strip():
+        raise AutomationTimingError("Resuming a deferred case requires evidence_ref")
+    timestamp = normalized_timestamp(at)
+    resumed_stages: list[str] = []
+    if ledger.get("timer_model") == "dual":
+        for stage in ledger.get("stages", []):
+            if (
+                isinstance(stage, dict)
+                and stage.get("status") == "running"
+                and stage.get("pause_started_at") is not None
+                and stage.get("pause_reason") == "deferred"
+            ):
+                resume_stage(ledger, stage["id"], at=timestamp)
+                resumed_stages.append(stage["id"])
+    readbacks = normalized_projection_readbacks(projection_readbacks or [])
+    resumed_status = state.get("resume_status", "active")
+    ledger["case_state"] = {
+        "status": resumed_status,
+        "changed_at": timestamp,
+        "reason": None,
+        "evidence_ref": evidence_ref.strip(),
+        "resume_status": None,
+        "projection_readbacks": readbacks,
+    }
+    ledger["events"].append(
+        {
+            "at": timestamp,
+            "kind": "case_resumed",
+            "status": resumed_status,
+            "evidence_ref": evidence_ref.strip(),
+            "projection_readbacks": readbacks,
+        }
+    )
+    return resumed_stages
+
+
 def start_stage(ledger: dict[str, Any], stage_id: str, *, at: str | None = None) -> None:
     """Start a pending stage after all dependencies completed."""
+    require_active_case(ledger, action="start a stage")
     errors = validate_ledger(ledger)
     if errors:
         raise AutomationTimingError("; ".join(errors))
@@ -1165,6 +1423,9 @@ def reopen_stage(
     at: str | None = None,
 ) -> None:
     """Reopen a completed stage for edits after a recorded publication."""
+    state = current_case_state(ledger)
+    if state in {"deferred", "handed_off"}:
+        raise AutomationTimingError(f"Cannot reopen a stage while case state is {state}")
     if ledger.get("timer_model") != "dual":
         raise AutomationTimingError("Post-publication reopen requires a dual timer")
     if not isinstance(evidence_ref, str) or not evidence_ref.strip():
@@ -1205,6 +1466,22 @@ def reopen_stage(
             "publication_revision": publications[-1]["publication_revision"],
         }
     )
+    if state == "ready_for_handoff":
+        ledger["case_state"] = {
+            "status": "active",
+            "changed_at": reopened.isoformat(),
+            "reason": "post-ready correction",
+            "evidence_ref": evidence_ref.strip(),
+            "resume_status": None,
+            "projection_readbacks": [],
+        }
+        ledger["events"].append(
+            {
+                "at": reopened.isoformat(),
+                "kind": "ready_for_handoff_withdrawn",
+                "evidence_ref": evidence_ref.strip(),
+            }
+        )
 
 
 def stop_stage(
@@ -1216,6 +1493,7 @@ def stop_stage(
     at: str | None = None,
 ) -> None:
     """Finish a running stage with one terminal status."""
+    require_active_case(ledger, action="stop a stage")
     if status not in TERMINAL_STATUSES:
         raise AutomationTimingError(f"Invalid terminal status: {status}")
     stage = find_stage(ledger, stage_id)
@@ -1303,16 +1581,31 @@ def record_milestone(
     read_back_at: str | None = None,
     at: str | None = None,
 ) -> dict[str, Any]:
-    """Record publication checkpoints and the explicit development handoff."""
+    """Record publication, readiness, and the explicit development handoff."""
     if ledger.get("timer_model") != "dual":
         raise AutomationTimingError("Measured milestones require a dual timer")
-    if kind not in {"publication", "development_handoff"}:
+    if kind not in {"publication", "ready_for_handoff", "development_handoff"}:
         raise AutomationTimingError(f"Invalid timing milestone: {kind}")
     if not isinstance(evidence_ref, str) or not evidence_ref.strip():
         raise AutomationTimingError("Timing milestone requires evidence_ref")
     milestones = ledger.setdefault("milestones", [])
     if any(item.get("kind") == "development_handoff" for item in milestones):
         raise AutomationTimingError("Timing case is already handed to development")
+    state = current_case_state(ledger)
+    previous_case_state = ledger.get("case_state")
+    lifecycle_enabled = isinstance(previous_case_state, dict) or kind == "ready_for_handoff"
+    if state == "deferred":
+        raise AutomationTimingError("Deferred timing case must be resumed before a milestone")
+    if kind in {"publication", "ready_for_handoff"} and state != "active":
+        raise AutomationTimingError(f"Cannot record {kind} while case state is {state}")
+    if (
+        kind == "development_handoff"
+        and lifecycle_enabled
+        and state != "ready_for_handoff"
+    ):
+        raise AutomationTimingError(
+            "Development handoff requires explicit ready_for_handoff state"
+        )
     if any(stage.get("status") != "completed" for stage in ledger.get("stages", [])):
         raise AutomationTimingError(
             "Timing milestone requires every planned stage to be completed"
@@ -1333,14 +1626,14 @@ def record_milestone(
     ]
     if not stage_starts or milestone_at < min(stage_starts):
         raise AutomationTimingError("Timing milestone requires started case work")
-    if kind == "development_handoff":
+    if kind in {"ready_for_handoff", "development_handoff"}:
         stage_finishes = [
             parse_timestamp(stage["finished_at"], field=f"{stage['id']}.finished_at")
             for stage in ledger.get("stages", [])
             if stage.get("finished_at") is not None
         ]
         if stage_finishes and milestone_at < max(stage_finishes):
-            raise AutomationTimingError("Development handoff precedes stage completion")
+            raise AutomationTimingError(f"{kind} precedes stage completion")
         publications = [
             parse_timestamp(item["at"], field="publication.at")
             for item in milestones
@@ -1348,8 +1641,20 @@ def record_milestone(
         ]
         if not publications or (stage_finishes and max(publications) < max(stage_finishes)):
             raise AutomationTimingError(
-                "Development handoff requires a publication after final edits"
+                f"{kind} requires a publication after final edits"
             )
+        if publications and milestone_at < max(publications):
+            raise AutomationTimingError(f"{kind} precedes the latest publication")
+        if kind == "development_handoff" and lifecycle_enabled:
+            ready = [
+                parse_timestamp(item["at"], field="ready_for_handoff.at")
+                for item in milestones
+                if item.get("kind") == "ready_for_handoff"
+            ]
+            if not ready or milestone_at < max(ready):
+                raise AutomationTimingError(
+                    "Development handoff requires a preceding ready_for_handoff milestone"
+                )
     external_read_back = (
         {
             "system": external_system.strip(),
@@ -1371,6 +1676,11 @@ def record_milestone(
             if kind == "publication"
             else None
         ),
+        "ready_revision": (
+            1 + sum(item.get("kind") == "ready_for_handoff" for item in milestones)
+            if kind == "ready_for_handoff"
+            else None
+        ),
     }
     milestones.append(milestone)
     ledger["events"].append(
@@ -1378,13 +1688,32 @@ def record_milestone(
             "at": timestamp,
             "kind": f"timing_{kind}",
             "publication_revision": milestone["publication_revision"],
+            "ready_revision": milestone["ready_revision"],
             "evidence_ref": milestone["evidence_ref"],
         }
     )
+    if kind in {"ready_for_handoff", "development_handoff"} and lifecycle_enabled:
+        ledger["case_state"] = {
+            "status": (
+                "ready_for_handoff"
+                if kind == "ready_for_handoff"
+                else "handed_off"
+            ),
+            "changed_at": timestamp,
+            "reason": None,
+            "evidence_ref": evidence_ref.strip(),
+            "resume_status": None,
+            "projection_readbacks": [],
+        }
     errors = validate_ledger(ledger)
     if errors:
         milestones.pop()
         ledger["events"].pop()
+        if kind in {"ready_for_handoff", "development_handoff"} and lifecycle_enabled:
+            if isinstance(previous_case_state, dict):
+                ledger["case_state"] = previous_case_state
+            else:
+                ledger.pop("case_state", None)
         raise AutomationTimingError("; ".join(errors))
     return milestone
 
@@ -1446,7 +1775,10 @@ def build_checkpoint(ledger: dict[str, Any], *, at: str | None = None) -> dict[s
     elapsed = int((elapsed_end - min(starts)).total_seconds()) if starts else 0
     if elapsed < 0:
         raise AutomationTimingError("Checkpoint precedes case start")
-    if handoff is not None:
+    explicit_state = current_case_state(ledger)
+    if explicit_state in {"deferred", "ready_for_handoff", "handed_off"}:
+        state = explicit_state
+    elif handoff is not None:
         state = "handed_off"
     elif any(stage.get("active_started_at") is not None for stage in stages):
         state = "active"
@@ -1470,6 +1802,14 @@ def build_checkpoint(ledger: dict[str, Any], *, at: str | None = None) -> dict[s
         "elapsed_seconds": elapsed,
         "publication_count": sum(
             item.get("kind") == "publication" for item in ledger.get("milestones", [])
+        ),
+        "ready_for_handoff_at": next(
+            (
+                item.get("at")
+                for item in reversed(ledger.get("milestones", []))
+                if item.get("kind") == "ready_for_handoff"
+            ),
+            None,
         ),
         "development_handoff_at": handoff.get("at") if handoff is not None else None,
     }
@@ -1505,6 +1845,7 @@ def reconcile_checkpoint(
             "active_stage_sum_seconds",
             "elapsed_seconds",
             "publication_count",
+            "ready_for_handoff_at",
             "development_handoff_at",
         )
         status = (
@@ -1665,6 +2006,7 @@ def summarize(ledger: dict[str, Any]) -> dict[str, Any]:
             "likely_estimate_ratio": estimate_ratio,
         },
         "timer_model": ledger.get("timer_model", "legacy"),
+        "case_state": current_case_state(ledger),
         "milestones": ledger.get("milestones", []),
         "status_counts": counts,
         "terminal_stage_count": len(terminal),
@@ -1776,8 +2118,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     pause_parser.add_argument("--case-root", required=True)
     pause_parser.add_argument("--stage")
-    pause_parser.add_argument("--reason", choices=sorted(PAUSE_REASONS), required=True)
+    pause_parser.add_argument("--reason", choices=sorted(USER_PAUSE_REASONS), required=True)
     pause_parser.add_argument("--at")
+
+    defer_parser = subparsers.add_parser(
+        "defer",
+        help="Suspend case WIP; active and business clocks stop learning backlog time",
+    )
+    defer_parser.add_argument("--case-root", required=True)
+    defer_parser.add_argument("--reason", required=True)
+    defer_parser.add_argument("--evidence", required=True)
+    defer_parser.add_argument("--projection-readbacks")
+    defer_parser.add_argument("--at")
 
     resume_parser = subparsers.add_parser(
         "resume",
@@ -1785,6 +2137,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     resume_parser.add_argument("--case-root", required=True)
     resume_parser.add_argument("--stage")
+    resume_parser.add_argument("--evidence")
+    resume_parser.add_argument("--projection-readbacks")
     resume_parser.add_argument("--at")
 
     reopen_parser = subparsers.add_parser(
@@ -1796,11 +2150,13 @@ def build_parser() -> argparse.ArgumentParser:
     reopen_parser.add_argument("--at")
 
     milestone_parser = subparsers.add_parser(
-        "milestone", help="Record a publication or explicit development handoff"
+        "milestone", help="Record publication, readiness, or explicit development handoff"
     )
     milestone_parser.add_argument("--case-root", required=True)
     milestone_parser.add_argument(
-        "--kind", choices=("publication", "development_handoff"), required=True
+        "--kind",
+        choices=("publication", "ready_for_handoff", "development_handoff"),
+        required=True,
     )
     milestone_parser.add_argument("--evidence", required=True)
     milestone_parser.add_argument("--external-system")
@@ -1880,6 +2236,7 @@ def main() -> int:
         if args.command in {
             "start",
             "pause",
+            "defer",
             "resume",
             "reopen",
             "milestone",
@@ -1915,7 +2272,41 @@ def main() -> int:
             save_ledger(path, ledger)
             print(f"PASS paused={','.join(stage_ids)} reason={args.reason}")
             return 0
+        if args.command == "defer":
+            projection_readbacks = (
+                json.loads(Path(args.projection_readbacks).read_text(encoding="utf-8"))
+                if args.projection_readbacks
+                else []
+            )
+            defer_case(
+                ledger,
+                reason=args.reason,
+                evidence_ref=args.evidence,
+                projection_readbacks=projection_readbacks,
+                at=args.at,
+            )
+            save_ledger(path, ledger)
+            print("PASS case_state=deferred")
+            return 0
         if args.command == "resume":
+            if current_case_state(ledger) == "deferred":
+                projection_readbacks = (
+                    json.loads(Path(args.projection_readbacks).read_text(encoding="utf-8"))
+                    if args.projection_readbacks
+                    else []
+                )
+                resumed = resume_case(
+                    ledger,
+                    evidence_ref=args.evidence,
+                    projection_readbacks=projection_readbacks,
+                    at=args.at,
+                )
+                save_ledger(path, ledger)
+                print(
+                    f"PASS case_state={current_case_state(ledger)} "
+                    f"resumed={','.join(resumed)}"
+                )
+                return 0
             stage_ids = (
                 [args.stage]
                 if args.stage
