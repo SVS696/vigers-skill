@@ -68,6 +68,8 @@ EXTERNAL_READBACK_RECEIPT_SCHEMA = 1
 CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 BLOCK_ID_RE = re.compile(r"^B[0-9]{2,3}$")
 FINDING_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+AGENT_RUN_ID_RE = re.compile(r"^AR-[0-9]{4,}$")
+REVIEW_LENS_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}@[1-9][0-9]*$")
 SEMANTIC_ID_RE = re.compile(
     r"^(GOAL|ACT|SCN|RULE|DATA|STATE|IF|QUAL|REQ|AC|DOD|ASM|Q|DEC|CON)-"
     r"(B[0-9]{2,3})-[0-9]{3}$"
@@ -165,6 +167,7 @@ CONTRACT_SURFACES = {
 }
 REMEDIATION_SCOPES = {"targeted", "full-block"}
 REMEDIATION_SEVERITIES = {"blocker", "major"}
+AGENT_RUN_STATUSES = {"completed", "degraded", "failed", "timed_out"}
 
 
 class CaseError(RuntimeError):
@@ -1839,6 +1842,7 @@ def validate_agent_ledger(payload: Any, *, case_id: str) -> list[str]:
     if not isinstance(runs, list):
         return ["agent-ledger.json runs must be an array"]
     errors: list[str] = []
+    seen_run_ids: set[str] = set()
     for index, run in enumerate(runs):
         label = f"agent-ledger run {index + 1}"
         if not isinstance(run, dict):
@@ -1847,6 +1851,14 @@ def validate_agent_ledger(payload: Any, *, case_id: str) -> list[str]:
         for field in ("at", "role", "role_mode", "model"):
             if not isinstance(run.get(field), str) or not run[field].strip():
                 errors.append(f"{label} requires {field}")
+        run_id = run.get("run_id")
+        if run_id is not None:
+            if not isinstance(run_id, str) or not AGENT_RUN_ID_RE.fullmatch(run_id):
+                errors.append(f"{label} has invalid run_id")
+            elif run_id in seen_run_ids:
+                errors.append(f"{label} duplicates run_id {run_id}")
+            else:
+                seen_run_ids.add(run_id)
         if run.get("assurance_level") not in ASSURANCE_LEVELS:
             errors.append(f"{label} has invalid assurance_level")
         if not isinstance(run.get("subject_sha256"), str) or not SHA256_RE.fullmatch(
@@ -1879,7 +1891,128 @@ def validate_agent_ledger(payload: Any, *, case_id: str) -> list[str]:
                     errors.append(f"{label} findings.{severity} is invalid")
         if run.get("cache_status") not in {"hit", "miss", "unknown"}:
             errors.append(f"{label} has invalid cache_status")
+        status = run.get("status", "completed")
+        if status not in AGENT_RUN_STATUSES:
+            errors.append(f"{label} has invalid status")
+        degraded_reasons = run.get("degraded_reasons", [])
+        if not isinstance(degraded_reasons, list) or any(
+            not isinstance(item, str) or not item.strip() for item in degraded_reasons
+        ):
+            errors.append(f"{label} degraded_reasons must contain non-empty strings")
+        if degraded_reasons and status == "completed":
+            errors.append(f"{label} completed status cannot have degraded_reasons")
+        lenses = run.get("lenses", [])
+        if not isinstance(lenses, list) or any(
+            not isinstance(item, str) or not REVIEW_LENS_RE.fullmatch(item)
+            for item in lenses
+        ):
+            errors.append(f"{label} lenses must use stable id@version values")
+        if isinstance(lenses, list) and len(lenses) != len(set(lenses)):
+            errors.append(f"{label} lenses must be unique")
+        artifacts = run.get("artifacts")
+        if artifacts is not None:
+            if not isinstance(artifacts, dict) or not artifacts:
+                errors.append(f"{label} artifacts must be a non-empty object")
+            else:
+                for artifact_kind, binding in artifacts.items():
+                    if artifact_kind not in {"prompt", "output"}:
+                        errors.append(f"{label} has unknown artifact kind {artifact_kind}")
+                        continue
+                    if not isinstance(binding, dict):
+                        errors.append(f"{label} {artifact_kind} artifact must be an object")
+                        continue
+                    if not isinstance(binding.get("ref"), str) or not binding["ref"].strip():
+                        errors.append(f"{label} {artifact_kind} artifact requires ref")
+                    if not isinstance(binding.get("sha256"), str) or not SHA256_RE.fullmatch(
+                        binding["sha256"]
+                    ):
+                        errors.append(f"{label} {artifact_kind} artifact has invalid sha256")
+        verification = run.get("verification")
+        if verification is not None:
+            if run_id is None:
+                errors.append(f"{label} legacy run cannot have verification")
+            elif not isinstance(verification, dict):
+                errors.append(f"{label} verification must be an object")
+            else:
+                for field in ("at", "evidence_ref", "evidence_sha256"):
+                    if not isinstance(verification.get(field), str) or not verification[field].strip():
+                        errors.append(f"{label} verification requires {field}")
+                if isinstance(verification.get("evidence_sha256"), str) and not SHA256_RE.fullmatch(
+                    verification["evidence_sha256"]
+                ):
+                    errors.append(f"{label} verification has invalid evidence_sha256")
+                dispositions = verification.get("dispositions")
+                if not isinstance(dispositions, dict):
+                    errors.append(f"{label} verification dispositions must be an object")
+                else:
+                    for disposition in ("accepted", "rejected", "duplicate", "verified"):
+                        value = dispositions.get(disposition)
+                        if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                            errors.append(
+                                f"{label} verification dispositions.{disposition} is invalid"
+                            )
+                    accepted = dispositions.get("accepted")
+                    verified = dispositions.get("verified")
+                    if isinstance(accepted, int) and isinstance(verified, int) and verified > accepted:
+                        errors.append(f"{label} verification verified exceeds accepted")
     return errors
+
+
+def agent_artifact_binding(root: Path, relative: str) -> dict[str, str]:
+    """Bind an existing case-owned prompt or output artifact by content hash."""
+    path = case_file(root, relative)
+    if not path.is_file():
+        raise CaseError(f"Agent artifact is missing: {relative}")
+    return {"ref": relative, "sha256": sha256(path)}
+
+
+def agent_artifact_errors(root: Path, payload: dict[str, Any]) -> list[str]:
+    """Detect changed or missing artifacts bound into observability records."""
+    errors: list[str] = []
+    for index, run in enumerate(payload.get("runs", []), start=1):
+        if not isinstance(run, dict):
+            continue
+        bindings: list[tuple[str, Any]] = list((run.get("artifacts") or {}).items())
+        verification = run.get("verification")
+        if isinstance(verification, dict):
+            bindings.append(
+                (
+                    "verification",
+                    {
+                        "ref": verification.get("evidence_ref"),
+                        "sha256": verification.get("evidence_sha256"),
+                    },
+                )
+            )
+        for kind, binding in bindings:
+            if not isinstance(binding, dict):
+                continue
+            relative = binding.get("ref")
+            expected = binding.get("sha256")
+            if not isinstance(relative, str) or not isinstance(expected, str):
+                continue
+            try:
+                path = case_file(root, relative)
+            except CaseError as exc:
+                errors.append(f"agent-ledger run {index} {kind}: {exc}")
+                continue
+            if not path.is_file():
+                errors.append(f"agent-ledger run {index} {kind} artifact is missing")
+            elif sha256(path) != expected:
+                errors.append(f"agent-ledger run {index} {kind} artifact changed after binding")
+    return errors
+
+
+def next_agent_run_id(runs: list[Any]) -> str:
+    """Return a stable monotonic id without rewriting legacy run records."""
+    maximum = 0
+    for run in runs:
+        if not isinstance(run, dict):
+            continue
+        run_id = run.get("run_id")
+        if isinstance(run_id, str) and AGENT_RUN_ID_RE.fullmatch(run_id):
+            maximum = max(maximum, int(run_id.removeprefix("AR-")))
+    return f"AR-{maximum + 1:04d}"
 
 
 def record_agent_run(
@@ -1900,7 +2033,12 @@ def record_agent_run(
     reported_major: int,
     reported_minor: int,
     cache_status: str,
-) -> None:
+    status: str = "completed",
+    degraded_reasons: list[str] | None = None,
+    lenses: list[str] | None = None,
+    prompt_artifact: str | None = None,
+    output_artifact: str | None = None,
+) -> str:
     """Append cost and finding-yield telemetry without exposing it to roles."""
     relative = manifest.get("artifacts", {}).get("agent_ledger")
     if not isinstance(relative, str):
@@ -1926,12 +2064,25 @@ def record_agent_run(
         raise CaseError("Agent telemetry duration must be non-negative")
     if cache_status not in {"hit", "miss", "unknown"}:
         raise CaseError("Agent telemetry cache status must be hit, miss, or unknown")
+    if status not in AGENT_RUN_STATUSES:
+        raise CaseError("Agent telemetry status is invalid")
+    normalized_reasons = [item.strip() for item in degraded_reasons or []]
+    if any(not item for item in normalized_reasons):
+        raise CaseError("Agent telemetry degraded reasons must be non-empty")
+    if normalized_reasons and status == "completed":
+        raise CaseError("Completed agent run cannot have degraded reasons")
+    normalized_lenses = [item.strip() for item in lenses or []]
+    if len(normalized_lenses) != len(set(normalized_lenses)) or any(
+        not REVIEW_LENS_RE.fullmatch(item) for item in normalized_lenses
+    ):
+        raise CaseError("Agent lenses must be unique stable id@version values")
     path = case_file(root, relative)
     payload = read_json(path)
     ledger_errors = validate_agent_ledger(payload, case_id=str(manifest.get("case_id")))
     if ledger_errors:
         raise CaseError("agent-ledger.json is invalid: " + "; ".join(ledger_errors))
     run = {
+        "run_id": next_agent_run_id(payload["runs"]),
         "at": now_utc(),
         "role": role.strip(),
         "role_mode": role_mode.strip(),
@@ -1949,7 +2100,17 @@ def record_agent_run(
             "minor": reported_minor,
         },
         "cache_status": cache_status,
+        "status": status,
+        "degraded_reasons": normalized_reasons,
+        "lenses": normalized_lenses,
     }
+    artifacts: dict[str, dict[str, str]] = {}
+    if prompt_artifact is not None:
+        artifacts["prompt"] = agent_artifact_binding(root, prompt_artifact)
+    if output_artifact is not None:
+        artifacts["output"] = agent_artifact_binding(root, output_artifact)
+    if artifacts:
+        run["artifacts"] = artifacts
     payload["runs"].append(run)
     atomic_json(path, payload)
     manifest["events"].append(
@@ -1962,6 +2123,66 @@ def record_agent_run(
             reported_major=reported_major,
             reported_minor=reported_minor,
         )
+    )
+    save_case(root, manifest, ledger)
+    return str(run["run_id"])
+
+
+def record_agent_verification(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    run_id: str,
+    accepted: int,
+    rejected: int,
+    duplicate: int,
+    verified: int,
+    evidence_ref: str,
+) -> None:
+    """Attach one final finding disposition receipt to an existing run."""
+    if not AGENT_RUN_ID_RE.fullmatch(run_id):
+        raise CaseError("Agent run id is invalid")
+    counts = {
+        "accepted": accepted,
+        "rejected": rejected,
+        "duplicate": duplicate,
+        "verified": verified,
+    }
+    if any(not isinstance(value, int) or isinstance(value, bool) or value < 0 for value in counts.values()):
+        raise CaseError("Agent verification counts must be non-negative integers")
+    if verified > accepted:
+        raise CaseError("Verified findings cannot exceed accepted findings")
+    relative = manifest.get("artifacts", {}).get("agent_ledger")
+    if not isinstance(relative, str):
+        raise CaseError("Case has no agent ledger; legacy cases keep legacy telemetry")
+    path = case_file(root, relative)
+    payload = read_json(path)
+    ledger_errors = validate_agent_ledger(payload, case_id=str(manifest.get("case_id")))
+    if ledger_errors:
+        raise CaseError("agent-ledger.json is invalid: " + "; ".join(ledger_errors))
+    matches = [run for run in payload["runs"] if isinstance(run, dict) and run.get("run_id") == run_id]
+    if len(matches) != 1:
+        raise CaseError(f"Agent run not found: {run_id}")
+    run = matches[0]
+    if "verification" in run:
+        raise CaseError(f"Agent run already has verification: {run_id}")
+    reported = run.get("findings", {})
+    reported_total = sum(
+        value for value in reported.values() if isinstance(value, int) and not isinstance(value, bool)
+    )
+    if accepted + rejected + duplicate != reported_total:
+        raise CaseError("Agent verification must classify every reported finding exactly once")
+    evidence = agent_artifact_binding(root, evidence_ref)
+    run["verification"] = {
+        "at": now_utc(),
+        "evidence_ref": evidence["ref"],
+        "evidence_sha256": evidence["sha256"],
+        "dispositions": counts,
+    }
+    atomic_json(path, payload)
+    manifest["events"].append(
+        event("agent_run_verified", run_id=run_id, **counts)
     )
     save_case(root, manifest, ledger)
 
@@ -3908,6 +4129,7 @@ def validate_case(
                         case_id=str(manifest.get("case_id")),
                     )
                 )
+                errors.extend(agent_artifact_errors(root, agent_ledger))
             except CaseError as exc:
                 errors.append(f"Invalid agent ledger: {exc}")
     role_manifest_relative = manifest.get("artifacts", {}).get("role_manifest")
@@ -4641,6 +4863,32 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("hit", "miss", "unknown"),
         default="unknown",
     )
+    agent_parser.add_argument(
+        "--status",
+        choices=sorted(AGENT_RUN_STATUSES),
+        default="completed",
+    )
+    agent_parser.add_argument("--degraded-reason", action="append", default=[])
+    agent_parser.add_argument(
+        "--lens",
+        action="append",
+        default=[],
+        help="Versioned review surface as stable-id@positive-version",
+    )
+    agent_parser.add_argument("--prompt-artifact")
+    agent_parser.add_argument("--output-artifact")
+
+    agent_verification_parser = subparsers.add_parser(
+        "record-agent-verification",
+        help="Record final accepted/rejected/duplicate/verified finding yield",
+    )
+    agent_verification_parser.add_argument("--case-root", required=True)
+    agent_verification_parser.add_argument("--run-id", required=True)
+    agent_verification_parser.add_argument("--accepted", type=int, required=True)
+    agent_verification_parser.add_argument("--rejected", type=int, required=True)
+    agent_verification_parser.add_argument("--duplicate", type=int, required=True)
+    agent_verification_parser.add_argument("--verified", type=int, required=True)
+    agent_verification_parser.add_argument("--evidence-ref", required=True)
 
     check_parser = subparsers.add_parser("check", help="Run checks and update consistency gate")
     check_parser.add_argument("--case-root", required=True)
@@ -4828,7 +5076,7 @@ def main() -> int:
             )
             return 0
         if args.command == "record-agent-run":
-            record_agent_run(
+            run_id = record_agent_run(
                 root,
                 manifest,
                 ledger,
@@ -4845,8 +5093,27 @@ def main() -> int:
                 reported_major=args.reported_major,
                 reported_minor=args.reported_minor,
                 cache_status=args.cache_status,
+                status=args.status,
+                degraded_reasons=args.degraded_reason,
+                lenses=args.lens,
+                prompt_artifact=args.prompt_artifact,
+                output_artifact=args.output_artifact,
             )
-            print(f"PASS agent-run={args.role}/{args.role_mode}")
+            print(f"PASS agent-run={run_id} role={args.role}/{args.role_mode}")
+            return 0
+        if args.command == "record-agent-verification":
+            record_agent_verification(
+                root,
+                manifest,
+                ledger,
+                run_id=args.run_id,
+                accepted=args.accepted,
+                rejected=args.rejected,
+                duplicate=args.duplicate,
+                verified=args.verified,
+                evidence_ref=args.evidence_ref,
+            )
+            print(f"PASS agent-verification={args.run_id}")
             return 0
         if args.command == "check":
             errors = run_check(root, manifest, ledger, final_trace=args.final_trace)

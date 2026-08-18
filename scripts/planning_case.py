@@ -31,7 +31,8 @@ from spec_pipeline import (
 
 
 SCHEMA_VERSION = 1
-PLAN_SCHEMA_VERSION = 4
+PLAN_SCHEMA_VERSION = 5
+SOLUTION_BOUNDARY_PLAN_SCHEMA_VERSION = 4
 PRELIMINARY_REQUIREMENTS_PLAN_SCHEMA_VERSION = 3
 TELEMETRY_PLAN_SCHEMA_VERSION = 2
 LEGACY_PLAN_SCHEMA_VERSION = 1
@@ -434,12 +435,23 @@ def init_case(
         {"schema": SCHEMA_VERSION, "targets": anchor_targets},
     )
     timing_policy = "required"
+    progress_target_id: str | None = None
     if execution_preferences is not None:
         timing_policy = (
             "measured"
             if execution_preferences.get("automation_timing") == "enabled"
             else "disabled"
         )
+        if execution_preferences.get("progress_projection") == "checklist":
+            task_manager = execution_preferences.get("task_manager")
+            matches = [
+                target["id"]
+                for target in anchor_targets
+                if isinstance(task_manager, str)
+                and target["system"].casefold() == task_manager.casefold()
+            ]
+            if len(matches) == 1:
+                progress_target_id = matches[0]
     atomic_json(
         root / "plan.json",
         {
@@ -451,6 +463,7 @@ def init_case(
                 "unit": "seconds",
                 "execution_use": EXECUTION_USE,
             },
+            "progress_target_id": progress_target_id,
             "preliminary_requirements": {
                 "status": "preliminary",
                 "validation_gate": "full_analysis",
@@ -926,6 +939,7 @@ def validate_plan(
         LEGACY_PLAN_SCHEMA_VERSION,
         TELEMETRY_PLAN_SCHEMA_VERSION,
         PRELIMINARY_REQUIREMENTS_PLAN_SCHEMA_VERSION,
+        SOLUTION_BOUNDARY_PLAN_SCHEMA_VERSION,
         PLAN_SCHEMA_VERSION,
     }:
         return ["plan.json has unsupported schema"]
@@ -936,11 +950,13 @@ def validate_plan(
     if payload.get("schema") in {
         TELEMETRY_PLAN_SCHEMA_VERSION,
         PRELIMINARY_REQUIREMENTS_PLAN_SCHEMA_VERSION,
+        SOLUTION_BOUNDARY_PLAN_SCHEMA_VERSION,
         PLAN_SCHEMA_VERSION,
     }:
         errors.extend(validate_plan_estimation(payload))
     if payload.get("schema") in {
         PRELIMINARY_REQUIREMENTS_PLAN_SCHEMA_VERSION,
+        SOLUTION_BOUNDARY_PLAN_SCHEMA_VERSION,
         PLAN_SCHEMA_VERSION,
     }:
         errors.extend(
@@ -949,7 +965,10 @@ def validate_plan(
                 source_ids,
             )
         )
-    if payload.get("schema") == PLAN_SCHEMA_VERSION:
+    if payload.get("schema") in {
+        SOLUTION_BOUNDARY_PLAN_SCHEMA_VERSION,
+        PLAN_SCHEMA_VERSION,
+    }:
         errors.extend(
             validate_solution_boundary_probe(
                 payload.get("solution_boundary_probe"),
@@ -1260,11 +1279,55 @@ def validate_artifacts(root: Path, manifest: dict[str, Any], *, for_review: bool
                 errors.append(
                     f"{approval_summary.name} is stale or differs from plan.json"
                 )
-    target_ids = {
-        target.get("id")
+    target_by_id = {
+        target.get("id"): target
         for target in artifact_plan.get("targets", [])
         if isinstance(target, dict) and isinstance(target.get("id"), str)
     }
+    target_ids = set(target_by_id)
+    preferences = manifest.get("execution_preferences")
+    if plan_graph.get("schema") == PLAN_SCHEMA_VERSION and isinstance(preferences, dict):
+        progress_target_id = plan_graph.get("progress_target_id")
+        if preferences.get("progress_projection") == "checklist":
+            if (
+                not isinstance(progress_target_id, str)
+                or not TARGET_ID_RE.fullmatch(progress_target_id)
+            ):
+                errors.append(
+                    "plan.json requires progress_target_id for checklist projection"
+                )
+            elif progress_target_id not in target_by_id:
+                errors.append(
+                    f"progress_target_id {progress_target_id} is absent from artifact-plan.json"
+                )
+            else:
+                target = target_by_id[progress_target_id]
+                task_manager = preferences.get("task_manager")
+                system = target.get("system")
+                if (
+                    not isinstance(task_manager, str)
+                    or not isinstance(system, str)
+                    or system.casefold() != task_manager.casefold()
+                ):
+                    errors.append(
+                        "progress_target_id system does not match the configured task manager"
+                    )
+                if target.get("read_back_required") is not True:
+                    errors.append("progress_target_id must require external read-back")
+                if for_review:
+                    bound_target_ids = {
+                        item.get("target_id")
+                        for item in bindings.get("external", [])
+                        if isinstance(item, dict)
+                    }
+                    if progress_target_id not in bound_target_ids:
+                        errors.append(
+                            f"progress_target_id {progress_target_id} has no external binding"
+                        )
+        elif progress_target_id is not None:
+            errors.append(
+                "plan.json progress_target_id requires progress_projection=checklist"
+            )
     for stage in plan_graph.get("stages", []):
         if not isinstance(stage, dict):
             continue
@@ -1706,6 +1769,7 @@ def build_handoff(root: Path, manifest: dict[str, Any]) -> tuple[dict[str, Any],
     if plan_graph.get("schema") in {
         TELEMETRY_PLAN_SCHEMA_VERSION,
         PRELIMINARY_REQUIREMENTS_PLAN_SCHEMA_VERSION,
+        SOLUTION_BOUNDARY_PLAN_SCHEMA_VERSION,
         PLAN_SCHEMA_VERSION,
     }:
         try:
@@ -1730,13 +1794,17 @@ def build_handoff(root: Path, manifest: dict[str, Any]) -> tuple[dict[str, Any],
             plan_graph.get("preliminary_requirements")
             if plan_graph.get("schema") in {
                 PRELIMINARY_REQUIREMENTS_PLAN_SCHEMA_VERSION,
+                SOLUTION_BOUNDARY_PLAN_SCHEMA_VERSION,
                 PLAN_SCHEMA_VERSION,
             }
             else None
         ),
         "solution_boundary_probe": (
             plan_graph.get("solution_boundary_probe")
-            if plan_graph.get("schema") == PLAN_SCHEMA_VERSION
+            if plan_graph.get("schema") in {
+                SOLUTION_BOUNDARY_PLAN_SCHEMA_VERSION,
+                PLAN_SCHEMA_VERSION,
+            }
             else None
         ),
         "external_bindings": bindings["external"],

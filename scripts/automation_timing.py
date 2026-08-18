@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import statistics
@@ -247,6 +248,10 @@ def build_automation_plan(plan_payload: dict[str, Any]) -> dict[str, Any]:
         "execution_use": policy["execution_use"],
         "stages": stages,
     }
+    if isinstance(plan_payload.get("progress_target_id"), str) and plan_payload[
+        "progress_target_id"
+    ].strip():
+        result["progress_target_id"] = plan_payload["progress_target_id"].strip()
     result["fingerprint"] = canonical_fingerprint(result)
     return result
 
@@ -264,6 +269,11 @@ def validate_automation_plan(payload: Any) -> list[str]:
         errors.append(f"automation plan unit must be {UNIT}")
     if payload.get("execution_use") != EXECUTION_USE:
         errors.append(f"automation plan execution_use must be {EXECUTION_USE}")
+    progress_target_id = payload.get("progress_target_id")
+    if progress_target_id is not None and (
+        not isinstance(progress_target_id, str) or not progress_target_id.strip()
+    ):
+        errors.append("automation plan progress_target_id must be non-empty text or null")
     stages = payload.get("stages")
     if not isinstance(stages, list):
         errors.append("automation plan stages must be an array")
@@ -407,6 +417,23 @@ def initialize_ledger(
         ),
         "passport": passport,
         "plan_fingerprint": automation_plan["fingerprint"],
+        **(
+            {
+                "progress_target_id": automation_plan["progress_target_id"],
+                "progress_projection": {
+                    "source": "plan",
+                    "progress_target_id": automation_plan["progress_target_id"],
+                    "system": None,
+                    "target_id": None,
+                    "bindings": [],
+                    "bound_at": None,
+                    "migration_evidence": None,
+                },
+            }
+            if isinstance(automation_plan.get("progress_target_id"), str)
+            and automation_plan["progress_target_id"].strip()
+            else {}
+        ),
         "created_at": timestamp,
         "updated_at": timestamp,
         "case_state": {
@@ -514,8 +541,275 @@ def ledger_automation_plan(ledger: dict[str, Any]) -> dict[str, Any]:
             if isinstance(stage, dict)
         ],
     }
+    progress_projection = ledger.get("progress_projection")
+    if (
+        isinstance(ledger.get("progress_target_id"), str)
+        and not (
+            isinstance(progress_projection, dict)
+            and progress_projection.get("source") == "migration"
+        )
+    ):
+        result["progress_target_id"] = ledger["progress_target_id"]
     result["fingerprint"] = canonical_fingerprint(result)
     return result
+
+
+def runtime_checklist_index(ledger: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return every runtime checklist item keyed by its stable local id."""
+    result: dict[str, dict[str, Any]] = {}
+    for stage in ledger.get("stages", []):
+        if not isinstance(stage, dict):
+            continue
+        for item in stage.get("checklist", []):
+            if isinstance(item, dict) and isinstance(item.get("id"), str):
+                result[item["id"]] = item
+    return result
+
+
+def normalized_progress_receipt(
+    payload: Any,
+    *,
+    require_readbacks: bool,
+) -> dict[str, Any]:
+    """Validate and normalize one provider-neutral checklist projection receipt."""
+    if not isinstance(payload, dict) or payload.get("schema") != 1:
+        raise AutomationTimingError("Progress receipt must be a schema-1 object")
+    result: dict[str, Any] = {"schema": 1}
+    for field in ("progress_target_id", "system", "target_id"):
+        value = payload.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise AutomationTimingError(f"Progress receipt requires {field}")
+        result[field] = value.strip()
+
+    bindings = payload.get("bindings")
+    if not isinstance(bindings, list) or not bindings:
+        raise AutomationTimingError("Progress receipt bindings must be a non-empty array")
+    normalized_bindings: list[dict[str, Any]] = []
+    local_ids: set[str] = set()
+    external_ids: set[str] = set()
+    for index, binding in enumerate(bindings, start=1):
+        if not isinstance(binding, dict):
+            raise AutomationTimingError(f"Progress binding {index} must be an object")
+        local_item_id = binding.get("local_item_id")
+        external_item_id = binding.get("external_item_id")
+        title = binding.get("title")
+        if not isinstance(local_item_id, str) or not local_item_id.strip():
+            raise AutomationTimingError(f"Progress binding {index} requires local_item_id")
+        if not isinstance(external_item_id, str) or not external_item_id.strip():
+            raise AutomationTimingError(f"Progress binding {index} requires external_item_id")
+        if not isinstance(title, str) or not title.strip():
+            raise AutomationTimingError(f"Progress binding {index} requires title")
+        local_item_id = local_item_id.strip()
+        external_item_id = external_item_id.strip()
+        title = title.strip()
+        if not title.startswith(local_item_id):
+            raise AutomationTimingError(
+                f"Progress binding {local_item_id} title must start with its stable id"
+            )
+        if local_item_id in local_ids:
+            raise AutomationTimingError(f"Duplicate progress binding for {local_item_id}")
+        if external_item_id in external_ids:
+            raise AutomationTimingError(
+                f"Duplicate external checklist binding {external_item_id}"
+            )
+        local_ids.add(local_item_id)
+        external_ids.add(external_item_id)
+        normalized_bindings.append(
+            {
+                "local_item_id": local_item_id,
+                "external_item_id": external_item_id,
+                "title": title,
+            }
+        )
+    result["bindings"] = sorted(
+        normalized_bindings,
+        key=lambda item: item["local_item_id"],
+    )
+
+    readbacks = payload.get("readbacks", [])
+    if not isinstance(readbacks, list):
+        raise AutomationTimingError("Progress receipt readbacks must be an array")
+    if require_readbacks and not readbacks:
+        raise AutomationTimingError("Progress reconciliation requires readbacks")
+    normalized_readbacks: list[dict[str, Any]] = []
+    readback_ids: set[str] = set()
+    for index, readback in enumerate(readbacks, start=1):
+        if not isinstance(readback, dict):
+            raise AutomationTimingError(f"Progress read-back {index} must be an object")
+        local_item_id = readback.get("local_item_id")
+        external_item_id = readback.get("external_item_id")
+        title = readback.get("title")
+        checked = readback.get("checked")
+        if not isinstance(local_item_id, str) or not local_item_id.strip():
+            raise AutomationTimingError(f"Progress read-back {index} requires local_item_id")
+        if not isinstance(external_item_id, str) or not external_item_id.strip():
+            raise AutomationTimingError(f"Progress read-back {index} requires external_item_id")
+        if not isinstance(title, str) or not title.strip():
+            raise AutomationTimingError(f"Progress read-back {index} requires title")
+        if not isinstance(checked, bool):
+            raise AutomationTimingError(f"Progress read-back {index} checked must be boolean")
+        local_item_id = local_item_id.strip()
+        external_item_id = external_item_id.strip()
+        title = title.strip()
+        if local_item_id in readback_ids:
+            raise AutomationTimingError(f"Duplicate progress read-back for {local_item_id}")
+        if not title.startswith(local_item_id):
+            raise AutomationTimingError(
+                f"Progress read-back {local_item_id} title must start with its stable id"
+            )
+        readback_ids.add(local_item_id)
+        normalized_readbacks.append(
+            {
+                "local_item_id": local_item_id,
+                "external_item_id": external_item_id,
+                "title": title,
+                "checked": checked,
+                "read_back_at": parse_timestamp(
+                    readback.get("read_back_at"),
+                    field=f"progress read-back {local_item_id}.read_back_at",
+                ).isoformat(),
+            }
+        )
+    if require_readbacks and readback_ids != local_ids:
+        missing = sorted(local_ids - readback_ids)
+        extra = sorted(readback_ids - local_ids)
+        details = []
+        if missing:
+            details.append("missing " + ", ".join(missing))
+        if extra:
+            details.append("unknown " + ", ".join(extra))
+        raise AutomationTimingError(
+            "Progress reconciliation must read back every binding: " + "; ".join(details)
+        )
+    result["readbacks"] = sorted(
+        normalized_readbacks,
+        key=lambda item: item["local_item_id"],
+    )
+    return result
+
+
+def validate_progress_projection(payload: dict[str, Any]) -> list[str]:
+    """Validate the bound checklist target, stable item bindings, and read-backs."""
+    errors: list[str] = []
+    progress_target_id = payload.get("progress_target_id")
+    projection = payload.get("progress_projection")
+    if progress_target_id is None and projection is None:
+        return errors
+    if not isinstance(progress_target_id, str) or not progress_target_id.strip():
+        errors.append("progress_target_id must be non-empty text")
+        return errors
+    if not isinstance(projection, dict):
+        errors.append("progress_projection contract is required")
+        return errors
+    if projection.get("source") not in {"plan", "migration"}:
+        errors.append("progress_projection source must be plan or migration")
+    if projection.get("progress_target_id") != progress_target_id:
+        errors.append("progress_projection target differs from progress_target_id")
+
+    checklist = runtime_checklist_index(payload)
+    bindings = projection.get("bindings")
+    if not isinstance(bindings, list):
+        errors.append("progress_projection bindings must be an array")
+        bindings = []
+    unbound = (
+        projection.get("system") is None
+        and projection.get("target_id") is None
+        and projection.get("bound_at") is None
+        and not bindings
+    )
+    if unbound:
+        if any(item.get("status") == "completed" for item in checklist.values()):
+            errors.append("completed checklist items require a bound progress projection")
+        return errors
+    for field in ("system", "target_id"):
+        if not isinstance(projection.get(field), str) or not projection[field].strip():
+            errors.append(f"progress_projection requires {field}")
+    try:
+        parse_timestamp(projection.get("bound_at"), field="progress_projection.bound_at")
+    except AutomationTimingError as exc:
+        errors.append(str(exc))
+    migration_evidence = projection.get("migration_evidence")
+    if projection.get("source") == "migration":
+        if not isinstance(migration_evidence, str) or not migration_evidence.strip():
+            errors.append("migrated progress_projection requires migration_evidence")
+    elif migration_evidence is not None:
+        errors.append("plan-bound progress_projection cannot have migration_evidence")
+
+    binding_by_local: dict[str, dict[str, Any]] = {}
+    external_ids: set[str] = set()
+    for binding in bindings:
+        if not isinstance(binding, dict):
+            errors.append("progress_projection bindings must be objects")
+            continue
+        local_item_id = binding.get("local_item_id")
+        external_item_id = binding.get("external_item_id")
+        title = binding.get("title")
+        if not isinstance(local_item_id, str) or local_item_id not in checklist:
+            errors.append(f"progress_projection has unknown local item {local_item_id!r}")
+            continue
+        if local_item_id in binding_by_local:
+            errors.append(f"progress_projection duplicates binding {local_item_id}")
+        binding_by_local[local_item_id] = binding
+        if not isinstance(external_item_id, str) or not external_item_id.strip():
+            errors.append(f"{local_item_id}: progress binding requires external_item_id")
+        elif external_item_id in external_ids:
+            errors.append(f"progress_projection duplicates external item {external_item_id}")
+        else:
+            external_ids.add(external_item_id)
+        if not isinstance(title, str) or not title.strip() or not title.startswith(local_item_id):
+            errors.append(f"{local_item_id}: progress binding title must start with stable id")
+        last_read_back = binding.get("last_read_back")
+        if last_read_back is not None:
+            if not isinstance(last_read_back, dict):
+                errors.append(f"{local_item_id}: last_read_back must be an object or null")
+            else:
+                try:
+                    parse_timestamp(
+                        last_read_back.get("read_back_at"),
+                        field=f"{local_item_id}.last_read_back.read_back_at",
+                    )
+                except AutomationTimingError as exc:
+                    errors.append(str(exc))
+                if last_read_back.get("item_id") != external_item_id:
+                    errors.append(f"{local_item_id}: last read-back item mismatch")
+                if not isinstance(last_read_back.get("checked"), bool):
+                    errors.append(f"{local_item_id}: last read-back checked must be boolean")
+    missing_bindings = sorted(set(checklist) - set(binding_by_local))
+    if missing_bindings:
+        errors.append("progress_projection misses bindings: " + ", ".join(missing_bindings))
+
+    for local_item_id, item in checklist.items():
+        if item.get("status") != "completed":
+            continue
+        binding = binding_by_local.get(local_item_id)
+        read_back = item.get("external_read_back")
+        if not isinstance(binding, dict):
+            continue
+        if not isinstance(read_back, dict):
+            errors.append(f"{local_item_id}: completed projected item requires read-back")
+            continue
+        expected = {
+            "progress_target_id": progress_target_id,
+            "system": projection.get("system"),
+            "target_id": projection.get("target_id"),
+            "item_id": binding.get("external_item_id"),
+        }
+        for field, expected_value in expected.items():
+            if read_back.get(field) != expected_value:
+                errors.append(f"{local_item_id}: external read-back {field} mismatch")
+        if read_back.get("checked") is not True:
+            errors.append(f"{local_item_id}: external read-back must confirm checked=true")
+        title = read_back.get("title")
+        if not isinstance(title, str) or not title.startswith(local_item_id):
+            errors.append(f"{local_item_id}: external read-back title mismatch")
+        try:
+            parse_timestamp(
+                read_back.get("read_back_at"),
+                field=f"{local_item_id}.external_read_back.read_back_at",
+            )
+        except AutomationTimingError as exc:
+            errors.append(str(exc))
+    return errors
 
 
 def validate_ledger(
@@ -531,6 +825,7 @@ def validate_ledger(
     errors: list[str] = []
     if not isinstance(payload, dict) or payload.get("schema") != SCHEMA_VERSION:
         return ["automation-timing.json unsupported schema"]
+    errors.extend(validate_progress_projection(payload))
     timer_model = payload.get("timer_model", "legacy")
     if timer_model not in {"legacy", "dual", "disabled"}:
         errors.append("automation timing timer_model is invalid")
@@ -810,7 +1105,7 @@ def validate_ledger(
                 }:
                     errors.append(f"{item_id}: agent-owned checklist has invalid confirmation")
                 target_id = stage.get("external_target_id")
-                if target_id is not None:
+                if payload.get("progress_target_id") is None and target_id is not None:
                     if not isinstance(external_read_back, dict):
                         errors.append(f"{item_id}: external checklist requires read-back evidence")
                     else:
@@ -1024,6 +1319,297 @@ def find_checklist_item(stage: dict[str, Any], item_id: str) -> dict[str, Any]:
     raise AutomationTimingError(f"Unknown checklist item {item_id} in {stage.get('id')}")
 
 
+def progress_binding(
+    ledger: dict[str, Any],
+    item_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Resolve a stable external checklist binding for one local item."""
+    projection = ledger.get("progress_projection")
+    if not isinstance(projection, dict):
+        raise AutomationTimingError("Checklist progress projection is not bound")
+    for binding in projection.get("bindings", []):
+        if isinstance(binding, dict) and binding.get("local_item_id") == item_id:
+            return projection, binding
+    raise AutomationTimingError(f"Checklist item {item_id} has no stable progress binding")
+
+
+def bind_progress_projection(
+    ledger: dict[str, Any],
+    receipt: Any,
+    *,
+    source: str = "plan",
+    migration_evidence: str | None = None,
+    allow_completed: bool = False,
+    at: str | None = None,
+) -> bool:
+    """Bind every stable local checklist id to exactly one external item."""
+    require_active_case(ledger, action="bind checklist progress")
+    errors = validate_ledger(ledger)
+    if errors:
+        raise AutomationTimingError("; ".join(errors))
+    if source not in {"plan", "migration"}:
+        raise AutomationTimingError("Progress binding source must be plan or migration")
+    if source == "migration" and (
+        not isinstance(migration_evidence, str) or not migration_evidence.strip()
+    ):
+        raise AutomationTimingError("Progress migration requires evidence")
+    normalized = normalized_progress_receipt(receipt, require_readbacks=False)
+    checklist = runtime_checklist_index(ledger)
+    binding_ids = {item["local_item_id"] for item in normalized["bindings"]}
+    if binding_ids != set(checklist):
+        missing = sorted(set(checklist) - binding_ids)
+        extra = sorted(binding_ids - set(checklist))
+        details = []
+        if missing:
+            details.append("missing " + ", ".join(missing))
+        if extra:
+            details.append("unknown " + ", ".join(extra))
+        raise AutomationTimingError(
+            "Progress bindings must cover every checklist item: " + "; ".join(details)
+        )
+    completed = sorted(
+        item_id
+        for item_id, item in checklist.items()
+        if item.get("status") == "completed"
+    )
+    if completed and not allow_completed:
+        raise AutomationTimingError(
+            "Completed checklist items require migrate-progress: " + ", ".join(completed)
+        )
+    existing_target = ledger.get("progress_target_id")
+    if source == "plan" and existing_target is None:
+        raise AutomationTimingError(
+            "Progress target is absent from the planning contract; use migrate-progress"
+        )
+    if existing_target is not None and existing_target != normalized["progress_target_id"]:
+        raise AutomationTimingError("Progress target differs from the immutable plan binding")
+
+    existing = ledger.get("progress_projection")
+    desired_bindings = [
+        {**binding, "last_read_back": None}
+        for binding in normalized["bindings"]
+    ]
+    if isinstance(existing, dict) and existing.get("bindings"):
+        current_signature = {
+            "progress_target_id": existing.get("progress_target_id"),
+            "system": existing.get("system"),
+            "target_id": existing.get("target_id"),
+            "bindings": [
+                {
+                    "local_item_id": item.get("local_item_id"),
+                    "external_item_id": item.get("external_item_id"),
+                    "title": item.get("title"),
+                }
+                for item in existing.get("bindings", [])
+                if isinstance(item, dict)
+            ],
+        }
+        desired_signature = {
+            "progress_target_id": normalized["progress_target_id"],
+            "system": normalized["system"],
+            "target_id": normalized["target_id"],
+            "bindings": normalized["bindings"],
+        }
+        if current_signature == desired_signature:
+            return False
+        raise AutomationTimingError(
+            "Progress projection is already bound differently; use a new planning revision"
+        )
+
+    timestamp = normalized_timestamp(at)
+    ledger["progress_target_id"] = normalized["progress_target_id"]
+    ledger["progress_projection"] = {
+        "source": source,
+        "progress_target_id": normalized["progress_target_id"],
+        "system": normalized["system"],
+        "target_id": normalized["target_id"],
+        "bindings": desired_bindings,
+        "bound_at": timestamp,
+        "migration_evidence": (
+            migration_evidence.strip() if source == "migration" else None
+        ),
+    }
+    ledger["events"].append(
+        {
+            "at": timestamp,
+            "kind": (
+                "progress_projection_migrated"
+                if source == "migration"
+                else "progress_projection_bound"
+            ),
+            "progress_target_id": normalized["progress_target_id"],
+            "system": normalized["system"],
+            "target_id": normalized["target_id"],
+            "binding_count": len(desired_bindings),
+            "migration_evidence": (
+                migration_evidence.strip() if source == "migration" else None
+            ),
+        }
+    )
+    return True
+
+
+def reconcile_progress_projection(
+    ledger: dict[str, Any],
+    receipt: Any,
+    *,
+    at: str | None = None,
+    skip_initial_validation: bool = False,
+) -> bool:
+    """Apply a complete external checklist read-back without changing local status."""
+    require_active_case(ledger, action="reconcile checklist progress")
+    if not skip_initial_validation:
+        errors = validate_ledger(ledger)
+        if errors:
+            raise AutomationTimingError("; ".join(errors))
+    normalized = normalized_progress_receipt(receipt, require_readbacks=True)
+    projection = ledger.get("progress_projection")
+    if not isinstance(projection, dict) or not projection.get("bindings"):
+        raise AutomationTimingError("Bind checklist progress before reconciliation")
+    for field in ("progress_target_id", "system", "target_id"):
+        actual = (
+            ledger.get("progress_target_id")
+            if field == "progress_target_id"
+            else projection.get(field)
+        )
+        if normalized[field] != actual:
+            raise AutomationTimingError(f"Progress reconciliation {field} mismatch")
+    binding_by_local = {
+        item["local_item_id"]: item
+        for item in projection["bindings"]
+        if isinstance(item, dict) and isinstance(item.get("local_item_id"), str)
+    }
+    receipt_bindings = {
+        item["local_item_id"]: item for item in normalized["bindings"]
+    }
+    for local_item_id, binding in binding_by_local.items():
+        supplied = receipt_bindings.get(local_item_id)
+        if supplied is None or any(
+            supplied.get(field) != binding.get(field)
+            for field in ("external_item_id", "title")
+        ):
+            raise AutomationTimingError(
+                f"Progress reconciliation binding mismatch for {local_item_id}"
+            )
+    checklist = runtime_checklist_index(ledger)
+    readbacks = {item["local_item_id"]: item for item in normalized["readbacks"]}
+    updates: list[tuple[dict[str, Any], dict[str, Any], dict[str, Any]]] = []
+    for local_item_id, binding in binding_by_local.items():
+        item = checklist[local_item_id]
+        readback = readbacks[local_item_id]
+        if readback["external_item_id"] != binding["external_item_id"]:
+            raise AutomationTimingError(
+                f"Progress read-back item mismatch for {local_item_id}"
+            )
+        if item.get("status") == "completed" and readback["checked"] is not True:
+            raise AutomationTimingError(
+                f"Completed checklist item {local_item_id} requires checked=true"
+            )
+        if item.get("status") != "completed" and readback["checked"] is not False:
+            raise AutomationTimingError(
+                f"External checklist is ahead of local state for {local_item_id}"
+            )
+        external_read_back = {
+            "progress_target_id": ledger["progress_target_id"],
+            "system": projection["system"],
+            "target_id": projection["target_id"],
+            "item_id": binding["external_item_id"],
+            "title": readback["title"],
+            "checked": readback["checked"],
+            "read_back_at": readback["read_back_at"],
+        }
+        existing = item.get("external_read_back")
+        if item.get("status") == "completed" and existing is not None:
+            immutable_fields = (
+                "progress_target_id",
+                "system",
+                "target_id",
+                "item_id",
+                "title",
+                "checked",
+            )
+            if any(
+                existing.get(field) != external_read_back.get(field)
+                for field in immutable_fields
+            ):
+                raise AutomationTimingError(
+                    f"Completed checklist item {local_item_id} has different read-back evidence"
+                )
+        previous_read_back = binding.get("last_read_back")
+        if isinstance(previous_read_back, dict) and (
+            parse_timestamp(
+                external_read_back["read_back_at"],
+                field=f"{local_item_id}.read_back_at",
+            )
+            < parse_timestamp(
+                previous_read_back.get("read_back_at"),
+                field=f"{local_item_id}.last_read_back.read_back_at",
+            )
+        ):
+            raise AutomationTimingError(
+                f"Progress read-back for {local_item_id} is older than stored evidence"
+            )
+        updates.append((item, binding, external_read_back))
+
+    changed = False
+    for item, binding, external_read_back in updates:
+        if binding.get("last_read_back") != external_read_back:
+            binding["last_read_back"] = external_read_back
+            changed = True
+        if item.get("status") == "completed" and item.get("external_read_back") is None:
+            item["external_read_back"] = external_read_back
+            changed = True
+    if changed:
+        timestamp = normalized_timestamp(at)
+        ledger["events"].append(
+            {
+                "at": timestamp,
+                "kind": "progress_projection_reconciled",
+                "progress_target_id": ledger["progress_target_id"],
+                "system": projection["system"],
+                "target_id": projection["target_id"],
+                "read_back_count": len(updates),
+            }
+        )
+    return changed
+
+
+def migrate_progress_projection(
+    ledger: dict[str, Any],
+    receipt: Any,
+    *,
+    evidence_ref: str,
+    at: str | None = None,
+) -> bool:
+    """Atomically bind and reconcile a legacy ledger with completed local items."""
+    errors = validate_ledger(ledger)
+    if errors:
+        raise AutomationTimingError("; ".join(errors))
+    working = copy.deepcopy(ledger)
+    bound = bind_progress_projection(
+        working,
+        receipt,
+        source="migration",
+        migration_evidence=evidence_ref,
+        allow_completed=True,
+        at=at,
+    )
+    reconciled = reconcile_progress_projection(
+        working,
+        receipt,
+        at=at,
+        skip_initial_validation=True,
+    )
+    errors = validate_ledger(working)
+    if errors:
+        raise AutomationTimingError("; ".join(errors))
+    if not bound and not reconciled:
+        return False
+    ledger.clear()
+    ledger.update(working)
+    return True
+
+
 def begin_checklist_item(
     ledger: dict[str, Any],
     stage_id: str,
@@ -1099,6 +1685,7 @@ def complete_checklist_item(
     evidence_refs: list[str],
     external_system: str | None = None,
     external_item_id: str | None = None,
+    external_title: str | None = None,
     read_back_at: str | None = None,
     user_confirmed: bool = False,
     at: str | None = None,
@@ -1124,34 +1711,69 @@ def complete_checklist_item(
             f"Checklist item {item_id} is agent-owned; user confirmation is not applicable"
         )
     normalized_evidence = list(dict.fromkeys(ref.strip() for ref in evidence_refs if ref.strip()))
-    external_values = (external_system, external_item_id, read_back_at)
-    if any(value is not None for value in external_values) and not all(
-        isinstance(value, str) and value.strip() for value in external_values
-    ):
-        raise AutomationTimingError(
-            "External checklist read-back requires system, item id, and timestamp together"
+    progress_projection: dict[str, Any] | None = None
+    progress_item_binding: dict[str, Any] | None = None
+    if ledger.get("progress_target_id") is not None:
+        progress_projection, progress_item_binding = progress_binding(ledger, item_id)
+        external_values = (
+            external_system,
+            external_item_id,
+            external_title,
+            read_back_at,
         )
-    target_id = stage.get("external_target_id")
-    if target_id is not None and not all(
-        isinstance(value, str) and value.strip() for value in external_values
-    ):
-        raise AutomationTimingError(
-            f"Checklist item {item_id} is projected to {target_id}; read-back is required"
-        )
-    external_read_back = (
-        {
-            "target_id": target_id,
+        if not all(isinstance(value, str) and value.strip() for value in external_values):
+            raise AutomationTimingError(
+                "Projected checklist read-back requires system, item id, title, and timestamp"
+            )
+        if external_system.strip() != progress_projection.get("system"):
+            raise AutomationTimingError(f"Checklist item {item_id} external system mismatch")
+        if external_item_id.strip() != progress_item_binding.get("external_item_id"):
+            raise AutomationTimingError(f"Checklist item {item_id} external item mismatch")
+        if not external_title.strip().startswith(item_id):
+            raise AutomationTimingError(
+                f"Checklist item {item_id} external title must start with its stable id"
+            )
+        external_read_back = {
+            "progress_target_id": ledger["progress_target_id"],
+            "target_id": progress_projection["target_id"],
             "system": external_system.strip(),
             "item_id": external_item_id.strip(),
+            "title": external_title.strip(),
             "checked": True,
             "read_back_at": parse_timestamp(
                 read_back_at,
                 field=f"{item_id}.external_read_back.read_back_at",
             ).isoformat(),
         }
-        if external_system is not None
-        else None
-    )
+    else:
+        external_values = (external_system, external_item_id, read_back_at)
+        if any(value is not None for value in external_values) and not all(
+            isinstance(value, str) and value.strip() for value in external_values
+        ):
+            raise AutomationTimingError(
+                "External checklist read-back requires system, item id, and timestamp together"
+            )
+        target_id = stage.get("external_target_id")
+        if target_id is not None and not all(
+            isinstance(value, str) and value.strip() for value in external_values
+        ):
+            raise AutomationTimingError(
+                f"Checklist item {item_id} is projected to {target_id}; read-back is required"
+            )
+        external_read_back = (
+            {
+                "target_id": target_id,
+                "system": external_system.strip(),
+                "item_id": external_item_id.strip(),
+                "checked": True,
+                "read_back_at": parse_timestamp(
+                    read_back_at,
+                    field=f"{item_id}.external_read_back.read_back_at",
+                ).isoformat(),
+            }
+            if external_system is not None
+            else None
+        )
     if not normalized_evidence and external_read_back is None:
         raise AutomationTimingError(f"Checklist item {item_id} requires completion evidence")
     timestamp = (
@@ -1190,6 +1812,8 @@ def complete_checklist_item(
             "synchronize it immediately after done_when is satisfied"
         )
     item.update(status="completed", **desired)
+    if progress_item_binding is not None:
+        progress_item_binding["last_read_back"] = external_read_back
     ledger["events"].append(
         {
             "at": timestamp,
@@ -2178,6 +2802,31 @@ def build_parser() -> argparse.ArgumentParser:
     reconcile_parser.add_argument("--external-checkpoint", required=True)
     reconcile_parser.add_argument("--at")
 
+    bind_progress_parser = subparsers.add_parser(
+        "bind-progress",
+        help="Bind stable Pxx-Cxx ids to one external checklist target",
+    )
+    bind_progress_parser.add_argument("--case-root", required=True)
+    bind_progress_parser.add_argument("--receipt", required=True)
+    bind_progress_parser.add_argument("--at")
+
+    migrate_progress_parser = subparsers.add_parser(
+        "migrate-progress",
+        help="Atomically bind and reconcile a legacy completed checklist",
+    )
+    migrate_progress_parser.add_argument("--case-root", required=True)
+    migrate_progress_parser.add_argument("--receipt", required=True)
+    migrate_progress_parser.add_argument("--evidence", required=True)
+    migrate_progress_parser.add_argument("--at")
+
+    reconcile_progress_parser = subparsers.add_parser(
+        "reconcile-progress",
+        help="Read back every bound external checklist item and detect drift",
+    )
+    reconcile_progress_parser.add_argument("--case-root", required=True)
+    reconcile_progress_parser.add_argument("--receipt", required=True)
+    reconcile_progress_parser.add_argument("--at")
+
     begin_parser = subparsers.add_parser(
         "begin",
         help="Claim any checklist item before starting its work",
@@ -2208,6 +2857,7 @@ def build_parser() -> argparse.ArgumentParser:
     check_parser.add_argument("--evidence", action="append", default=[])
     check_parser.add_argument("--external-system")
     check_parser.add_argument("--external-item-id")
+    check_parser.add_argument("--external-title")
     check_parser.add_argument("--read-back-at")
     check_parser.add_argument(
         "--user-confirmed",
@@ -2242,6 +2892,9 @@ def main() -> int:
             "milestone",
             "checkpoint",
             "reconcile",
+            "bind-progress",
+            "migrate-progress",
+            "reconcile-progress",
             "begin",
             "check",
             "stop",
@@ -2363,6 +3016,26 @@ def main() -> int:
             result = reconcile_checkpoint(ledger, external, at=args.at)
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
+        if args.command in {"bind-progress", "migrate-progress", "reconcile-progress"}:
+            receipt = json.loads(Path(args.receipt).read_text(encoding="utf-8"))
+            if args.command == "bind-progress":
+                changed = bind_progress_projection(ledger, receipt, at=args.at)
+            elif args.command == "migrate-progress":
+                changed = migrate_progress_projection(
+                    ledger,
+                    receipt,
+                    evidence_ref=args.evidence,
+                    at=args.at,
+                )
+            else:
+                changed = reconcile_progress_projection(ledger, receipt, at=args.at)
+            if changed:
+                save_ledger(path, ledger)
+            print(
+                f"PASS command={args.command} changed={str(changed).lower()} "
+                f"progress_target_id={ledger.get('progress_target_id')}"
+            )
+            return 0
         if args.command == "begin":
             changed = begin_checklist_item(
                 ledger,
@@ -2388,6 +3061,7 @@ def main() -> int:
                 evidence_refs=args.evidence,
                 external_system=args.external_system,
                 external_item_id=args.external_item_id,
+                external_title=args.external_title,
                 read_back_at=args.read_back_at,
                 user_confirmed=args.user_confirmed,
                 at=args.at,

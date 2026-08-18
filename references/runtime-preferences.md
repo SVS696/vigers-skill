@@ -103,6 +103,19 @@ calendar ETA с учётом рабочих и handoff-окон.
 описание плана task manager и делает read-back. Если
 `progress_projection=checklist`, adapter сопоставляет стабильные `Pxx-Cxx` с
 внешними галками и подтверждает каждое изменение read-back.
+Plan schema 5 хранит отдельный `progress_target_id`: он указывает на target task
+manager и не переиспользует `external_target_id` этапа, предназначенный для
+результата этапа. До первого completion вызови `bind-progress` с полной
+биекцией `Pxx-Cxx → external_item_id`. Binding неизменяем: другой item требует
+новой planning revision, а не молчаливой перепривязки. Completion принимается
+только при read-back того же binding с `checked=true`.
+
+Для legacy-case без такого контракта используй только атомарный
+`migrate-progress`: команда одновременно фиксирует target/bindings и применяет
+полный внешний read-back. Ручная правка `automation-timing.json` запрещена.
+Последующие сверки выполняй через `reconcile-progress`; команда требует снимок
+всех bindings и отклоняет как локальный completed с `checked=false`, так и
+внешний `checked=true` для ещё незавершённого локального пункта.
 
 При `timing_history=passport` project adapter append-only добавляет в паспорт
 только смысловые точки: исходный forecast, каждую публикацию, явный development

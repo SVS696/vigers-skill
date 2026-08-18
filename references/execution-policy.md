@@ -109,8 +109,30 @@ assignment разворачивается в прежний полный наб�
 
 Новый case содержит `agent-ledger.json`. После модельного прохода координатор
 фиксирует роль/режим/модель, subject hash, доступные input/output tokens и bytes,
-duration, retries, cache status и counts findings. Неизвестные токены остаются
-`null`, а не оцениваются по догадке. Ledger не передаётся исполнительным ролям.
+duration, retries, cache status, outcome и counts findings. Неизвестные токены
+остаются `null`, а не оцениваются по догадке. Ledger не передаётся
+исполнительным ролям и не создаёт новый model call, reviewer или gate.
+
+`completed|degraded|failed|timed_out` описывает фактический исход уже
+состоявшегося вызова. Idle/hard timeout применяй только через нативный supervisor
+текущего harness и только когда предел объявлен его конфигурацией; не запускай
+CLI-agent или polling-обвязку ради telemetry. После подтверждённого
+transient/tool/transport сбоя допустим один повтор с тем же assignment по
+`prompt-contract.md`; содержательная ошибка и `degraded` coverage повтором не
+маскируются. Причины деградации сохраняются явно.
+
+Для воспроизводимости передавай `--prompt-artifact` и `--output-artifact` на уже
+существующие case-owned файлы. Ledger хранит refs и SHA-256, а не вторую копию
+корпуса. Raw content сохраняй только если его уже требует case contract; секреты
+и внешний приватный вывод не дублируй. Versioned lens имеет форму `id@version` и
+обозначает применённую существующую contract surface, а не дополнительную роль.
+Project profile может объявить такие aliases вместе с точными contract inputs.
+
+После штатной проверки findings выполни `record-agent-verification`: каждый
+reported finding ровно один раз классифицируется как `accepted|rejected|duplicate`,
+а `verified` является подмножеством accepted. Это даёт yield по роли/линзе без
+ещё одного review. Legacy runs без этих полей валидны и считаются
+`unclassified`, а не нулевым качеством.
 
 Review с тем же evidence hash и тем же subject идемпотентен и не создаёт новую
 immutable revision. Повтор после изменившегося subject остаётся допустимым.

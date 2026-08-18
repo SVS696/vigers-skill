@@ -384,6 +384,45 @@ python3 {baseDir}/scripts/automation_timing.py check \
 `--user-confirmed`. Не откладывай синхронизацию до конца этапа: галки нужны и
 человеку для видимого прогресса, и машине как completion barriers.
 
+При `progress_projection=checklist` plan schema 5 обязан содержать отдельный
+`progress_target_id`, связанный с task-manager target из `artifact-plan.json`.
+Перед первым completion сохрани полный стабильный binding:
+
+```text
+python3 {baseDir}/scripts/automation_timing.py bind-progress \
+  --case-root "<case-root>" --receipt "<progress-receipt.json>"
+```
+
+Receipt schema 1 содержит `progress_target_id`, `system`, внешний parent
+`target_id`, а также полные `bindings` с `local_item_id`, `external_item_id` и
+прочитанным title. Команда требует биекцию для всех checklist items и не
+разрешает перепривязать существующий local ID.
+
+Legacy-case с уже закрытыми локальными пунктами мигрируй атомарно вместе с
+полным live read-back:
+
+```text
+python3 {baseDir}/scripts/automation_timing.py migrate-progress \
+  --case-root "<case-root>" --receipt "<progress-receipt.json>" \
+  --evidence "<migration-reason>"
+```
+
+Каждый `readbacks[]` повторяет local/external item IDs и title, содержит
+`checked` и `read_back_at`. Команда переносит evidence в ledger только когда
+каждый локальный completed подтверждён `checked=true`, а каждый незавершённый
+пункт — `checked=false`. Она идемпотентна с тем же receipt и не пишет
+промежуточное невалидное состояние.
+
+После дальнейших изменений сверяй весь внешний checklist:
+
+```text
+python3 {baseDir}/scripts/automation_timing.py reconcile-progress \
+  --case-root "<case-root>" --receipt "<progress-receipt.json>"
+```
+
+Обычный `check` для связанного пункта требует read-back того же system/item,
+title со стабильным `Pxx-Cxx` и `checked=true`. Ledger вручную не редактируй.
+
 ## Post-facto recovery
 
 Старые `agent-ledger.json` позволяют восстановить только нижнюю границу:

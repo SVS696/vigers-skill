@@ -116,6 +116,47 @@ class PlanningCaseTests(unittest.TestCase):
             ]
             self.assertEqual(planning_case.validate_plan_estimation(plan), [])
 
+    def test_checklist_projection_pins_separate_progress_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "planning"
+            preferences = {
+                "schema": 1,
+                "automation_timing": "enabled",
+                "timing_model": "enabled",
+                "progress_tracking": "fine",
+                "task_manager": "singularity",
+                "timing_projection": "task-note",
+                "timing_history": "none",
+                "timing_calendar": "disabled",
+                "deferred_state": "disabled",
+                "state_projection": "none",
+                "progress_projection": "checklist",
+                "history_scope": "project-profile",
+                "source": "test",
+            }
+            planning_case.init_case(
+                root,
+                case_id="progress-plan",
+                profile_id="project-alpha",
+                project_root=str(Path(temp) / "project-alpha"),
+                passport_id=None,
+                passport_path=None,
+                required_anchor_systems=["Redmine", "Singularity"],
+                execution_preferences=preferences,
+            )
+            plan = json.loads((root / "plan.json").read_text(encoding="utf-8"))
+            self.assertEqual(plan["schema"], planning_case.PLAN_SCHEMA_VERSION)
+            self.assertEqual(plan["progress_target_id"], "EXT-002")
+
+            plan["progress_target_id"] = None
+            write_json(root / "plan.json", plan)
+            _, manifest = planning_case.load_case(root)
+            errors = planning_case.validate_artifacts(root, manifest, for_review=False)
+            self.assertIn(
+                "plan.json requires progress_target_id for checklist projection",
+                errors,
+            )
+
     def complete_plan(self, root: Path, *, external: bool = True) -> None:
         write_json(
             root / "artifact-plan.json",

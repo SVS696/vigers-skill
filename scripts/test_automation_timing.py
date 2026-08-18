@@ -77,6 +77,41 @@ def measured_plan() -> dict[str, object]:
     return plan
 
 
+def progress_receipt(*, first_checked: bool, second_checked: bool) -> dict[str, object]:
+    """Return a complete provider-neutral read-back for the demo checklist."""
+    bindings = [
+        {
+            "local_item_id": "P01-C01",
+            "external_item_id": "CH-001",
+            "title": "P01-C01 — Collect evidence",
+        },
+        {
+            "local_item_id": "P02-C01",
+            "external_item_id": "CH-002",
+            "title": "P02-C01 — Synthesize result",
+        },
+    ]
+    return {
+        "schema": 1,
+        "progress_target_id": "EXT-002",
+        "system": "Singularity",
+        "target_id": "T-demo",
+        "bindings": bindings,
+        "readbacks": [
+            {
+                **binding,
+                "checked": checked,
+                "read_back_at": "2026-08-15T01:00:00+00:00",
+            }
+            for binding, checked in zip(
+                bindings,
+                (first_checked, second_checked),
+                strict=True,
+            )
+        ],
+    }
+
+
 class AutomationTimingTests(unittest.TestCase):
     def ledger(self) -> dict[str, object]:
         return automation_timing.initialize_ledger(
@@ -594,6 +629,188 @@ class AutomationTimingTests(unittest.TestCase):
             at="2026-08-07T10:01:00+00:00",
         )
         self.assertEqual(automation_timing.validate_ledger(ledger), [])
+
+    def test_plan_progress_target_requires_stable_binding_before_completion(self) -> None:
+        plan = demo_plan()
+        plan["progress_target_id"] = "EXT-002"
+        plan["fingerprint"] = automation_timing.canonical_fingerprint(plan)
+        ledger = automation_timing.initialize_ledger(
+            case_id="projected-case",
+            automation_plan=plan,
+            planning_case_id="demo-plan",
+            planning_revision=3,
+            passport=None,
+            created_at="2026-08-15T00:00:00+00:00",
+        )
+        automation_timing.start_stage(
+            ledger,
+            "P01",
+            at="2026-08-15T00:00:00+00:00",
+        )
+        automation_timing.begin_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            at="2026-08-15T00:01:00+00:00",
+        )
+        with self.assertRaisesRegex(
+            automation_timing.AutomationTimingError,
+            "no stable progress binding",
+        ):
+            automation_timing.complete_checklist_item(
+                ledger,
+                "P01",
+                "P01-C01",
+                evidence_refs=["evidence.md#one"],
+            )
+        receipt = progress_receipt(first_checked=False, second_checked=False)
+        self.assertTrue(automation_timing.bind_progress_projection(ledger, receipt))
+        automation_timing.complete_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            evidence_refs=["evidence.md#one"],
+            external_system="Singularity",
+            external_item_id="CH-001",
+            external_title="P01-C01 — Collect evidence",
+            read_back_at="2026-08-15T00:02:00+00:00",
+            at="2026-08-15T00:02:00+00:00",
+        )
+        self.assertEqual(automation_timing.validate_ledger(ledger), [])
+
+    def test_migrate_progress_backfills_completed_items_atomically(self) -> None:
+        ledger = self.ledger()
+        automation_timing.start_stage(
+            ledger,
+            "P01",
+            at="2026-08-15T00:00:00+00:00",
+        )
+        automation_timing.begin_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            at="2026-08-15T00:01:00+00:00",
+        )
+        automation_timing.complete_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            evidence_refs=["evidence.md#one"],
+            at="2026-08-15T00:02:00+00:00",
+        )
+        receipt = progress_receipt(first_checked=True, second_checked=False)
+        self.assertTrue(
+            automation_timing.migrate_progress_projection(
+                ledger,
+                receipt,
+                evidence_ref="legacy-case-with-live-read-back",
+                at="2026-08-15T01:00:00+00:00",
+            )
+        )
+        item = automation_timing.find_checklist_item(
+            automation_timing.find_stage(ledger, "P01"),
+            "P01-C01",
+        )
+        self.assertTrue(item["external_read_back"]["checked"])
+        self.assertEqual(item["external_read_back"]["item_id"], "CH-001")
+        self.assertEqual(
+            automation_timing.validate_ledger(ledger, expected_plan=demo_plan()),
+            [],
+        )
+        self.assertFalse(
+            automation_timing.migrate_progress_projection(
+                ledger,
+                receipt,
+                evidence_ref="legacy-case-with-live-read-back",
+                at="2026-08-15T01:00:00+00:00",
+            )
+        )
+
+    def test_progress_reconcile_rejects_false_completion_and_external_ahead(self) -> None:
+        completed = self.ledger()
+        automation_timing.start_stage(completed, "P01")
+        automation_timing.begin_checklist_item(completed, "P01", "P01-C01")
+        automation_timing.complete_checklist_item(
+            completed,
+            "P01",
+            "P01-C01",
+            evidence_refs=["evidence.md#one"],
+        )
+        with self.assertRaisesRegex(
+            automation_timing.AutomationTimingError,
+            "requires checked=true",
+        ):
+            automation_timing.migrate_progress_projection(
+                completed,
+                progress_receipt(first_checked=False, second_checked=False),
+                evidence_ref="legacy-migration",
+            )
+
+        pending_plan = demo_plan()
+        pending_plan["progress_target_id"] = "EXT-002"
+        pending_plan["fingerprint"] = automation_timing.canonical_fingerprint(
+            pending_plan
+        )
+        pending = automation_timing.initialize_ledger(
+            case_id="pending-projection",
+            automation_plan=pending_plan,
+            planning_case_id="demo-plan",
+            planning_revision=3,
+            passport=None,
+        )
+        receipt = progress_receipt(first_checked=False, second_checked=False)
+        automation_timing.bind_progress_projection(pending, receipt)
+        with self.assertRaisesRegex(
+            automation_timing.AutomationTimingError,
+            "ahead of local state",
+        ):
+            automation_timing.reconcile_progress_projection(
+                pending,
+                progress_receipt(first_checked=True, second_checked=False),
+            )
+
+    def test_progress_reconcile_refreshes_projection_without_rewriting_completion(self) -> None:
+        ledger = self.ledger()
+        automation_timing.start_stage(ledger, "P01")
+        automation_timing.begin_checklist_item(ledger, "P01", "P01-C01")
+        automation_timing.complete_checklist_item(
+            ledger,
+            "P01",
+            "P01-C01",
+            evidence_refs=["evidence.md#one"],
+        )
+        receipt = progress_receipt(first_checked=True, second_checked=False)
+        automation_timing.migrate_progress_projection(
+            ledger,
+            receipt,
+            evidence_ref="legacy-migration",
+        )
+        item = automation_timing.find_checklist_item(
+            automation_timing.find_stage(ledger, "P01"),
+            "P01-C01",
+        )
+        completion_read_back = dict(item["external_read_back"])
+        refreshed = progress_receipt(first_checked=True, second_checked=False)
+        for read_back in refreshed["readbacks"]:
+            read_back["read_back_at"] = "2026-08-15T02:00:00+00:00"
+        self.assertTrue(
+            automation_timing.reconcile_progress_projection(ledger, refreshed)
+        )
+        self.assertEqual(item["external_read_back"], completion_read_back)
+        binding = ledger["progress_projection"]["bindings"][0]
+        self.assertEqual(
+            binding["last_read_back"]["read_back_at"],
+            "2026-08-15T02:00:00+00:00",
+        )
+
+        stale = progress_receipt(first_checked=True, second_checked=False)
+        for read_back in stale["readbacks"]:
+            read_back["read_back_at"] = "2026-08-15T01:30:00+00:00"
+        with self.assertRaisesRegex(
+            automation_timing.AutomationTimingError,
+            "older than stored evidence",
+        ):
+            automation_timing.reconcile_progress_projection(ledger, stale)
 
     def test_non_completed_terminal_stage_requires_reason(self) -> None:
         ledger = self.ledger()

@@ -36,7 +36,7 @@ description: "Оркестрирует предварительное иссле
 8. **Tracking выбирает человек или проект.** Portable default `fine` сохраняет
    видимый прогресс и machine barriers; `off|milestones` требуют явной настройки.
    ETA не передаётся ролям и не влияет на качество или scope.
-   Внешняя запись, publication и user-owned handoff всегда требуют read-back.
+   Внешняя запись и checklist требуют read-back; checklist использует отдельный `progress_target_id` и штатный migration.
 9. **Качество имеет критерий достаточности.** `blocker` и `major` закрываются
     обязательно через bounded remediation: finding, baseline, semantic IDs и
     прежнее покрытие сохраняются, а re-review проверяет delta, не весь блок заново.
@@ -456,7 +456,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/references/requirements-method.md` | Канонический метод Вигерса |
 | `{baseDir}/references/planning-contract.md` | Research, plan DAG, passport, external drafts и approval contract |
 | `{baseDir}/references/automation-timing.md` | Прогноз, wall-clock ledger, команды и агрегация истории |
-| `{baseDir}/references/execution-policy.md` | Assurance, tracking, projection cadence, change impact и telemetry |
+| `{baseDir}/references/execution-policy.md` | Assurance, convergence, additive supervision, artifact bindings и finding-yield telemetry |
 | `{baseDir}/references/convergence-contract.md` | Порог качества, переоткрытие research и остановка minor-only циклов |
 | `{baseDir}/references/solution-boundary-contract.md` | Горизонты решения, границы scope и двусторонняя защита от hardcode/overengineering |
 | `{baseDir}/references/diagram-contract.md` | Diagram gate, выбор представления, декомпозиция и render QA |
