@@ -205,7 +205,13 @@ python3 {baseDir}/scripts/case_pipeline.py record-agent-run \
   --case-root "<path>" --role spec-reviewer --role-mode final \
   --model "<model>" --subject-sha256 "<sha256>" --input-bytes 12345 \
   --duration-seconds 42 --retries 0 --reported-blocker 0 \
-  --reported-major 0 --reported-minor 1
+  --reported-major 0 --reported-minor 1 --status completed \
+  --lens global-logic@1 --prompt-artifact "<case-prompt-ref>" \
+  --output-artifact "<case-output-ref>"
+
+python3 {baseDir}/scripts/case_pipeline.py record-agent-verification \
+  --case-root "<path>" --run-id AR-0001 --accepted 1 --rejected 0 \
+  --duplicate 0 --verified 1 --evidence-ref "<verification-ref>"
 
 python3 {baseDir}/scripts/case_pipeline.py validate \
   --case-root "<path>" --final

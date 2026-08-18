@@ -910,12 +910,13 @@ class CasePipelineTests(unittest.TestCase):
             )
             self.assertIn("references/diagram-contract.md", bundle["contract_inputs"])
             self.assertNotIn("method-context.md", bundle["case_inputs"])
+            self.assertNotIn("agent-ledger.json", bundle["case_inputs"])
 
     def test_agent_ledger_records_cost_and_finding_yield(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = self.init(Path(temp))
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
-            case_pipeline.record_agent_run(
+            run_id = case_pipeline.record_agent_run(
                 loaded_root,
                 manifest,
                 ledger,
@@ -932,10 +933,71 @@ class CasePipelineTests(unittest.TestCase):
                 reported_major=1,
                 reported_minor=2,
                 cache_status="miss",
+                lenses=["global-logic@1", "project-rules@2"],
+                prompt_artifact="kernel.md",
+                output_artifact="reviews/global.md",
+            )
+            self.assertEqual(run_id, "AR-0001")
+            case_pipeline.record_agent_verification(
+                loaded_root,
+                manifest,
+                ledger,
+                run_id=run_id,
+                accepted=1,
+                rejected=1,
+                duplicate=1,
+                verified=1,
+                evidence_ref="reviews/global.md",
             )
             payload = json.loads((root / case_pipeline.AGENT_LEDGER_JSON).read_text())
             self.assertEqual(payload["runs"][0]["findings"]["major"], 1)
             self.assertEqual(payload["runs"][0]["input_tokens"], 300)
+            self.assertEqual(payload["runs"][0]["lenses"], ["global-logic@1", "project-rules@2"])
+            self.assertEqual(
+                payload["runs"][0]["verification"]["dispositions"]["duplicate"],
+                1,
+            )
+            self.assertEqual(
+                case_pipeline.validate_case(loaded_root, manifest, ledger, final=False),
+                [],
+            )
+
+    def test_agent_verification_must_classify_every_finding(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            run_id = case_pipeline.record_agent_run(
+                loaded_root,
+                manifest,
+                ledger,
+                role="spec-reviewer",
+                role_mode="global",
+                model="test-model",
+                subject_sha256="b" * 64,
+                input_bytes=None,
+                input_tokens=None,
+                output_tokens=None,
+                duration_seconds=1,
+                retries=1,
+                reported_blocker=0,
+                reported_major=1,
+                reported_minor=1,
+                cache_status="unknown",
+                status="degraded",
+                degraded_reasons=["provider source unavailable"],
+            )
+            with self.assertRaisesRegex(case_pipeline.CaseError, "classify every"):
+                case_pipeline.record_agent_verification(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    run_id=run_id,
+                    accepted=1,
+                    rejected=0,
+                    duplicate=0,
+                    verified=1,
+                    evidence_ref="reviews/global.md",
+                )
 
     def test_milestone_tracking_preserves_user_owned_gates(self) -> None:
         plan = {
