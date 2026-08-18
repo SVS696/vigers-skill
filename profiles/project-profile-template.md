@@ -3,6 +3,7 @@ vigers_profile: 2
 profile_id: example
 planning_anchors:
 working_projection: optional
+recommended_document_template: inherit
 automation_timing: inherit
 timing_model: inherit
 progress_tracking: inherit
@@ -53,6 +54,16 @@ document_diagram_publication_source:
 Скопируй этот файл в `<project-root>/.vigers/profile.md`, замени `profile_id` на
 стабильный публично-безопасный идентификатор и заполни секции ниже. Сам
 проектный профиль не входит в общий пакет Vigers.
+
+`recommended_document_template` управляет только стартовой рекомендацией и не
+делает структуру обязательной:
+
+- `inherit` — использовать переносимый шаблон пакета;
+- `none` — не рекомендовать шаблон;
+- `project:<relative/path.md>` — использовать проектный файл внутри корня.
+
+Обязательные разделы и machine checks по-прежнему задаются отдельными
+`document_*` полями и правилами проекта.
 
 ## Область
 

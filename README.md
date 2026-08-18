@@ -153,6 +153,12 @@ python3 scripts/spec_pipeline.py suggest-mode --cwd "$PWD" \
 adapters, architecture gate, compact/block правила, author/project gates и
 publication lifecycle.
 
+Generic profile рекомендует переносимый русскоязычный reader-facing шаблон
+`templates/reader-specification-ru.md`. Это стартовая структура, не жёсткий
+contract: project profile может оставить `inherit`, указать
+`project:<relative/path.md>` или поставить `none`. Обязательность разделов
+задают отдельные `document_*` правила.
+
 ## Установка
 
 ```bash
@@ -172,6 +178,12 @@ mkdir -p .vigers
 cp ~/.codex/skills/vigers/profiles/project-profile-template.md .vigers/profile.md
 python3 ~/.codex/skills/vigers/scripts/spec_pipeline.py validate \
   --project-root "$PWD"
+```
+
+Проверить фактический выбор рекомендуемого шаблона:
+
+```bash
+python3 ~/.codex/skills/vigers/scripts/spec_pipeline.py detect --cwd "$PWD" --json
 ```
 
 Runtime cases рекомендуется хранить в `.vigers/cases/<case-id>/` и исключать из

@@ -111,13 +111,14 @@ description: "Оркестрирует предварительное иссле
 
 **Вход:** известен текущий каталог или корень проекта.
 
-1. Определи профиль детерминированно:
+1. Определи профиль и рекомендацию шаблона детерминированно:
 
    ```text
-   python3 {baseDir}/scripts/spec_pipeline.py detect --cwd "<cwd>"
+   python3 {baseDir}/scripts/spec_pipeline.py detect --cwd "<cwd>" --json
    ```
 
-2. Загрузи ровно один профиль:
+2. Загрузи профиль и, если поле `recommended_document_template` не `null`,
+   указанный в нём файл:
 
    ```text
    python3 {baseDir}/scripts/spec_pipeline.py show-profile auto --cwd "<cwd>"
@@ -125,9 +126,8 @@ description: "Оркестрирует предварительное иссле
 
 3. Маршрутизатор ищет ближайший `<project-root>/.vigers/profile.md`; если файла
    нет, использует встроенный `generic`. Профиль не заменяет ближайшие
-   `AGENTS.md` и `CLAUDE.md`: прочитай их по правилам проекта.
-
-**Выход:** `profile_id`, `project_root` и один загруженный профиль.
+   `AGENTS.md` и `CLAUDE.md`; он может сменить рекомендацию или выбрать `none`.
+**Выход:** `profile_id`, `project_root`, профиль и рекомендация шаблона либо `none`.
 
 ## Фаза 1. Исследуй и согласуй planning-case
 
