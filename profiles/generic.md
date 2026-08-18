@@ -3,6 +3,7 @@ vigers_profile: 2
 profile_id: generic
 planning_anchors:
 working_projection: optional
+recommended_document_template: reader-specification-ru
 automation_timing: inherit
 timing_model: inherit
 progress_tracking: inherit
@@ -108,7 +109,12 @@ Fallback для проекта без специального профиля. �
 
 ## Артефакт и author gates
 
-Если шаблон проекта не найден, используй минимальную структуру:
+Если шаблон проекта не найден, начни с рекомендуемого
+`reader-specification-ru` из `templates/`. Это редактируемая заготовка, а не
+обязательный document contract: удаляй неприменимые разделы, а ближайшие
+проектные инструкции и явно выбранный шаблон имеют приоритет.
+
+Минимально достаточный результат всё равно обязан сохранить:
 
 - контекст и общая бизнес-цель;
 - пользователи;

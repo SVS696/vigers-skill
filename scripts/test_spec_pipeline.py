@@ -536,6 +536,91 @@ class PipelineTests(unittest.TestCase):
             self.assertEqual(selection.profile_id, "generic")
             self.assertEqual(selection.source, "generic")
             self.assertIsNone(selection.project_root)
+            template = selection.recommended_document_template
+            self.assertIsNotNone(template)
+            assert template is not None
+            self.assertEqual(template.template_id, "reader-specification-ru")
+            self.assertEqual(template.source, "profile-package")
+            self.assertEqual(
+                spec_pipeline.display_document_template_file(selection, template),
+                "templates/reader-specification-ru.md",
+            )
+
+    def test_recommended_template_keeps_reader_specification_structure(self) -> None:
+        template = spec_pipeline.package_document_template(
+            "reader-specification-ru",
+            source="test",
+        )
+        text = template.template_path.read_text(encoding="utf-8")
+        for heading in (
+            "## Описание",
+            "## User Story",
+            "## Сценарии",
+            "## Acceptance Criteria",
+            "## Definition of Done",
+            "## Трассировка",
+            "## Границы решения",
+        ):
+            self.assertIn(heading, text)
+        self.assertIn("### GOAL-1.", text)
+        self.assertIn("### US-1.", text)
+        self.assertIn("### AC-1.", text)
+        self.assertIn("### DOD-1.", text)
+
+    def test_project_profile_inherits_package_template_recommendation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            write_profile(root)
+            selection = spec_pipeline.detect_profile(root)
+            template = selection.recommended_document_template
+            self.assertIsNotNone(template)
+            assert template is not None
+            self.assertEqual(template.template_id, "reader-specification-ru")
+            self.assertEqual(template.source, "package-default")
+
+    def test_project_profile_can_disable_template_recommendation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            write_profile(root, extra_frontmatter="recommended_document_template: none")
+            selection = spec_pipeline.detect_profile(root)
+            self.assertIsNone(selection.recommended_document_template)
+
+    def test_project_profile_can_select_project_template(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            project_template = root / "docs" / "specification.md"
+            project_template.parent.mkdir()
+            project_template.write_text("# Project template\n", encoding="utf-8")
+            write_profile(
+                root,
+                extra_frontmatter=(
+                    "recommended_document_template: project:docs/specification.md"
+                ),
+            )
+            selection = spec_pipeline.detect_profile(root)
+            template = selection.recommended_document_template
+            self.assertIsNotNone(template)
+            assert template is not None
+            self.assertEqual(template.source, "project")
+            self.assertEqual(template.template_path, project_template.resolve())
+            self.assertEqual(
+                spec_pipeline.display_document_template_file(selection, template),
+                "docs/specification.md",
+            )
+
+    def test_project_template_must_exist_inside_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "project"
+            root.mkdir()
+            write_profile(
+                root,
+                extra_frontmatter="recommended_document_template: project:../outside.md",
+            )
+            with self.assertRaises(spec_pipeline.PipelineError):
+                spec_pipeline.detect_profile(root)
 
     def test_project_overlay_detection_from_nested_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

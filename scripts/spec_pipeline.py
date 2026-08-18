@@ -28,8 +28,11 @@ from mode_decision import (
 ROOT = Path(__file__).resolve().parent.parent
 GENERIC_PROFILE_PATH = ROOT / "profiles" / "generic.md"
 PROFILE_TEMPLATE_PATH = ROOT / "profiles" / "project-profile-template.md"
+DOCUMENT_TEMPLATES_DIR = ROOT / "templates"
+DEFAULT_DOCUMENT_TEMPLATE_ID = "reader-specification-ru"
 PROJECT_PROFILE_RELATIVE = Path(".vigers") / "profile.md"
 PROFILE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+DOCUMENT_TEMPLATE_ID_RE = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
 WORKING_PROJECTION_POLICIES = {"required", "optional", "disabled"}
 PROJECTION_EVIDENCE_KINDS = {"local_file", "external_readback"}
 PREFERENCES_SCHEMA = 1
@@ -121,6 +124,15 @@ class PipelineError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class RecommendedDocumentTemplate:
+    """One optional, overridable document-template recommendation."""
+
+    template_id: str
+    template_path: Path
+    source: str
+
+
+@dataclass(frozen=True)
 class ExecutionPreferences:
     """Effective optional telemetry and personal task-manager capabilities."""
 
@@ -164,6 +176,7 @@ class ProfileSelection:
     working_projection: str
     execution_preferences: ExecutionPreferences
     document_contract: dict[str, object] | None
+    recommended_document_template: RecommendedDocumentTemplate | None
 
 
 DEFAULT_EXECUTION_PREFERENCES = ExecutionPreferences(
@@ -459,6 +472,65 @@ def parse_working_projection(metadata: dict[str, str], source: Path) -> str:
     return policy
 
 
+def package_document_template(template_id: str, *, source: str) -> RecommendedDocumentTemplate:
+    """Resolve a package-owned template by stable public identifier."""
+    if not DOCUMENT_TEMPLATE_ID_RE.fullmatch(template_id):
+        raise PipelineError(f"invalid document template id: {template_id!r}")
+    template_path = DOCUMENT_TEMPLATES_DIR / f"{template_id}.md"
+    if not template_path.is_file():
+        raise PipelineError(f"document template does not exist: {template_id!r}")
+    return RecommendedDocumentTemplate(template_id, template_path.resolve(), source)
+
+
+def resolve_recommended_document_template(
+    metadata: dict[str, str],
+    source: Path,
+    project_root: Path | None,
+) -> RecommendedDocumentTemplate | None:
+    """Resolve a recommendation without turning it into a mandatory contract."""
+    raw = metadata.get("recommended_document_template", "inherit").strip()
+    value = raw or "inherit"
+    normalized = value.casefold()
+    if normalized == "none":
+        return None
+    if normalized == "inherit":
+        return package_document_template(
+            DEFAULT_DOCUMENT_TEMPLATE_ID,
+            source="package-default",
+        )
+    if normalized.startswith("project:"):
+        if project_root is None:
+            raise PipelineError(
+                f"{source}: project document template requires a project profile"
+            )
+        relative_text = value.split(":", 1)[1].strip()
+        relative = Path(relative_text)
+        if (
+            not relative_text
+            or relative.is_absolute()
+            or ".." in relative.parts
+            or relative.suffix.casefold() != ".md"
+        ):
+            raise PipelineError(f"{source}: invalid project document template path")
+        template_path = (project_root / relative).resolve()
+        try:
+            template_path.relative_to(project_root.resolve())
+        except ValueError as exc:
+            raise PipelineError(
+                f"{source}: project document template escapes project root"
+            ) from exc
+        if not template_path.is_file():
+            raise PipelineError(
+                f"{source}: project document template does not exist: {relative_text}"
+            )
+        return RecommendedDocumentTemplate(
+            f"project:{relative.as_posix()}",
+            template_path,
+            "project",
+        )
+    return package_document_template(value, source="profile-package")
+
+
 def validate_profile_text(
     text: str,
     source: Path,
@@ -523,6 +595,7 @@ def read_project_profile(root: Path) -> ProfileSelection | None:
             profile_text=text,
             source=candidate,
         ),
+        resolve_recommended_document_template(metadata, candidate, root.resolve()),
     )
 
 
@@ -558,6 +631,7 @@ def detect_profile(cwd: Path) -> ProfileSelection:
             profile_text=generic_text,
             source=GENERIC_PROFILE_PATH,
         ),
+        resolve_recommended_document_template(metadata, GENERIC_PROFILE_PATH, None),
     )
 
 
@@ -585,6 +659,7 @@ def select_profile(requested_id: str, cwd: Path) -> ProfileSelection:
                 profile_text=text,
                 source=GENERIC_PROFILE_PATH,
             ),
+            resolve_recommended_document_template(metadata, GENERIC_PROFILE_PATH, None),
         )
 
     detected = detect_profile(cwd)
@@ -601,6 +676,22 @@ def display_profile_file(selection: ProfileSelection) -> str:
     if selection.source == "generic":
         return str(selection.profile_path.relative_to(ROOT))
     return PROJECT_PROFILE_RELATIVE.as_posix()
+
+
+def display_document_template_file(
+    selection: ProfileSelection,
+    template: RecommendedDocumentTemplate,
+) -> str:
+    """Render a portable package path or a project-relative template path."""
+    try:
+        return str(template.template_path.relative_to(ROOT.resolve()))
+    except ValueError:
+        if selection.project_root is None:
+            raise PipelineError("document template is outside the package and project")
+        try:
+            return str(template.template_path.relative_to(selection.project_root.resolve()))
+        except ValueError as exc:
+            raise PipelineError("document template escapes selected project") from exc
 
 
 def write_mode_decision(path: Path, payload: dict[str, object]) -> Path:
@@ -745,6 +836,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
         "references/automation-timing.md",
         "references/convergence-contract.md",
         "references/reader-projection-contract.md",
+        "templates/reader-specification-ru.md",
         "scripts/mode_decision.py",
         "scripts/planning_case.py",
         "scripts/case_pipeline.py",
@@ -892,6 +984,7 @@ def main() -> int:
 
         if args.command == "detect":
             selection = detect_profile(Path(args.cwd))
+            template = selection.recommended_document_template
             payload = {
                 "profile_id": selection.profile_id,
                 "profile_file": display_profile_file(selection),
@@ -903,6 +996,15 @@ def main() -> int:
                 "working_projection": selection.working_projection,
                 "execution_preferences": selection.execution_preferences.as_dict(),
                 "document_contract": selection.document_contract,
+                "recommended_document_template": (
+                    {
+                        "id": template.template_id,
+                        "file": display_document_template_file(selection, template),
+                        "source": template.source,
+                    }
+                    if template is not None
+                    else None
+                ),
             }
             if args.json:
                 print(json.dumps(payload, ensure_ascii=False))
