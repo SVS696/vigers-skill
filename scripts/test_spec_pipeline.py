@@ -501,6 +501,20 @@ class PipelineTests(unittest.TestCase):
             "bounded recovery stops before semantic correction",
             expected["required_output_signals"],
         )
+        self.assertIn(
+            "method-context.* is excluded and its absence is not input-error",
+            expected["required_output_signals"],
+        )
+        for relative in (
+            "agents/codex/vigers-spec-reviewer.toml",
+            "agents/claude/vigers-spec-reviewer.md",
+        ):
+            agent_text = (spec_pipeline.ROOT / relative).read_text(encoding="utf-8")
+            self.assertIn(
+                "review_scope=bounded-recovery|bounded-recovery-final",
+                agent_text,
+            )
+            self.assertIn("отсутствие method context", agent_text)
 
     def test_legacy_transition_has_one_authority_and_retirement(self) -> None:
         eval_path = (

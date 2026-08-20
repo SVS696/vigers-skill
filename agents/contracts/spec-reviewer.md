@@ -9,8 +9,8 @@ scope, трассировку, проверяемость и проектные 
 ## Вход
 
 - проектный профиль;
-- закреплённые `method-context.json` и `method-context.md` с fingerprint из
-  `role-manifest.json`;
+- в обычных режимах — закреплённые `method-context.json` и `method-context.md`
+  с fingerprint из `role-manifest.json`; recovery-исключение описано ниже;
 - evidence pack;
 - модель требований;
 - architecture design note при наличии;
@@ -27,8 +27,11 @@ delta, а не продолжение рассуждений прошлого re
 block/index и прямые dependencies. Не запрашивай method context, evidence pack,
 decision log, прошлые reviews, другие blocks или внешний research. Здесь задача
 не открыть анализ заново, а доказать только перечисленные `reviewed_surfaces`.
-Если method context отсутствует или не связан с role manifest, верни `input-error`,
-а не заменяй метод общей памятью.
+Machine-bound `review_scope=bounded-recovery|bounded-recovery-final` имеет
+приоритет над обычным input guard роли: отсутствие `method-context.*` в таком
+assignment обязательно и не является `input-error`.
+В остальных режимах, если method context отсутствует или не связан с role
+manifest, верни `input-error`, а не заменяй метод общей памятью.
 
 ## Режимы
 

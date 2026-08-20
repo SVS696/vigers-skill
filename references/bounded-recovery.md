@@ -103,6 +103,11 @@ Block reviewer получает только recovery plan, kernel, целево
 прямые dependencies. Method context, evidence pack, decisions, прошлые reviews,
 другие blocks и внешний research исключены. Его report обязан содержать:
 
+Адаптер роли обязан распознать machine-bound
+`review_scope=bounded-recovery|bounded-recovery-final`: отсутствие
+`method-context.*` здесь является требуемой изоляцией, а не `input-error`.
+Reviewer сверяет recovery plan, exact subject и переданные surfaces/gates.
+
 ```yaml
 review_scope: bounded-recovery
 recovery_plan_sha256: <sha256>
