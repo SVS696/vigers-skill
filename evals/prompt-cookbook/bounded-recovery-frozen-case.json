@@ -22,6 +22,7 @@
     ],
     "required_output_signals": [
       "review_scope: bounded-recovery",
+      "method-context.* is excluded and its absence is not input-error",
       "new_findings_policy: user-decision",
       "deferred_findings: [] is required for pass",
       "review_scope: bounded-recovery-final",

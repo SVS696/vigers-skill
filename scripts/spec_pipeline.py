@@ -766,6 +766,15 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             for reference in expected_references:
                 if reference not in instructions:
                     errors.append(f"{codex_relative}: missing agent reference {reference}")
+            if contract == "spec-reviewer":
+                for marker in (
+                    "review_scope=bounded-recovery|bounded-recovery-final",
+                    "отсутствие method context является обязательной изоляцией",
+                ):
+                    if marker not in instructions:
+                        errors.append(
+                            f"{codex_relative}: missing recovery reviewer marker {marker}"
+                        )
         except (PipelineError, tomllib.TOMLDecodeError) as exc:
             errors.append(f"{codex_relative}: {exc}")
 
@@ -785,6 +794,16 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             for reference in expected_references:
                 if reference not in claude_text:
                     errors.append(f"{claude_relative}: missing agent reference {reference}")
+            if contract == "spec-reviewer":
+                for marker in (
+                    "review_scope=bounded-recovery|bounded-recovery-final",
+                    "отсутствие method context",
+                    "является обязательной изоляцией",
+                ):
+                    if marker not in claude_text:
+                        errors.append(
+                            f"{claude_relative}: missing recovery reviewer marker {marker}"
+                        )
         except PipelineError as exc:
             errors.append(str(exc))
 
