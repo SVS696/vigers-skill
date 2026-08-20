@@ -157,6 +157,15 @@ Crosscutting/architecture refresh открывает новый epoch явно �
 subject через отдельный audit receipt. Full-block и crosscutting delta этим
 путём не проходят.
 
+Когда смысловая версия уже явно заморожена, но legacy/high case остался с
+механически stale blocks или незакрытыми финальными gates, не запускай новый
+обычный pipeline по инерции. После user decision используй только явный
+`recovery-plan.json` по `{baseDir}/references/bounded-recovery.md`. Active
+recovery запрещает research и изменение содержания, переаттестует точные block
+surfaces, допускает максимум один retry на assignment и может объединить
+integration/global/project в один fresh final report. Новый существенный finding
+останавливает recovery на `user-decision`; он не открывает remediation сам.
+
 ## Ролевые контексты и review
 
 `case_pipeline.py context` возвращает `role_mode`, `assurance_level`,
@@ -185,7 +194,11 @@ CLI-agent или polling-обвязку ради telemetry. Пока harness н�
 крупный wait slice. После подтверждённого
 transient/tool/transport сбоя допустим один повтор с тем же assignment по
 `prompt-contract.md`; содержательная ошибка и `degraded` coverage повтором не
-маскируются. Причины деградации сохраняются явно.
+маскируются. Причины деградации сохраняются явно. Новый agent-run ledger
+машинно ограничивает один assignment (`role + role_mode + subject_sha256`)
+двумя попытками суммарно; terminal result запрещает ещё один одинаковый запуск.
+Ограничение помечается `supervisor_contract: one-retry-v1` и применяется только
+к новым runs; старые telemetry records без marker остаются совместимыми.
 
 Для воспроизводимости передавай `--prompt-artifact` и `--output-artifact` на уже
 существующие case-owned файлы. Ledger хранит refs и SHA-256, а не вторую копию

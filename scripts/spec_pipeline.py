@@ -115,6 +115,7 @@ REQUIRED_PROMPT_EVALS = (
     "evals/prompt-cookbook/human-only-timing-boundary.json",
     "evals/prompt-cookbook/native-simplicity-with-control.json",
     "evals/prompt-cookbook/process-yagni-no-new-gate.json",
+    "evals/prompt-cookbook/bounded-recovery-frozen-case.json",
 )
 PUBLIC_FORBIDDEN_MARKERS = tuple(
     "".join(parts) for parts in (("R", "TL"), ("H", "ÆZE"), ("HA", "EZE"))
@@ -838,6 +839,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
         "references/runtime-preferences.md",
         "references/automation-timing.md",
         "references/convergence-contract.md",
+        "references/bounded-recovery.md",
         "references/reader-projection-contract.md",
         "templates/reader-specification-ru.md",
         "scripts/mode_decision.py",
@@ -865,6 +867,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/references/case-state.md",
             "{baseDir}/references/block-contract.md",
             "{baseDir}/references/convergence-contract.md",
+            "{baseDir}/references/bounded-recovery.md",
             "{baseDir}/references/reader-projection-contract.md",
             "{baseDir}/references/runtime-preferences.md",
             "{baseDir}/references/automation-timing.md",
@@ -881,6 +884,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/evals/prompt-cookbook/targeted-remediation-preserves-coverage.json",
             "{baseDir}/evals/prompt-cookbook/risk-first-batched-convergence.json",
             "{baseDir}/evals/prompt-cookbook/execution-economy-terminal-green.json",
+            "{baseDir}/evals/prompt-cookbook/bounded-recovery-frozen-case.json",
             "{baseDir}/scripts/spec_pipeline.py",
             "{baseDir}/scripts/case_pipeline.py",
             "{baseDir}/scripts/timing_model.py",

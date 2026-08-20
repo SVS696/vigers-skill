@@ -63,6 +63,8 @@ WORKING_PROJECTION_JSON = "working-projection.json"
 WORKING_PROJECTION_SCHEMA = 1
 AGENT_LEDGER_JSON = "agent-ledger.json"
 AGENT_LEDGER_SCHEMA = 1
+RECOVERY_PLAN_JSON = "recovery-plan.json"
+RECOVERY_PLAN_SCHEMA = 1
 RISK_PREFLIGHT_SCHEMA = 1
 PROJECT_CONFORMANCE_CONTRACT_JSON = "project-conformance-contract.json"
 EXTERNAL_READBACK_RECEIPT_SCHEMA = 1
@@ -72,6 +74,7 @@ FINDING_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 AGENT_RUN_ID_RE = re.compile(r"^AR-[0-9]{4,}$")
 REVIEW_LENS_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}@[1-9][0-9]*$")
 RISK_SURFACE_RE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
+RECOVERY_SCOPE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 SEMANTIC_ID_RE = re.compile(
     r"^(GOAL|ACT|SCN|RULE|DATA|STATE|IF|QUAL|REQ|AC|DOD|ASM|Q|DEC|CON)-"
     r"(B[0-9]{2,3})-[0-9]{3}$"
@@ -179,6 +182,13 @@ REMEDIATION_CONTRACT_V1 = "targeted-v1"
 REMEDIATION_CONTRACT_V2 = "batched-v2"
 MAX_REMEDIATION_BATCHES = 2
 AGENT_RUN_STATUSES = {"completed", "degraded", "failed", "timed_out"}
+AGENT_SUPERVISOR_CONTRACT = "one-retry-v1"
+RECOVERY_STATUSES = {"active", "complete", "cancelled"}
+RECOVERY_COMBINED_GATES = (
+    "integration_review",
+    "global_review",
+    "project_conformance",
+)
 
 
 class CaseError(RuntimeError):
@@ -644,6 +654,180 @@ def projection_sync_policy(manifest: dict[str, Any]) -> str:
     return value if value in PROJECTION_SYNC_POLICIES else "per-block"
 
 
+def bounded_recovery_binding(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a structurally plausible recovery binding, if present."""
+    value = manifest.get("bounded_recovery")
+    return value if isinstance(value, dict) else None
+
+
+def active_bounded_recovery(manifest: dict[str, Any]) -> dict[str, Any] | None:
+    """Return the active recovery binding without treating legacy cases as recovery cases."""
+    binding = bounded_recovery_binding(manifest)
+    return binding if binding is not None and binding.get("status") == "active" else None
+
+
+def semantic_index_recovery_sha256(path: Path) -> str:
+    """Hash semantic index meaning while excluding the carried-forward kernel revision."""
+    payload = read_json(path)
+    if not isinstance(payload, dict):
+        raise CaseError(f"Semantic index must be an object: {path}")
+    semantic_payload = {key: value for key, value in payload.items() if key != "kernel_revision"}
+    encoded = json.dumps(
+        semantic_payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def recovery_plan_errors(
+    payload: Any,
+    *,
+    case_id: str,
+    block_ids: set[str],
+) -> list[str]:
+    """Validate the immutable, user-approved boundary for a frozen recovery run."""
+    if not isinstance(payload, dict) or payload.get("schema") != RECOVERY_PLAN_SCHEMA:
+        return ["recovery-plan.json has unsupported schema"]
+    errors: list[str] = []
+    if payload.get("case_id") != case_id:
+        errors.append("recovery plan belongs to another case")
+    if not isinstance(payload.get("reason"), str) or not payload["reason"].strip():
+        errors.append("recovery plan requires a reason")
+    if payload.get("requested_terminal_state") != "local-green":
+        errors.append("recovery plan terminal state must be local-green")
+    revision = payload.get("kernel_revision")
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision < 1:
+        errors.append("recovery plan has invalid kernel_revision")
+    for field in ("kernel_sha256", "draft_sha256"):
+        if not isinstance(payload.get(field), str) or not SHA256_RE.fullmatch(payload[field]):
+            errors.append(f"recovery plan has invalid {field}")
+
+    block_scopes = payload.get("block_scopes")
+    if not isinstance(block_scopes, dict) or not block_scopes:
+        errors.append("recovery plan requires non-empty block_scopes")
+    else:
+        unknown = sorted(set(block_scopes) - block_ids)
+        if unknown:
+            errors.append("recovery plan references unknown blocks: " + ", ".join(unknown))
+        for block_id, scopes in block_scopes.items():
+            if not BLOCK_ID_RE.fullmatch(str(block_id)):
+                errors.append(f"recovery plan has invalid block id {block_id!r}")
+                continue
+            if (
+                not isinstance(scopes, list)
+                or not scopes
+                or any(
+                    not isinstance(item, str) or not RECOVERY_SCOPE_RE.fullmatch(item)
+                    for item in scopes
+                )
+                or len(scopes) != len(set(scopes))
+            ):
+                errors.append(f"recovery plan {block_id} scopes must be unique stable ids")
+
+    allowed_gates = payload.get("allowed_gates")
+    if (
+        not isinstance(allowed_gates, list)
+        or not allowed_gates
+        or any(item not in GATE_NAMES for item in allowed_gates)
+        or len(allowed_gates) != len(set(allowed_gates))
+    ):
+        errors.append("recovery plan allowed_gates must be unique known gates")
+    combine_final = payload.get("combine_final_review")
+    if not isinstance(combine_final, bool):
+        errors.append("recovery plan combine_final_review must be boolean")
+    elif combine_final and isinstance(allowed_gates, list):
+        missing = [gate for gate in RECOVERY_COMBINED_GATES if gate not in allowed_gates]
+        if missing:
+            errors.append(
+                "combined recovery final review requires gates: " + ", ".join(missing)
+            )
+    if payload.get("new_findings_policy") != "user-decision":
+        errors.append("recovery plan new_findings_policy must be user-decision")
+    if payload.get("research") != "forbidden":
+        errors.append("recovery plan research must be forbidden")
+    if payload.get("content_mutation") != "forbidden":
+        errors.append("recovery plan content_mutation must be forbidden")
+    if payload.get("kernel_refresh") != "forbidden":
+        errors.append("recovery plan kernel_refresh must be forbidden")
+    if payload.get("max_agent_attempts_per_assignment") != 2:
+        errors.append("recovery plan permits exactly two agent attempts per assignment")
+
+    deferred = payload.get("deferred_findings", [])
+    if not isinstance(deferred, list):
+        errors.append("recovery plan deferred_findings must be an array")
+    else:
+        seen: set[str] = set()
+        for item in deferred:
+            if not isinstance(item, dict):
+                errors.append("recovery plan deferred findings must be objects")
+                continue
+            finding_id = item.get("id")
+            severity = item.get("severity")
+            resolution = item.get("resolution")
+            if not isinstance(finding_id, str) or not FINDING_ID_RE.fullmatch(finding_id):
+                errors.append(f"recovery plan has invalid deferred finding {finding_id!r}")
+                continue
+            if finding_id in seen:
+                errors.append(f"recovery plan duplicates deferred finding {finding_id}")
+            seen.add(finding_id)
+            if severity not in {"blocker", "major", "minor"}:
+                errors.append(f"recovery plan {finding_id} has invalid severity")
+            if resolution not in {"user-decision", "residual"}:
+                errors.append(f"recovery plan {finding_id} has invalid resolution")
+            if resolution == "residual" and severity != "minor":
+                errors.append(f"recovery plan {finding_id} residual is allowed only for minor")
+            if not isinstance(item.get("reason"), str) or not item["reason"].strip():
+                errors.append(f"recovery plan {finding_id} requires a reason")
+    return errors
+
+
+def load_bounded_recovery(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    require_active: bool = False,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Load and bind one immutable recovery plan."""
+    binding = bounded_recovery_binding(manifest)
+    if binding is None:
+        raise CaseError("Case has no bounded recovery plan")
+    if binding.get("status") not in RECOVERY_STATUSES:
+        raise CaseError("Bounded recovery status is invalid")
+    if require_active and binding.get("status") != "active":
+        raise CaseError("Bounded recovery is not active")
+    relative = binding.get("path")
+    if relative != RECOVERY_PLAN_JSON:
+        raise CaseError("Bounded recovery path is invalid")
+    path = case_file(root, relative)
+    if not path.is_file() or sha256(path) != binding.get("sha256"):
+        raise CaseError("Bounded recovery plan is missing or changed")
+    plan = read_json(path)
+    errors = recovery_plan_errors(
+        plan,
+        case_id=str(manifest.get("case_id")),
+        block_ids=set(blocks_by_id(ledger)),
+    )
+    if errors:
+        raise CaseError("Invalid bounded recovery plan: " + "; ".join(errors))
+    open_gates = [
+        gate_name
+        for gate_name in GATE_NAMES
+        if manifest.get("gates", {}).get(gate_name, {}).get("status")
+        not in {"pass", "not_required"}
+    ]
+    omitted_gates = [
+        gate_name for gate_name in open_gates if gate_name not in plan["allowed_gates"]
+    ]
+    if omitted_gates:
+        raise CaseError(
+            "Recovery plan omits open gates: " + ", ".join(omitted_gates)
+        )
+    return binding, plan
+
+
 def runtime_automation_plan(
     automation_plan: dict[str, Any] | None,
     policy: str,
@@ -742,6 +926,7 @@ def role_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         "planning_role_context",
         "working_projection",
         "project_conformance_contract",
+        "recovery_plan",
         "evidence",
         "decisions",
         "draft",
@@ -779,6 +964,8 @@ def role_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
             tracking=tracking_policy(manifest),
             projection_sync=projection_sync_policy(manifest),
         )
+    if isinstance(manifest.get("bounded_recovery"), dict):
+        result["bounded_recovery"] = manifest["bounded_recovery"]
     encoded = json.dumps(
         result,
         ensure_ascii=False,
@@ -1687,6 +1874,255 @@ def load_case(root: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]:
     return root, manifest, ledger
 
 
+def begin_bounded_recovery(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    plan_path: Path,
+) -> dict[str, Any]:
+    """Bind an explicit frozen-version recovery plan without migrating case history."""
+    previous = bounded_recovery_binding(manifest)
+    if previous is not None and previous.get("status") == "active":
+        raise CaseError("Bounded recovery is already active")
+    ensure_kernel_synced(root, manifest)
+    draft_path = case_file(root, manifest["artifacts"]["draft"])
+    if not artifact_ready(draft_path):
+        raise CaseError("Bounded recovery requires a complete frozen draft")
+    source = plan_path.expanduser().resolve()
+    plan = read_json(source)
+    blocks = blocks_by_id(ledger)
+    errors = recovery_plan_errors(
+        plan,
+        case_id=str(manifest.get("case_id")),
+        block_ids=set(blocks),
+    )
+    if errors:
+        raise CaseError("Invalid bounded recovery plan: " + "; ".join(errors))
+    if plan["kernel_revision"] != manifest["kernel"]["revision"]:
+        raise CaseError("Recovery plan kernel revision is stale")
+    if plan["kernel_sha256"] != manifest["kernel"]["sha256"]:
+        raise CaseError("Recovery plan kernel hash is stale")
+    if plan["draft_sha256"] != sha256(draft_path):
+        raise CaseError("Recovery plan draft hash is stale")
+
+    baselines: dict[str, dict[str, Any]] = {}
+    for block_id in plan["block_scopes"]:
+        block = blocks[block_id]
+        if block.get("status") not in {"analyzed", "reviewed", "integrated", "stale"}:
+            raise CaseError(
+                f"{block_id}: recovery requires analyzed, reviewed, integrated, or stale status"
+            )
+        if active_block_remediation(block) is not None:
+            raise CaseError(f"{block_id}: finish or stop active remediation before recovery")
+        artifact = case_file(root, block["artifact"])
+        index = case_file(root, block["semantic_index"])
+        if not artifact_ready(artifact) or not index.is_file():
+            raise CaseError(f"{block_id}: recovery requires complete block artifacts")
+        baselines[block_id] = {
+            "status": block.get("status"),
+            "artifact_sha256": sha256(artifact),
+            "semantic_index_sha256": semantic_index_recovery_sha256(index),
+        }
+
+    if previous is not None:
+        history = manifest.setdefault("bounded_recovery_history", [])
+        revision = len(history) + 1
+        archive_relative = f"recovery/history/recovery-plan-r{revision:03d}.json"
+        archive = case_file(root, archive_relative)
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        old_plan = case_file(root, str(previous.get("path", "")))
+        if old_plan.is_file():
+            immutable_copy(old_plan, archive)
+        archived = dict(previous)
+        archived["path"] = archive_relative
+        archived["sha256"] = sha256(archive)
+        history.append(archived)
+
+    canonical_path = case_file(root, RECOVERY_PLAN_JSON)
+    atomic_json(canonical_path, plan)
+    binding = {
+        "schema": RECOVERY_PLAN_SCHEMA,
+        "status": "active",
+        "path": RECOVERY_PLAN_JSON,
+        "sha256": sha256(canonical_path),
+        "started_at": now_utc(),
+        "completed_at": None,
+        "note": None,
+        "kernel_revision": plan["kernel_revision"],
+        "kernel_sha256": plan["kernel_sha256"],
+        "draft_sha256": plan["draft_sha256"],
+        "block_scopes": plan["block_scopes"],
+        "allowed_gates": plan["allowed_gates"],
+        "combine_final_review": plan["combine_final_review"],
+        "new_findings_policy": plan["new_findings_policy"],
+        "block_baselines": baselines,
+    }
+    manifest["bounded_recovery"] = binding
+    manifest.setdefault("artifacts", {})["recovery_plan"] = RECOVERY_PLAN_JSON
+    manifest["events"].append(
+        event(
+            "bounded_recovery_started",
+            plan_sha256=binding["sha256"],
+            blocks=sorted(plan["block_scopes"]),
+            allowed_gates=plan["allowed_gates"],
+        )
+    )
+    save_case(root, manifest, ledger)
+    return binding
+
+
+def bounded_recovery_errors(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    final: bool,
+) -> list[str]:
+    """Detect plan drift and semantic mutation during a bounded recovery."""
+    if manifest.get("bounded_recovery") is None:
+        return []
+    try:
+        binding, plan = load_bounded_recovery(root, manifest, ledger)
+    except CaseError as exc:
+        return [str(exc)]
+    errors: list[str] = []
+    for field in (
+        "block_scopes",
+        "allowed_gates",
+        "combine_final_review",
+        "new_findings_policy",
+    ):
+        if binding.get(field) != plan.get(field):
+            errors.append(f"bounded recovery binding differs from plan: {field}")
+    if binding.get("status") == "active":
+        if manifest.get("kernel", {}).get("revision") != plan["kernel_revision"]:
+            errors.append("bounded recovery kernel revision changed")
+        kernel_path = case_file(root, str(manifest.get("kernel", {}).get("path", "")))
+        if (
+            manifest.get("kernel", {}).get("sha256") != plan["kernel_sha256"]
+            or not kernel_path.is_file()
+            or sha256(kernel_path) != plan["kernel_sha256"]
+        ):
+            errors.append("bounded recovery kernel content changed")
+        draft = case_file(root, manifest["artifacts"]["draft"])
+        if not draft.is_file() or sha256(draft) != plan["draft_sha256"]:
+            errors.append("bounded recovery draft content changed")
+        baselines = binding.get("block_baselines")
+        if not isinstance(baselines, dict):
+            errors.append("bounded recovery block baselines are invalid")
+        else:
+            blocks = blocks_by_id(ledger)
+            for block_id in plan["block_scopes"]:
+                baseline = baselines.get(block_id)
+                block = blocks.get(block_id)
+                if not isinstance(baseline, dict) or block is None:
+                    errors.append(f"bounded recovery baseline is missing for {block_id}")
+                    continue
+                artifact = case_file(root, block["artifact"])
+                index = case_file(root, block["semantic_index"])
+                if not artifact.is_file() or sha256(artifact) != baseline.get("artifact_sha256"):
+                    errors.append(f"bounded recovery block content changed: {block_id}")
+                if (
+                    not index.is_file()
+                    or semantic_index_recovery_sha256(index)
+                    != baseline.get("semantic_index_sha256")
+                ):
+                    errors.append(f"bounded recovery semantic index changed: {block_id}")
+        if final:
+            errors.append("bounded recovery must be completed before final validation")
+    return errors
+
+
+def rebase_bounded_recovery_block(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    block_id: str,
+) -> None:
+    """Carry a frozen stale block onto the pinned kernel before bounded re-review."""
+    binding, plan = load_bounded_recovery(root, manifest, ledger, require_active=True)
+    if block_id not in plan["block_scopes"]:
+        raise CaseError(f"{block_id}: outside bounded recovery scope")
+    block = blocks_by_id(ledger)[block_id]
+    if block.get("status") != "stale":
+        raise CaseError(f"{block_id}: recovery rebase requires stale status")
+    baseline = binding["block_baselines"][block_id]
+    artifact = case_file(root, block["artifact"])
+    index_path = case_file(root, block["semantic_index"])
+    if sha256(artifact) != baseline["artifact_sha256"]:
+        raise CaseError(f"{block_id}: block content changed after recovery plan")
+    if semantic_index_recovery_sha256(index_path) != baseline["semantic_index_sha256"]:
+        raise CaseError(f"{block_id}: semantic index changed after recovery plan")
+    index = read_json(index_path)
+    index["kernel_revision"] = manifest["kernel"]["revision"]
+    atomic_json(index_path, index)
+    block["kernel_revision"] = manifest["kernel"]["revision"]
+    block["kernel_sha256"] = manifest["kernel"]["sha256"]
+    block["artifact_sha256"] = sha256(artifact)
+    block["index_sha256"] = sha256(index_path)
+    block["review_sha256"] = None
+    block["status"] = "analyzed"
+    block["note"] = "frozen content carried forward for bounded recovery review"
+    block["updated_at"] = now_utc()
+    manifest["events"].append(event("bounded_recovery_block_rebased", block_id=block_id))
+    save_case(root, manifest, ledger)
+
+
+def stop_bounded_recovery(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    reason: str,
+) -> None:
+    """Stop a recovery when a new decision or semantic correction is required."""
+    binding = active_bounded_recovery(manifest)
+    if binding is None:
+        raise CaseError("Bounded recovery is not active")
+    if not reason.strip():
+        raise CaseError("Stopping bounded recovery requires a reason")
+    binding.update(status="cancelled", completed_at=now_utc(), note=reason.strip())
+    manifest["events"].append(event("bounded_recovery_cancelled", reason=reason.strip()))
+    save_case(root, manifest, ledger)
+
+
+def complete_bounded_recovery(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    note: str,
+) -> None:
+    """Close recovery only after every declared block and gate has current evidence."""
+    binding, plan = load_bounded_recovery(root, manifest, ledger, require_active=True)
+    drift = bounded_recovery_errors(root, manifest, ledger, final=False)
+    if drift:
+        raise CaseError("Bounded recovery drift: " + "; ".join(drift))
+    blocks = blocks_by_id(ledger)
+    incomplete = [
+        block_id
+        for block_id in plan["block_scopes"]
+        if blocks[block_id].get("status") != "integrated"
+    ]
+    if incomplete:
+        raise CaseError("Bounded recovery blocks are incomplete: " + ", ".join(incomplete))
+    open_gates = [
+        gate_name
+        for gate_name in GATE_NAMES
+        if manifest.get("gates", {}).get(gate_name, {}).get("status")
+        not in {"pass", "not_required"}
+    ]
+    if open_gates:
+        raise CaseError("Bounded recovery gates are incomplete: " + ", ".join(open_gates))
+    binding.update(status="complete", completed_at=now_utc(), note=note.strip() or None)
+    manifest["events"].append(
+        event("bounded_recovery_completed", plan_sha256=binding["sha256"], note=note.strip())
+    )
+    save_case(root, manifest, ledger)
+
+
 def _external_binding_identity(
     payload: dict[str, Any],
 ) -> dict[str, tuple[str, str, str | None]]:
@@ -1722,6 +2158,8 @@ def migrate_planning_handoff(
     normal evidence/read-back commands; the archived ledger retains earlier
     wall-clock observations.
     """
+    if active_bounded_recovery(manifest) is not None:
+        raise CaseError("Planning migration is forbidden during bounded recovery")
     if not reason.strip():
         raise CaseError("Planning handoff migration requires a reason")
     in_progress = [
@@ -2030,6 +2468,11 @@ def validate_agent_ledger(payload: Any, *, case_id: str) -> list[str]:
         retries = run.get("retries")
         if not isinstance(retries, int) or isinstance(retries, bool) or retries < 0:
             errors.append(f"{label} has invalid retries")
+        elif run.get("supervisor_contract") == AGENT_SUPERVISOR_CONTRACT and retries > 1:
+            errors.append(f"{label} exceeds the one-retry policy")
+        supervisor_contract = run.get("supervisor_contract")
+        if supervisor_contract is not None and supervisor_contract != AGENT_SUPERVISOR_CONTRACT:
+            errors.append(f"{label} has invalid supervisor_contract")
         findings = run.get("findings")
         if not isinstance(findings, dict):
             errors.append(f"{label} findings must be an object")
@@ -2104,6 +2547,34 @@ def validate_agent_ledger(payload: Any, *, case_id: str) -> list[str]:
                     verified = dispositions.get("verified")
                     if isinstance(accepted, int) and isinstance(verified, int) and verified > accepted:
                         errors.append(f"{label} verification verified exceeds accepted")
+    attempts_by_assignment: dict[tuple[str, str, str], int] = {}
+    terminal_assignments: set[tuple[str, str, str]] = set()
+    for index, run in enumerate(runs, start=1):
+        if (
+            not isinstance(run, dict)
+            or not isinstance(run.get("run_id"), str)
+            or not AGENT_RUN_ID_RE.fullmatch(run["run_id"])
+            or run.get("supervisor_contract") != AGENT_SUPERVISOR_CONTRACT
+            or not isinstance(run.get("retries"), int)
+            or isinstance(run.get("retries"), bool)
+        ):
+            continue
+        key = (
+            str(run.get("role")),
+            str(run.get("role_mode")),
+            str(run.get("subject_sha256")),
+        )
+        if key in terminal_assignments:
+            errors.append(
+                f"agent-ledger run {index} repeats a terminal assignment"
+            )
+        attempts_by_assignment[key] = attempts_by_assignment.get(key, 0) + 1 + run["retries"]
+        if attempts_by_assignment[key] > 2:
+            errors.append(
+                f"agent-ledger run {index} exceeds two attempts for one assignment"
+            )
+        if run.get("status", "completed") in {"completed", "degraded"}:
+            terminal_assignments.add(key)
     return errors
 
 
@@ -2214,6 +2685,8 @@ def record_agent_run(
     for label, value in integer_fields.items():
         if value is not None and (not isinstance(value, int) or isinstance(value, bool) or value < 0):
             raise CaseError(f"Agent telemetry {label} must be a non-negative integer or null")
+    if retries > 1:
+        raise CaseError("Agent telemetry permits at most one retry")
     if duration_seconds < 0:
         raise CaseError("Agent telemetry duration must be non-negative")
     if wait_seconds is not None and (
@@ -2241,6 +2714,32 @@ def record_agent_run(
     ledger_errors = validate_agent_ledger(payload, case_id=str(manifest.get("case_id")))
     if ledger_errors:
         raise CaseError("agent-ledger.json is invalid: " + "; ".join(ledger_errors))
+    assignment = (role.strip(), role_mode.strip(), normalized_subject)
+    attempts = 0
+    terminal = False
+    for previous in payload["runs"]:
+        if (
+            not isinstance(previous, dict)
+            or not isinstance(previous.get("run_id"), str)
+            or previous.get("supervisor_contract") != AGENT_SUPERVISOR_CONTRACT
+        ):
+            continue
+        previous_assignment = (
+            str(previous.get("role")),
+            str(previous.get("role_mode")),
+            str(previous.get("subject_sha256")),
+        )
+        if previous_assignment != assignment:
+            continue
+        attempts += 1 + int(previous.get("retries", 0))
+        terminal = terminal or previous.get("status", "completed") in {
+            "completed",
+            "degraded",
+        }
+    if terminal:
+        raise CaseError("Agent assignment already has a terminal result")
+    if attempts + 1 + retries > 2:
+        raise CaseError("Agent assignment exceeded one retry")
     run = {
         "run_id": next_agent_run_id(payload["runs"]),
         "at": now_utc(),
@@ -2254,6 +2753,7 @@ def record_agent_run(
         "output_tokens": output_tokens,
         "duration_seconds": duration_seconds,
         "retries": retries,
+        "supervisor_contract": AGENT_SUPERVISOR_CONTRACT,
         "tool_calls": tool_calls,
         "poll_calls": poll_calls,
         "wait_seconds": wait_seconds,
@@ -2531,6 +3031,8 @@ def add_block(
     risk_surfaces: list[str] | None = None,
 ) -> None:
     """Add one semantic block to the dependency ledger."""
+    if active_bounded_recovery(manifest) is not None:
+        raise CaseError("Adding blocks is forbidden during bounded recovery")
     if manifest.get("mode") != "block":
         raise CaseError("Blocks can only be added in block mode")
     if not BLOCK_ID_RE.fullmatch(block_id):
@@ -2629,6 +3131,8 @@ def declare_block_risks(
     reason: str,
 ) -> list[str]:
     """Add newly evidenced risk surfaces without hand-editing the semantic ledger."""
+    if active_bounded_recovery(manifest) is not None:
+        raise CaseError("Declaring new risks requires stopping bounded recovery")
     ensure_kernel_synced(root, manifest)
     blocks = blocks_by_id(ledger)
     if block_id not in blocks:
@@ -2783,6 +3287,8 @@ def refresh_kernel(
     reason: str | None = None,
 ) -> list[str]:
     """Advance kernel revision with explicit impact for new assurance-aware cases."""
+    if active_bounded_recovery(manifest) is not None:
+        raise CaseError("Kernel refresh is forbidden during bounded recovery")
     _, current_hash = current_kernel(root, manifest)
     if current_hash == manifest["kernel"]["sha256"]:
         return []
@@ -3193,6 +3699,8 @@ def record_risk_preflight(
     evidence: str,
 ) -> dict[str, Any]:
     """Bind one complete risk-first architecture pass before high-risk authoring."""
+    if active_bounded_recovery(manifest) is not None:
+        raise CaseError("Risk preflight is forbidden during bounded recovery")
     ensure_kernel_synced(root, manifest)
     evidence_path = case_file(root, evidence)
     if not artifact_ready(evidence_path):
@@ -3510,6 +4018,10 @@ def begin_block_remediation(
     batch_complete: bool = False,
 ) -> dict[str, Any]:
     """Open a bounded correction while preserving prior review and subject snapshots."""
+    if active_bounded_recovery(manifest) is not None:
+        raise CaseError(
+            "Semantic remediation requires stopping bounded recovery and recording a new decision"
+        )
     ensure_kernel_synced(root, manifest)
     blocks = blocks_by_id(ledger)
     if block_id not in blocks:
@@ -3769,6 +4281,107 @@ def parse_report_list(text: str, field: str) -> list[str] | None:
     ]
 
 
+def report_scalar(text: str, field: str) -> str | None:
+    """Read one simple machine-contract field from a Markdown report."""
+    match = re.search(rf"(?m)^\s*{re.escape(field)}\s*:\s*([^\n]+?)\s*$", text)
+    return match.group(1).strip().strip("'\"") if match else None
+
+
+def completed_agent_run_errors(
+    root: Path,
+    manifest: dict[str, Any],
+    *,
+    run_id: str | None,
+    role: str,
+    role_mode: str,
+    subject_sha256: str,
+) -> list[str]:
+    """Require one completed agent run bound to the exact recovery assignment."""
+    if run_id is None or not AGENT_RUN_ID_RE.fullmatch(run_id):
+        return ["report requires a valid agent_run_id"]
+    relative = manifest.get("artifacts", {}).get("agent_ledger")
+    if not isinstance(relative, str):
+        return ["case has no agent ledger"]
+    payload = read_json(case_file(root, relative))
+    for run in payload.get("runs", []):
+        if not isinstance(run, dict) or run.get("run_id") != run_id:
+            continue
+        errors: list[str] = []
+        if run.get("role") != role or run.get("role_mode") != role_mode:
+            errors.append("agent run role does not match recovery assignment")
+        if run.get("subject_sha256") != subject_sha256:
+            errors.append("agent run subject does not match recovery assignment")
+        if run.get("status") != "completed":
+            errors.append("recovery evidence requires a completed agent run")
+        return errors
+    return [f"agent run {run_id} is not recorded"]
+
+
+def recovery_block_subject_hash(
+    manifest: dict[str, Any],
+    block: dict[str, Any],
+    plan_sha256: str,
+) -> str:
+    """Hash exactly one frozen block recovery assignment."""
+    digest = hashlib.sha256()
+    for value in (
+        "bounded-recovery-block-v1",
+        str(manifest.get("case_id")),
+        plan_sha256,
+        str(manifest.get("kernel", {}).get("sha256")),
+        str(block.get("id")),
+        str(block.get("artifact_sha256")),
+        str(block.get("index_sha256")),
+    ):
+        digest.update(value.encode("utf-8"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def recovery_block_review_errors(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    block: dict[str, Any],
+    report_path: Path,
+) -> list[str]:
+    """Validate exact-surface read-only evidence for one recovery block."""
+    binding, plan = load_bounded_recovery(root, manifest, ledger, require_active=True)
+    block_id = str(block.get("id"))
+    expected_surfaces = plan["block_scopes"].get(block_id)
+    if expected_surfaces is None:
+        return [f"{block_id} is outside bounded recovery scope"]
+    text = report_path.read_text(encoding="utf-8")
+    subject = recovery_block_subject_hash(manifest, block, binding["sha256"])
+    errors: list[str] = []
+    expected_scalars = {
+        "review_scope": "bounded-recovery",
+        "recovery_plan_sha256": binding["sha256"],
+        "recovery_block": block_id,
+        "recovery_subject_sha256": subject,
+        "new_findings_policy": "user-decision",
+        "decision": "pass",
+    }
+    for field, expected in expected_scalars.items():
+        if report_scalar(text, field) != expected:
+            errors.append(f"recovery report requires {field}: {expected}")
+    if parse_report_list(text, "reviewed_surfaces") != expected_surfaces:
+        errors.append("recovery report reviewed_surfaces do not match the plan")
+    if parse_report_list(text, "deferred_findings") != []:
+        errors.append("recovery pass requires deferred_findings: []")
+    errors.extend(
+        completed_agent_run_errors(
+            root,
+            manifest,
+            run_id=report_scalar(text, "agent_run_id"),
+            role="spec-reviewer",
+            role_mode="block",
+            subject_sha256=subject,
+        )
+    )
+    return errors
+
+
 def remediation_review_errors(
     root: Path,
     block: dict[str, Any],
@@ -3933,6 +4546,21 @@ def transition_block(
         raise CaseError(f"Invalid block status: {new_status}")
     block = blocks[block_id]
     old_status = block["status"]
+    recovery = active_bounded_recovery(manifest)
+    if recovery is not None:
+        _, recovery_plan = load_bounded_recovery(
+            root, manifest, ledger, require_active=True
+        )
+        if block_id not in recovery_plan["block_scopes"]:
+            raise CaseError(f"{block_id}: outside bounded recovery scope")
+        if old_status == "stale":
+            raise CaseError(
+                f"{block_id}: use rebase-recovery-block for frozen stale content"
+            )
+        if new_status in {"ready", "in_progress"}:
+            raise CaseError(
+                f"{block_id}: content authoring is forbidden during bounded recovery"
+            )
     if new_status not in ALLOWED_TRANSITIONS[old_status]:
         raise CaseError(f"Invalid transition {old_status} -> {new_status} for {block_id}")
     if (
@@ -4020,6 +4648,16 @@ def transition_block(
             raise CaseError(f"{block_id}: semantic index changed after analyzed state")
         remediation_errors = remediation_review_errors(root, block, review_path)
         remediation_errors.extend(risk_review_errors(root, manifest, block, review_path))
+        if recovery is not None:
+            remediation_errors.extend(
+                recovery_block_review_errors(
+                    root,
+                    manifest,
+                    ledger,
+                    block,
+                    review_path,
+                )
+            )
         open_risk_findings = risk_review_open_findings(block, review_path)
         if open_risk_findings:
             remediation_errors.append(
@@ -4186,6 +4824,72 @@ def snapshot_review_evidence(root: Path, gate_name: str, source: Path) -> str:
     return target.relative_to(root).as_posix()
 
 
+def recovery_final_subject_hash(
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    binding: dict[str, Any],
+) -> str:
+    """Hash the exact frozen whole-case subject for the combined recovery review."""
+    digest = hashlib.sha256()
+    for value in (
+        "bounded-recovery-final-v1",
+        str(manifest.get("case_id")),
+        str(binding.get("sha256")),
+        str(manifest.get("kernel", {}).get("sha256")),
+        str(binding.get("draft_sha256")),
+    ):
+        digest.update(value.encode("utf-8"))
+        digest.update(b"\0")
+    for block in sorted(ledger.get("blocks", []), key=lambda item: str(item.get("id"))):
+        for field in ("id", "artifact_sha256", "index_sha256"):
+            digest.update(str(block.get(field)).encode("utf-8"))
+            digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def recovery_final_report_errors(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    report_path: Path,
+) -> list[str]:
+    """Validate one combined final report against the pinned recovery subject."""
+    binding, plan = load_bounded_recovery(root, manifest, ledger, require_active=True)
+    text = report_path.read_text(encoding="utf-8")
+    subject = recovery_final_subject_hash(manifest, ledger, binding)
+    errors: list[str] = []
+    expected_scalars = {
+        "review_scope": "bounded-recovery-final",
+        "recovery_plan_sha256": binding["sha256"],
+        "recovery_subject_sha256": subject,
+        "new_findings_policy": "user-decision",
+        "decision": "pass",
+    }
+    for field, expected in expected_scalars.items():
+        if report_scalar(text, field) != expected:
+            errors.append(f"recovery final report requires {field}: {expected}")
+    if parse_report_list(text, "covered_gates") != list(RECOVERY_COMBINED_GATES):
+        errors.append(
+            "recovery final report covered_gates must be: "
+            + ", ".join(RECOVERY_COMBINED_GATES)
+        )
+    if parse_report_list(text, "deferred_findings") != []:
+        errors.append("recovery final pass requires deferred_findings: []")
+    errors.extend(
+        completed_agent_run_errors(
+            root,
+            manifest,
+            run_id=report_scalar(text, "agent_run_id"),
+            role="spec-reviewer",
+            role_mode="final",
+            subject_sha256=subject,
+        )
+    )
+    if not plan.get("combine_final_review"):
+        errors.append("recovery plan does not permit a combined final review")
+    return errors
+
+
 def rebase_nonsemantic_change(
     root: Path,
     manifest: dict[str, Any],
@@ -4195,6 +4899,8 @@ def rebase_nonsemantic_change(
     reason: str,
 ) -> list[str]:
     """Carry passed review evidence over an explicitly non-semantic delta."""
+    if active_bounded_recovery(manifest) is not None:
+        raise CaseError("Content rebasing is forbidden during bounded recovery")
     if change_scope not in {"editorial", "projection-only"}:
         raise CaseError("record-change supports only editorial or projection-only deltas")
     if not reason.strip():
@@ -4309,6 +5015,8 @@ def record_semantic_remediation(
     reason: str,
 ) -> list[str]:
     """Reuse prior whole-case coverage after a machine-bounded targeted correction."""
+    if active_bounded_recovery(manifest) is not None:
+        raise CaseError("Semantic remediation recording is forbidden during bounded recovery")
     if not reason.strip():
         raise CaseError("record-remediation requires a reason")
     blocks = blocks_by_id(ledger)
@@ -4533,6 +5241,13 @@ def set_gate(
     """Record a verified workflow gate."""
     if name not in GATE_NAMES:
         raise CaseError(f"Unknown gate: {name}")
+    recovery_plan: dict[str, Any] | None = None
+    if active_bounded_recovery(manifest) is not None:
+        _, recovery_plan = load_bounded_recovery(
+            root, manifest, ledger, require_active=True
+        )
+        if name not in recovery_plan["allowed_gates"]:
+            raise CaseError(f"Gate {name} is outside bounded recovery scope")
     if status not in GATE_STATUSES:
         raise CaseError(f"Invalid gate status: {status}")
     if name == "consistency" and status == "pass":
@@ -4628,6 +5343,22 @@ def set_gate(
         path = case_file(root, evidence)
         if not artifact_ready(path):
             raise CaseError(f"Gate evidence is missing or still a placeholder: {evidence}")
+        if (
+            recovery_plan is not None
+            and recovery_plan.get("combine_final_review")
+            and name in RECOVERY_COMBINED_GATES
+        ):
+            recovery_errors = recovery_final_report_errors(
+                root,
+                manifest,
+                ledger,
+                path,
+            )
+            if recovery_errors:
+                raise CaseError(
+                    "Bounded recovery final report is invalid: "
+                    + "; ".join(recovery_errors)
+                )
         if assurance_level(manifest) == "standard" and name in {
             "global_review",
             "project_conformance",
@@ -4699,6 +5430,7 @@ def validate_case(
 ) -> list[str]:
     """Return structural, freshness, traceability, and optional final errors."""
     errors: list[str] = []
+    errors.extend(bounded_recovery_errors(root, manifest, ledger, final=final))
     boundary_required = solution_boundary_probe_present(root, manifest)
     boundary, boundary_errors = solution_boundary_errors(
         root,
@@ -5103,7 +5835,12 @@ def run_check(
             final=True,
             ignore_consistency_gate=True,
         )
-        errors.extend(item for item in trace_errors if not item.startswith("Gate "))
+        errors.extend(
+            item
+            for item in trace_errors
+            if not item.startswith("Gate ")
+            and item != "bounded recovery must be completed before final validation"
+        )
     report = {
         "schema": SCHEMA_VERSION,
         "case_id": manifest["case_id"],
@@ -5154,6 +5891,7 @@ def context_bundle(
         selected_surfaces.update(
             {"solution-boundary", "diagram", "reader-projection", "project-rules"}
         )
+    recovery = active_bounded_recovery(manifest)
 
     contract_inputs = [
         f"agents/contracts/{role}.md",
@@ -5161,6 +5899,8 @@ def context_bundle(
         "references/handoff-contract.md",
         "references/convergence-contract.md",
     ]
+    if recovery is not None:
+        contract_inputs.append("references/bounded-recovery.md")
     surface_paths = {
         "solution-boundary": "references/solution-boundary-contract.md",
         "diagram": "references/diagram-contract.md",
@@ -5184,6 +5924,8 @@ def context_bundle(
         }.get(effective_mode, [])
 
     common = [ROLE_MANIFEST_JSON, "kernel.md", "evidence.md", "decisions.md"]
+    if recovery is not None:
+        common.insert(1, RECOVERY_PLAN_JSON)
     if isinstance(manifest.get("artifacts", {}).get("working_projection"), str):
         common.insert(1, WORKING_PROJECTION_JSON)
     if manifest.get("planning_handoff") is not None:
@@ -5194,6 +5936,21 @@ def context_bundle(
     if manifest.get("method_context") is not None:
         method_inputs = [METHOD_CONTEXT_JSON, METHOD_CONTEXT_MARKDOWN]
     if block_id is None:
+        if recovery is not None:
+            if role in {"system-analyst", "spec-editor"}:
+                raise CaseError("Content roles are forbidden during bounded recovery")
+            if role == "spec-reviewer" and recovery.get("combine_final_review"):
+                if role_mode != "final":
+                    raise CaseError(
+                        "Bounded recovery combines whole-case review in role mode final"
+                    )
+            if role == "solution-architect" and (
+                role_mode != "conformance"
+                or "architecture_conformance" not in recovery.get("allowed_gates", [])
+            ):
+                raise CaseError(
+                    "Bounded recovery exposes only declared architecture conformance"
+                )
         whole_case_block_role = manifest.get("mode") == "block" and (
             (
                 role == "spec-reviewer"
@@ -5226,7 +5983,11 @@ def context_bundle(
             excluded = [*method_inputs, "reviews/global.md", "author reasoning"]
         elif role == "spec-reviewer":
             effective_role_mode = role_mode or "global"
-            if effective_role_mode == "final" and assurance == "high":
+            if (
+                effective_role_mode == "final"
+                and assurance == "high"
+                and not (recovery is not None and recovery.get("combine_final_review"))
+            ):
                 raise CaseError("High assurance uses separate integration/global/project reviews")
             indexes = [
                 str(block.get("semantic_index"))
@@ -5294,17 +6055,60 @@ def context_bundle(
         )
         if role == "solution-architect" and effective_role_mode == "risk-preflight" and not risk_scope:
             raise CaseError("Risk preflight context requires at least one declared risk surface")
+        recovery_final = (
+            recovery is not None
+            and role == "spec-reviewer"
+            and effective_role_mode == "final"
+            and recovery.get("combine_final_review") is True
+        )
+        if recovery_final:
+            recovery_project_contract = manifest.get("artifacts", {}).get(
+                "project_conformance_contract"
+            )
+            inputs = [
+                ROLE_MANIFEST_JSON,
+                RECOVERY_PLAN_JSON,
+                "kernel.md",
+                "draft.md",
+                *(
+                    [str(recovery_project_contract)]
+                    if isinstance(recovery_project_contract, str)
+                    else []
+                ),
+                *[
+                    str(block.get("semantic_index"))
+                    for block in ledger.get("blocks", [])
+                    if isinstance(block, dict)
+                    and isinstance(block.get("semantic_index"), str)
+                ],
+            ]
+            excluded = [
+                "method-context.*",
+                "evidence.md",
+                "decisions.md",
+                "reviews/*.md",
+                "reviews/history/*",
+                "author reasoning",
+                "previous findings",
+                "external research",
+            ]
         return {
             "case_id": manifest["case_id"],
             "target": "whole-case",
             "role": role,
             "role_mode": effective_role_mode,
             "assurance_level": assurance,
-            "review_strategy": REVIEW_STRATEGIES[assurance],
+            "review_strategy": (
+                "bounded-recovery-final" if recovery_final else REVIEW_STRATEGIES[assurance]
+            ),
             "subject_sha256": (
                 risk_preflight_subject_hash(manifest, ledger)
                 if risk_scope
-                else None
+                else (
+                    recovery_final_subject_hash(manifest, ledger, recovery)
+                    if recovery_final
+                    else None
+                )
             ),
             "risk_scope": risk_scope,
             "covered_gates": covered_gates_for(effective_role_mode),
@@ -5318,11 +6122,26 @@ def context_bundle(
                 "explicitly named requirement/design artifact when required by the role",
             ],
             "exclude": excluded,
+            **(
+                {
+                    "review_scope": "bounded-recovery-final",
+                    "recovery_plan_sha256": recovery.get("sha256"),
+                    "new_findings_policy": "user-decision",
+                }
+                if recovery_final
+                else {}
+            ),
         }
     blocks = blocks_by_id(ledger)
     if block_id not in blocks:
         raise CaseError(f"Unknown block: {block_id}")
     block = blocks[block_id]
+    if recovery is not None:
+        block_scopes = recovery.get("block_scopes", {})
+        if block_id not in block_scopes:
+            raise CaseError(f"{block_id}: outside bounded recovery scope")
+        if role != "spec-reviewer":
+            raise CaseError("Bounded block recovery exposes only the reviewer role")
     dependencies = [blocks[item] for item in block["depends_on"]]
     dependency_files = [
         value
@@ -5383,18 +6202,51 @@ def context_bundle(
         if role == "spec-reviewer"
         else None
     )
+    recovery_subject = (
+        recovery_block_subject_hash(manifest, block, str(recovery.get("sha256")))
+        if recovery is not None
+        else None
+    )
+    if recovery is not None:
+        inputs = [
+            ROLE_MANIFEST_JSON,
+            RECOVERY_PLAN_JSON,
+            "kernel.md",
+            *dependency_files,
+            block["artifact"],
+            block["semantic_index"],
+        ]
+        excluded = [
+            "method-context.*",
+            "evidence.md",
+            "decisions.md",
+            block["review"],
+            "reviews/history/*",
+            "reviews/global.md",
+            "unrelated blocks",
+            "author reasoning",
+            "previous findings",
+            "external research",
+        ]
     return {
         "case_id": manifest["case_id"],
         "block": block,
         "role": role,
         "role_mode": effective_role_mode,
         "assurance_level": assurance,
-        "review_strategy": REVIEW_STRATEGIES[assurance],
-        "review_scope": (
-            "targeted-remediation"
-            if remediation is not None and remediation.get("scope") == "targeted"
-            else "full-block"
+        "review_strategy": (
+            "bounded-recovery" if recovery is not None else REVIEW_STRATEGIES[assurance]
         ),
+        "review_scope": (
+            "bounded-recovery"
+            if recovery is not None
+            else (
+                "targeted-remediation"
+                if remediation is not None and remediation.get("scope") == "targeted"
+                else "full-block"
+            )
+        ),
+        "subject_sha256": recovery_subject,
         "remediation": remediation,
         "covered_gates": covered_gates_for(effective_role_mode),
         "contract_surfaces": sorted(selected_surfaces),
@@ -5406,6 +6258,15 @@ def context_bundle(
             "Vigers prompt and handoff contracts",
         ],
         "exclude": excluded,
+        **(
+            {
+                "recovery_plan_sha256": recovery.get("sha256"),
+                "reviewed_surfaces": recovery.get("block_scopes", {}).get(block_id),
+                "new_findings_policy": "user-decision",
+            }
+            if recovery is not None
+            else {}
+        ),
     }
 
 
@@ -5427,6 +6288,15 @@ def render_status(root: Path, manifest: dict[str, Any], ledger: dict[str, Any]) 
         f"- kernel revision: `{manifest['kernel']['revision']}`",
         f"- updated: `{manifest['updated_at']}`",
     ]
+    recovery = bounded_recovery_binding(manifest)
+    if recovery is not None:
+        lines.extend(
+            [
+                f"- bounded recovery: `{recovery.get('status', 'invalid')}`",
+                f"- recovery blocks: `{', '.join(sorted(recovery.get('block_scopes', {})))}`",
+                f"- recovery gates: `{', '.join(recovery.get('allowed_gates', []))}`",
+            ]
+        )
     projection_relative = manifest.get("artifacts", {}).get("working_projection")
     if isinstance(projection_relative, str):
         try:
@@ -5552,6 +6422,34 @@ def build_parser() -> argparse.ArgumentParser:
     migrate_parser.add_argument("--case-root", required=True)
     migrate_parser.add_argument("--handoff-root", required=True)
     migrate_parser.add_argument("--reason", required=True)
+
+    recovery_parser = subparsers.add_parser(
+        "begin-recovery",
+        help="Bind an explicit frozen-version bounded recovery plan",
+    )
+    recovery_parser.add_argument("--case-root", required=True)
+    recovery_parser.add_argument("--plan", required=True)
+
+    recovery_rebase_parser = subparsers.add_parser(
+        "rebase-recovery-block",
+        help="Carry one frozen stale block onto the pinned recovery kernel",
+    )
+    recovery_rebase_parser.add_argument("--case-root", required=True)
+    recovery_rebase_parser.add_argument("--id", required=True)
+
+    recovery_complete_parser = subparsers.add_parser(
+        "complete-recovery",
+        help="Close bounded recovery after all declared evidence passes",
+    )
+    recovery_complete_parser.add_argument("--case-root", required=True)
+    recovery_complete_parser.add_argument("--note", default="")
+
+    recovery_stop_parser = subparsers.add_parser(
+        "stop-recovery",
+        help="Stop bounded recovery before a new decision or semantic correction",
+    )
+    recovery_stop_parser.add_argument("--case-root", required=True)
+    recovery_stop_parser.add_argument("--reason", required=True)
 
     add_parser = subparsers.add_parser("add-block", help="Add a semantic block")
     add_parser.add_argument("--case-root", required=True)
@@ -5782,6 +6680,44 @@ def main() -> int:
             return 0
 
         root, manifest, ledger = load_case(Path(args.case_root))
+        if args.command == "begin-recovery":
+            result = begin_bounded_recovery(
+                root,
+                manifest,
+                ledger,
+                plan_path=Path(args.plan),
+            )
+            print(
+                f"PASS bounded-recovery={result['status']} plan={result['sha256']}"
+            )
+            return 0
+        if args.command == "rebase-recovery-block":
+            rebase_bounded_recovery_block(
+                root,
+                manifest,
+                ledger,
+                block_id=args.id,
+            )
+            print(f"PASS bounded-recovery-block={args.id} status=analyzed")
+            return 0
+        if args.command == "complete-recovery":
+            complete_bounded_recovery(
+                root,
+                manifest,
+                ledger,
+                note=args.note,
+            )
+            print("PASS bounded-recovery=complete")
+            return 0
+        if args.command == "stop-recovery":
+            stop_bounded_recovery(
+                root,
+                manifest,
+                ledger,
+                reason=args.reason,
+            )
+            print("PASS bounded-recovery=cancelled")
+            return 0
         if args.command == "migrate-planning":
             result = migrate_planning_handoff(
                 root,

@@ -449,6 +449,41 @@ class CasePipelineTests(unittest.TestCase):
         case_pipeline.refresh_kernel(loaded_root, manifest, ledger, [])
         return root
 
+    def write_recovery_plan(
+        self,
+        root: Path,
+        *,
+        block_scopes: dict[str, list[str]],
+        allowed_gates: list[str] | None = None,
+        combine_final_review: bool = True,
+    ) -> Path:
+        _, manifest, _ = case_pipeline.load_case(root)
+        payload = {
+            "schema": case_pipeline.RECOVERY_PLAN_SCHEMA,
+            "case_id": manifest["case_id"],
+            "reason": "Finish the frozen revision without reopening analysis",
+            "requested_terminal_state": "local-green",
+            "kernel_revision": manifest["kernel"]["revision"],
+            "kernel_sha256": manifest["kernel"]["sha256"],
+            "draft_sha256": case_pipeline.sha256(root / "draft.md"),
+            "block_scopes": block_scopes,
+            "allowed_gates": allowed_gates
+            or list(case_pipeline.GATE_NAMES),
+            "combine_final_review": combine_final_review,
+            "new_findings_policy": "user-decision",
+            "research": "forbidden",
+            "content_mutation": "forbidden",
+            "kernel_refresh": "forbidden",
+            "max_agent_attempts_per_assignment": 2,
+            "deferred_findings": [],
+        }
+        path = root / "requested-recovery.json"
+        path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        return path
+
     def add(
         self,
         root: Path,
@@ -3688,6 +3723,256 @@ Text.
             second = root / "reviews" / "history" / "global_review-r002.md"
             self.assertIn("First pass", first.read_text(encoding="utf-8"))
             self.assertIn("Second pass", second.read_text(encoding="utf-8"))
+
+    def test_bounded_recovery_rechecks_frozen_surfaces_and_combines_final_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.analyze_and_review(root, "B01", "SCN-B01-001")
+            replace_todo(root / "draft.md", "# Draft\n\nFrozen revision")
+            self.transition(root, "B01", "integrated")
+
+            replace_todo(root / "kernel.md", "# Kernel\n\nFrozen recovery kernel")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.refresh_kernel(
+                loaded_root,
+                manifest,
+                ledger,
+                [],
+                change_scope="semantic-crosscutting",
+                invalidate_all=True,
+                reason="Bind the final frozen revision",
+            )
+            plan_path = self.write_recovery_plan(
+                root,
+                block_scopes={"B01": ["scenario-flow", "shared-principal"]},
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            binding = case_pipeline.begin_bounded_recovery(
+                loaded_root,
+                manifest,
+                ledger,
+                plan_path=plan_path,
+            )
+
+            with self.assertRaisesRegex(case_pipeline.CaseError, "rebase-recovery-block"):
+                self.transition(root, "B01", "ready")
+            with self.assertRaisesRegex(case_pipeline.CaseError, "forbidden"):
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                case_pipeline.refresh_kernel(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    [],
+                    change_scope="editorial",
+                )
+
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.rebase_bounded_recovery_block(
+                loaded_root,
+                manifest,
+                ledger,
+                block_id="B01",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                block_id="B01",
+                role="spec-reviewer",
+                role_mode="block",
+            )
+            self.assertEqual(context["review_scope"], "bounded-recovery")
+            self.assertEqual(
+                context["reviewed_surfaces"],
+                ["scenario-flow", "shared-principal"],
+            )
+            self.assertNotIn(case_pipeline.METHOD_CONTEXT_MARKDOWN, context["case_inputs"])
+            run_id = self.record_agent_run(
+                root,
+                role="spec-reviewer",
+                role_mode="block",
+                subject_sha256=context["subject_sha256"],
+            )
+            replace_todo(
+                root / "reviews" / "B01.md",
+                "# Bounded review\n\n"
+                "review_scope: bounded-recovery\n"
+                f"recovery_plan_sha256: {binding['sha256']}\n"
+                "recovery_block: B01\n"
+                f"recovery_subject_sha256: {context['subject_sha256']}\n"
+                "reviewed_surfaces: [scenario-flow, shared-principal]\n"
+                "new_findings_policy: user-decision\n"
+                "deferred_findings: []\n"
+                f"agent_run_id: {run_id}\n"
+                "decision: pass\n",
+            )
+            self.transition(root, "B01", "reviewed")
+            self.transition(root, "B01", "integrated")
+
+            replace_todo(root / "evidence.md", "# Evidence\n\nFrozen source set")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(
+                case_pipeline.run_check(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    final_trace=True,
+                ),
+                [],
+            )
+            for name, status, evidence, note in (
+                ("evidence", "pass", "evidence.md", None),
+                ("architecture_design", "not_required", None, "No architecture impact"),
+                ("author_passes", "pass", "draft.md", None),
+                ("semantic_integration", "pass", "draft.md", None),
+                (
+                    "architecture_conformance",
+                    "not_required",
+                    None,
+                    "No architecture impact",
+                ),
+            ):
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name=name,
+                    status=status,
+                    evidence=evidence,
+                    note=note,
+                )
+
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            final_context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="final",
+            )
+            self.assertEqual(final_context["review_strategy"], "bounded-recovery-final")
+            final_run = self.record_agent_run(
+                root,
+                role="spec-reviewer",
+                role_mode="final",
+                subject_sha256=final_context["subject_sha256"],
+            )
+            replace_todo(
+                root / "reviews" / "global.md",
+                "# Bounded final review\n\n"
+                "review_scope: bounded-recovery-final\n"
+                f"recovery_plan_sha256: {binding['sha256']}\n"
+                f"recovery_subject_sha256: {final_context['subject_sha256']}\n"
+                "covered_gates: [integration_review, global_review, project_conformance]\n"
+                "new_findings_policy: user-decision\n"
+                "deferred_findings: []\n"
+                f"agent_run_id: {final_run}\n"
+                "decision: pass\n",
+            )
+            for gate_name in case_pipeline.RECOVERY_COMBINED_GATES:
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name=gate_name,
+                    status="pass",
+                    evidence="reviews/global.md",
+                    note="Combined bounded recovery final review",
+                )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.complete_bounded_recovery(
+                loaded_root,
+                manifest,
+                ledger,
+                note="Frozen revision is locally green",
+            )
+            _, manifest, _ = case_pipeline.load_case(root)
+            self.assertEqual(manifest["bounded_recovery"]["status"], "complete")
+
+    def test_bounded_recovery_detects_content_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.analyze_and_review(root, "B01", "SCN-B01-001")
+            replace_todo(root / "draft.md", "# Draft\n\nFrozen")
+            plan_path = self.write_recovery_plan(
+                root,
+                block_scopes={"B01": ["scenario-flow"]},
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.begin_bounded_recovery(
+                loaded_root,
+                manifest,
+                ledger,
+                plan_path=plan_path,
+            )
+            replace_todo(root / "draft.md", "# Draft\n\nUnexpected rewrite")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            self.assertIn(
+                "bounded recovery draft content changed",
+                case_pipeline.validate_case(loaded_root, manifest, ledger, final=False),
+            )
+
+    def test_agent_supervisor_allows_only_one_retry_per_assignment(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            for _ in range(2):
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                case_pipeline.record_agent_run(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    role="spec-reviewer",
+                    role_mode="block",
+                    model="test-model",
+                    subject_sha256="c" * 64,
+                    input_bytes=None,
+                    input_tokens=None,
+                    output_tokens=None,
+                    duration_seconds=1,
+                    retries=0,
+                    reported_blocker=0,
+                    reported_major=0,
+                    reported_minor=0,
+                    cache_status="miss",
+                    status="failed",
+                )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "one retry"):
+                case_pipeline.record_agent_run(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    role="spec-reviewer",
+                    role_mode="block",
+                    model="test-model",
+                    subject_sha256="c" * 64,
+                    input_bytes=None,
+                    input_tokens=None,
+                    output_tokens=None,
+                    duration_seconds=1,
+                    retries=0,
+                    reported_blocker=0,
+                    reported_major=0,
+                    reported_minor=0,
+                    cache_status="miss",
+                    status="failed",
+                )
+            legacy = json.loads(
+                (root / case_pipeline.AGENT_LEDGER_JSON).read_text(encoding="utf-8")
+            )
+            for run in legacy["runs"]:
+                run.pop("supervisor_contract")
+            self.assertEqual(
+                case_pipeline.validate_agent_ledger(
+                    legacy,
+                    case_id=manifest["case_id"],
+                ),
+                [],
+            )
 
     def test_complete_block_case_passes_final_validation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

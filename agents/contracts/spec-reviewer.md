@@ -23,6 +23,10 @@ findings обычно исключены. Единственное исключ�
 `targeted-remediation`: тогда прими ровно один finding evidence, baseline
 block/index и immutable coverage revision из assignment. Это контракт проверки
 delta, а не продолжение рассуждений прошлого reviewer.
+В `bounded-recovery` вход ещё уже: recovery plan, frozen kernel, целевой
+block/index и прямые dependencies. Не запрашивай method context, evidence pack,
+decision log, прошлые reviews, другие blocks или внешний research. Здесь задача
+не открыть анализ заново, а доказать только перечисленные `reviewed_surfaces`.
 Если method context отсутствует или не связан с role manifest, верни `input-error`,
 а не заменяй метод общей памятью.
 
@@ -49,6 +53,13 @@ delta, а не продолжение рассуждений прошлого re
   revision. Новый finding допустим в текущем цикле только с `delta_relation:
   introduced|exposed-at-changed-boundary`; несвязанное наблюдение верни как
   отдельный `user-decision`, не как повод продолжить автоматический rework.
+- `bounded-recovery` — проверь frozen block только по точному surface list из
+  recovery plan. Не предлагай правку и не расширяй список. Новый существенный
+  finding возвращает `user-decision` и запрещает `pass` текущего recovery.
+- `bounded-recovery-final` — одним свежим проходом проверь frozen draft,
+  integration, global и применимые project surfaces. Этот режим допустим для
+  legacy/high только при machine-bound `combine_final_review=true`; architecture
+  conformance в него не входит.
 
 ## Проверки
 
@@ -190,6 +201,26 @@ finding_batch_complete: true
 risk_surface: partial-failure=pass
 risk_surface: concurrency=REV-004
 ```
+
+Для bounded block recovery верни точный machine envelope из assignment:
+
+```yaml
+review_scope: bounded-recovery
+recovery_plan_sha256: <sha256>
+recovery_block: B03
+recovery_subject_sha256: <sha256>
+reviewed_surfaces: [<exact ordered surfaces>]
+new_findings_policy: user-decision
+deferred_findings: []
+agent_run_id: AR-0007
+decision: pass
+```
+
+Для combined recovery final замени scope на `bounded-recovery-final`, убери
+`recovery_block|reviewed_surfaces` и верни точный
+`covered_gates: [integration_review, global_review, project_conformance]`.
+`deferred_findings: []` является условием pass: при новой находке верни
+`user-decision`, не пустой список.
 
 Reported counts отражают findings этого независимого прохода до disposition.
 Reviewer рекомендует `revise`, если нашёл `blocker|major`; координатор после

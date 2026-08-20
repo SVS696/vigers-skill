@@ -113,6 +113,21 @@ Targeted remediation автоматически повышается до `full-
 повышает область ещё дальше до соответствующих whole-case gates. Такое повышение
 явное: отсутствие selector не означает полный пересмотр.
 
+## Восстановление уже замороженного case
+
+Если версия постановки уже стабилизирована, а оставшаяся работа вызвана stale
+machine state или незакрытыми gates, обычный re-analysis не является допустимым
+«ещё одним циклом». После явного решения владельца создай bounded recovery по
+`references/bounded-recovery.md`: закрепи kernel/draft/block hashes, точные
+review surfaces и конечный набор gates. Recovery не исправляет findings и не
+ищет новые требования; он только доказывает frozen subject.
+
+Новый `blocker|major` внутри recovery всегда завершает текущий pass как
+`user-decision`. Координатор останавливает recovery, выполняет обычную bounded
+remediation после решения и при необходимости начинает новый recovery на новом
+subject. Нельзя незаметно превратить recovery в третий remediation batch или
+полный review с чистого листа.
+
 ## Итог reviewer и решение координатора
 
 Reviewer завершает отчёт полями:
