@@ -326,6 +326,10 @@ class PlanningCaseTests(unittest.TestCase):
             payload = json.loads((output / planning_case.HANDOFF_JSON).read_text(encoding="utf-8"))
             markdown = (output / planning_case.HANDOFF_MARKDOWN).read_text(encoding="utf-8")
             planning_case.validate_handoff(payload, markdown, expected_profile_id="generic")
+            self.assertEqual(
+                payload["minimum_solution_boundary_schema"],
+                planning_case.MINIMUM_SOLUTION_BOUNDARY_SCHEMA,
+            )
             self.assertEqual(payload["automation_plan"]["policy"], "required")
             self.assertEqual(len(payload["automation_plan"]["stages"]), 2)
             self.assertEqual(

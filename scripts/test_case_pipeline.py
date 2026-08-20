@@ -196,6 +196,7 @@ class CasePipelineTests(unittest.TestCase):
         projection_url: str | None = None,
         projection_evidence_kind: str = "local_file",
         solution_boundary_probe: bool = False,
+        minimum_solution_boundary_schema: int | None = 2,
     ) -> dict[str, object]:
         markdown = "# Planning handoff\n\nVerified research and approved plan.\n"
         projection_binding = {
@@ -233,6 +234,10 @@ class CasePipelineTests(unittest.TestCase):
             "artifact_hashes": {},
             "content_sha256": hashlib.sha256(markdown.encode("utf-8")).hexdigest(),
         }
+        if minimum_solution_boundary_schema is not None:
+            payload["minimum_solution_boundary_schema"] = (
+                minimum_solution_boundary_schema
+            )
         if solution_boundary_probe:
             payload["solution_boundary_probe"] = {
                 "status": "preliminary",
@@ -262,7 +267,14 @@ class CasePipelineTests(unittest.TestCase):
         (root / planning_case.HANDOFF_MARKDOWN).write_text(markdown, encoding="utf-8")
         return payload
 
-    def write_solution_boundary(self, root: Path, horizon: str) -> None:
+    def write_solution_boundary(
+        self,
+        root: Path,
+        horizon: str,
+        *,
+        schema: int = 2,
+        implementation_transition: dict[str, object] | None = None,
+    ) -> None:
         hotfix = (
             {
                 "reason": "Urgent risk is confirmed",
@@ -282,7 +294,7 @@ class CasePipelineTests(unittest.TestCase):
                 {"name": "Second variant", "evidence_refs": ["SRC-002"]}
             )
         payload = {
-            "schema": 1,
+            "schema": schema,
             "solution_horizon": horizon,
             "observed_case": "A current variant is requested",
             "root_capability": "Handle the capability consistently",
@@ -305,6 +317,16 @@ class CasePipelineTests(unittest.TestCase):
                 "rationale": "Full analysis confirmed the boundary",
             },
         }
+        if schema == 2:
+            payload["implementation_transition"] = implementation_transition or {
+                "mode": "evolve-in-place",
+                "authoritative_owner": "current semantic owner",
+                "superseded_paths": [],
+                "coexistence_reason": None,
+                "stages": [],
+                "retirement_trigger": None,
+                "rollback_boundary": None,
+            }
         text = (
             "# Decision log\n\n"
             f"{case_pipeline.SOLUTION_BOUNDARY_START}\n"
@@ -1785,6 +1807,102 @@ class CasePipelineTests(unittest.TestCase):
                     ledger,
                     change_scope="editorial",
                     reason="Claimed wording cleanup",
+                )
+
+    def test_solution_boundary_schema_one_remains_compatible(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            self.write_solution_boundary(root, "bounded-systemic", schema=1)
+            payload = case_pipeline.extract_solution_boundary(root / "decisions.md")
+            assert payload is not None
+            self.assertEqual(
+                case_pipeline.validate_solution_boundary(
+                    payload,
+                    planning_probe_present=True,
+                ),
+                [],
+            )
+            payload["schema"] = 2
+            self.assertIn(
+                "schema 2 requires implementation_transition",
+                case_pipeline.validate_solution_boundary(
+                    payload,
+                    planning_probe_present=True,
+                ),
+            )
+
+    def test_schema_two_rejects_unbounded_parallel_implementation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            transition = {
+                "mode": "staged-migration",
+                "authoritative_owner": "new health sync owner",
+                "superseded_paths": ["legacy health bridge"],
+                "coexistence_reason": "Old clients require one compatibility window",
+                "stages": [
+                    {
+                        "name": "compatibility-window",
+                        "authoritative_owner": "new health sync owner",
+                        "temporary_paths": ["legacy health bridge adapter"],
+                    }
+                ],
+                "retirement_trigger": None,
+                "rollback_boundary": "Re-enable the old route before data cutover",
+            }
+            self.write_solution_boundary(
+                root,
+                "bounded-systemic",
+                implementation_transition=transition,
+            )
+            payload = case_pipeline.extract_solution_boundary(root / "decisions.md")
+            assert payload is not None
+            errors = case_pipeline.validate_solution_boundary(
+                payload,
+                planning_probe_present=True,
+            )
+            self.assertIn(
+                "staged-migration requires retirement_trigger",
+                errors,
+            )
+            transition["retirement_trigger"] = (
+                "Supported clients migrated and rollback window closed"
+            )
+            payload["implementation_transition"] = transition
+            self.assertEqual(
+                case_pipeline.validate_solution_boundary(
+                    payload,
+                    planning_probe_present=True,
+                ),
+                [],
+            )
+
+    def test_new_planning_handoff_pins_solution_boundary_schema_two(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root, selected_mode="compact")
+            self.write_planning_handoff(root, solution_boundary_probe=True)
+            case_pipeline.init_case(
+                root,
+                case_id="boundary-schema-floor",
+                mode="compact",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+            )
+            replace_todo(root / "draft.md", "# Draft\n\nVerified scope")
+            self.write_solution_boundary(root, "bounded-systemic", schema=1)
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "below case minimum 2"):
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name="author_passes",
+                    status="pass",
+                    evidence="draft.md",
+                    note=None,
                 )
 
     def test_planning_probe_requires_boundary_before_author_passes(self) -> None:

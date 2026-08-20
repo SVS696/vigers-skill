@@ -226,7 +226,9 @@ Business context обязательно разделяет `подтвержде
 Раздел границы следует `references/solution-boundary-contract.md` и содержит
 наблюдаемый кейс, корневую способность, инварианты, подтверждённые и
 предполагаемые варианты, current scope, seams, deferred, expansion triggers и
-disposition planning probe. Координатор принимает финальный machine block в
+disposition planning probe. Schema 2 также фиксирует
+`implementation_transition`: mode, authoritative owner, superseded paths,
+ограниченные stages, retirement trigger и rollback boundary. Координатор принимает финальный machine block в
 существующий `decisions.md`; отдельный boundary artifact не создаётся.
 
 Модель также содержит служебный `simplicity_authoring`: статус
@@ -291,6 +293,8 @@ Coverage содержит ровно все объявленные block/surface
 - вопросы, которые меняют решение.
 - подтверждённый `solution_horizon`, оценку рисков particular-case и
   speculative-generalization, обязательные seams и evidence выбора.
+- `implementation_transition` с единственным authoritative owner, судьбой
+  superseded paths и ограничением временного сосуществования;
 - `simplicity_authoring` со статусом, requirement/constraint refs для
   сохранённых спорных механизмов, `root_owner`, `chosen_rung`, protected-floor
   check, перечнем удалённого/отложенного и пределами
@@ -393,8 +397,8 @@ Vigers не реализует и не принимает поставку. Дл
 - impact map по компонентам без назначения реализации по догадке;
 - architecture/project-conformance constraints;
 - принятый `solution_horizon`, `current_scope`, `extension_seams`,
-  `deferred_variants` и `expansion_triggers` без права delivery-роли расширять
-  их самостоятельно;
+  `deferred_variants`, `expansion_triggers` и `implementation_transition` без
+  права delivery-роли расширять их самостоятельно;
 - матрицу `REQ → AC → required evidence`;
 - открытые решения, gaps и остаточный риск.
 

@@ -131,10 +131,13 @@ solution-architect --role-mode risk-preflight`, запусти архитект�
    access dimensions и варианты имеют текущие semantic refs; зафиксированы
    `root_owner`, `chosen_rung`, protected-floor check и применимые пределы;
    необоснованное удалено или отложено без потери доказанной seam.
-6. Сохрани локальные решения `diagram_gate` блока: вопрос, представление,
+6. Если блок затрагивает существующую реализацию, добавь evidence её
+   owners/entrypoints/callers к общему `implementation_transition`; блок не
+   создаёт собственный параллельный owner или отдельный переходный режим.
+7. Сохрани локальные решения `diagram_gate` блока: вопрос, представление,
    source IDs и декомпозицию. Не проектируй общую «карту всего документа» из
    одного блока.
-7. Оставь блок в `in_progress` до block-render: kernel snapshot фиксируется
+8. Оставь блок в `in_progress` до block-render: kernel snapshot фиксируется
    только после последней авторской правки блока.
 
 Независимые блоки можно запускать параллельно ограниченными пакетами. Блоки с
@@ -160,6 +163,8 @@ solution-architect --role-mode risk-preflight`, запусти архитект�
    До принятия design note проверь его `simplicity_authoring`: у каждого нового
    механизма есть текущий requirement/constraint ref, выбранный уровень
    лестницы, protected-floor check и применимый предел, иначе он удалён/отложен.
+   Replacement/staged design дополнительно называет authority, superseded paths,
+   cutover/rollback и retirement trigger; legacy не получает новых правил.
 2. Получи `context --role spec-editor --role-mode block-render
    --contract-surface diagram --contract-surface reader-projection` и запусти
    editor: он оформляет только данный блок и не собирает финальный документ.
@@ -335,7 +340,7 @@ solution-architect --role-mode risk-preflight`, запусти архитект�
    Исправь обрезку, наложения,
    неразличимые подписи и перегрузку через декомпозицию, а не уменьшение шрифта.
 5. Зафиксируй `author_passes` только после machine validation единого
-   solution-boundary блока.
+   solution-boundary блока schema 2, включая bounded `implementation_transition`.
 6. В `high` запусти reviewer `global`. В `standard` запусти один reviewer
    `final` с `covered_gates: [integration_review, global_review,
    project_conformance]`, integration scope и применимыми project surfaces. Не

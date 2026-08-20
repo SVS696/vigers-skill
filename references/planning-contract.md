@@ -333,6 +333,8 @@ fingerprint, content hash и approval revision. Handoff переносит immut
 `automation-timing.json`. Для исполнительных ролей отдельно материализуется
 `planning-role-context.json` без ETA и runtime facts. Эти данные не проецируются
 в checklist task manager и не считаются временем пользователя.
+Новый handoff закрепляет `minimum_solution_boundary_schema: 2`; отсутствие поля
+сохраняет schema 1 только для уже созданного legacy case.
 Handoff также содержит policy и связанные working projection targets с их
 read-back bindings. `case_pipeline.py init` переносит их в
 `working-projection.json`. После значимого обновления координатор фиксирует

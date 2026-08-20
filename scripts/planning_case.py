@@ -37,6 +37,7 @@ PRELIMINARY_REQUIREMENTS_PLAN_SCHEMA_VERSION = 3
 TELEMETRY_PLAN_SCHEMA_VERSION = 2
 LEGACY_PLAN_SCHEMA_VERSION = 1
 HANDOFF_SCHEMA_VERSION = 1
+MINIMUM_SOLUTION_BOUNDARY_SCHEMA = 2
 TODO_MARKER = "VIGERS_TODO"
 MANIFEST_FILENAME = "planning-manifest.json"
 HANDOFF_JSON = "planning-handoff.json"
@@ -1778,6 +1779,7 @@ def build_handoff(root: Path, manifest: dict[str, Any]) -> tuple[dict[str, Any],
             raise PlanningError(f"Invalid automation estimation plan: {exc}") from exc
     payload: dict[str, Any] = {
         "schema": HANDOFF_SCHEMA_VERSION,
+        "minimum_solution_boundary_schema": MINIMUM_SOLUTION_BOUNDARY_SCHEMA,
         "planning_case_id": manifest["case_id"],
         "planning_revision": manifest["revision"],
         "profile_id": manifest["profile_id"],
@@ -1830,6 +1832,13 @@ def validate_handoff(
 ) -> None:
     if not isinstance(payload, dict) or payload.get("schema") != HANDOFF_SCHEMA_VERSION:
         raise PlanningError("planning handoff has unsupported schema")
+    minimum_boundary_schema = payload.get("minimum_solution_boundary_schema", 1)
+    if (
+        not isinstance(minimum_boundary_schema, int)
+        or isinstance(minimum_boundary_schema, bool)
+        or minimum_boundary_schema not in {1, 2}
+    ):
+        raise PlanningError("planning handoff minimum solution boundary schema is invalid")
     if expected_profile_id is not None and payload.get("profile_id") != expected_profile_id:
         raise PlanningError(
             f"planning handoff profile mismatch: {payload.get('profile_id')} != {expected_profile_id}"
