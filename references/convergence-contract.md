@@ -40,6 +40,22 @@
 живут в decision log, manifest, ledger или passport. Process YAGNI не отменяет
 обязательный независимый контроль риска; он запрещает дублирующую обвязку.
 
+## Risk-first без постоянного нового гейта
+
+После предварительного анализа пометь только доказанные опасные поверхности
+блоков: необратимость, cross-system side effects, partial failure,
+retry/recovery, concurrency, cancellation, identity/incarnation,
+permissions/security или migration. Если список пуст, дополнительного прохода
+нет. Если хотя бы одна поверхность объявлена, один архитектор до authoring
+возвращает общую матрицу `block/surface → covered|not-applicable`, конкретные
+решения и пустой `unresolved`. `record-risk-preflight` связывает матрицу с
+kernel и agent run; high-risk блок нельзя перевести в `in_progress` без неё.
+
+Первый полный reviewer риск-блока закрывает все объявленные surfaces за один
+проход и ставит `finding_batch_complete: true`. Это заменяет позднее
+последовательное обнаружение связанных edge cases, а не добавляет второй обзор
+после уже выполненного полного review.
+
 ## Когда разрешено возобновить research
 
 После coverage verdict `sufficient` либо допустимого `partial` не открывай новый
@@ -64,7 +80,9 @@ Targeted research заканчивается по `stop_condition` либо по
 1. Координатор фиксирует disposition каждого finding: `accepted`, `rejected`
    или `user-decision`. Принятый finding получает resolution `open`, затем
    `corrected` либо допустимый для `minor` статус `residual`.
-2. Открытые принятые `blocker/major` исправляются через bounded remediation:
+2. Открытые принятые `blocker/major` одного gate сначала объединяются в один
+   remediation batch, координатор подтверждает полноту `--batch-complete`, затем
+   исправляет его через bounded remediation:
    сохраняются finding evidence, baseline и прежнее покрытие, перечисляются
    точные semantic IDs. Повторный reviewer проверяет finding, delta и прямые
    регрессии, а не начинает аудит неизменённого блока с нуля. Повторяются только
@@ -79,10 +97,12 @@ Targeted research заканчивается по `stop_condition` либо по
    при явной связи `introduced|exposed-at-changed-boundary` с текущей delta.
    Несвязанное наблюдение в ранее покрытой области не расширяет тот же цикл:
    координатор фиксирует его отдельно и решает приоритет с пользователем.
-6. Если один и тот же `blocker/major` остаётся после двух точечных циклов,
-   прекрати автоматический rework и верни `user-decision`. Одинаковость
-   определяется по затронутой поверхности, evidence и последствию, а не по тексту
-   формулировки.
+6. На один блок и kernel epoch разрешено не более двух remediation batches
+   независимо от количества и текста finding IDs. После исчерпания бюджета
+   третий finding-by-finding цикл запрещён. Если причина архитектурная или
+   сквозная, агрегируй её в одно root-cause решение, явно обнови kernel с
+   `semantic-crosscutting|architecture` impact и заново пройди полный затронутый
+   контракт. Иначе верни `user-decision` или bounded targeted research.
 7. Новый цикл после `pass` допустим только при новом evidence, изменении
    смыслового артефакта или доказанном новом `blocker/major`. Новые minor-only
    пожелания не переоткрывают гейт.

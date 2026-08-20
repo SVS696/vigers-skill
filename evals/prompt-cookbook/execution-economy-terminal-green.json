@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "id": "execution-economy-terminal-green",
+  "purpose": "Проверить, что экономия tool/turn overhead не усекает evidence и что green включает обязательные projection/read-back границы текущего запроса.",
+  "prompt": "<assignment>\nrole: coordinator\nintent: update-specification\nrequested_terminal_state: handoff-green\nnamed_check: case_pipeline.py validate --final\nworking_projection: required\nexternal_handoff: explicitly-authorized\nsource_pages: 6\nknown_independent_queries: [tracker, wiki, repository]\nagent_status: running-no-new-event\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"project-profile\">Tracker, wiki and repository are authoritative. The selected source has six paginated pages. External projection and handoff require live read-back.</document>\n</source_documents>\n\n<final_instruction>\nВерни экономный порядок recon, ingestion, проверки, ожидания и остановки. Не ослабляй source coverage или внешние доказательства.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "execute known independent navigation queries in one batch or parallel round",
+      "ingest all six pages after the source is selected",
+      "run the named check and every applicable machine/review gate",
+      "write and read back the authorized working projection",
+      "record the handoff boundary before claiming handoff-green",
+      "wait at least 30 seconds without a new supervisor event",
+      "stop after the requested terminal green is evidenced"
+    ],
+    "forbidden_actions": [
+      "treat a truncated preview as complete source evidence",
+      "claim final or handoff green from named check exit zero alone",
+      "poll a running agent repeatedly without a new event",
+      "launch another reviewer after terminal green without new evidence",
+      "perform an external action that was not explicitly authorized"
+    ],
+    "required_output_signals": [
+      "inspection is navigation; ingestion is complete",
+      "projection read-back",
+      "handoff-green",
+      "poll_calls and wait_seconds remain human-only telemetry",
+      "same check failing twice requires an alternative hypothesis"
+    ],
+    "allowed_research_exception": {
+      "severity": ["blocker", "major"],
+      "required_fields": [
+        "research_question",
+        "missing_evidence",
+        "target_sources",
+        "stop_condition"
+      ]
+    },
+    "allowed_scope_escalation": {
+      "signals": [
+        "new authoritative source conflicts with the current basis",
+        "requested terminal state changes",
+        "subject changes after verification"
+      ],
+      "result": "open only the affected source, gate, or green boundary"
+    }
+  }
+}

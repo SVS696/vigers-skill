@@ -123,6 +123,12 @@ polish-pass на текущий gate. Повторное review после ис�
 точечным. Новый research открывается только для существенного finding с полями
 из `{baseDir}/references/convergence-contract.md`.
 
+Карточка блока может содержать `risk_surfaces`. Тогда до authoring требуется
+case-level risk preflight, а initial/full-block review возвращает completed
+`review_agent_run`, `finding_batch_complete: true` и ровно одну строку
+`risk_surface: <id>=pass|not-applicable|<finding-id>` для каждой поверхности.
+Targeted remediation эту матрицу не пересматривает.
+
 Каждый завершённый локальный review сохраняется отдельной immutable revision.
 При accepted `blocker|major` координатор открывает `begin-remediation` с finding
 ID, evidence и затронутыми semantic IDs. Контекст повторного reviewer включает
@@ -131,7 +137,10 @@ baseline block/index, finding evidence и ровно одну закреплён
 `review_scope`, точный `verified_findings` и `coverage_reused`; изменение
 необъявленного semantic ID блокируется машиной. Для смысловой переписи блока
 используется `full-block`, где `coverage_reused: none` и выполняется полный
-локальный review.
+локальный review. Для `batched-v2` все accepted blocker/major одного gate входят
+в один `--batch-complete`; на kernel epoch разрешено максимум два batches. Дальше требуется
+root-cause kernel change либо `user-decision`, а не новый finding-by-finding
+проход.
 
 ## Границы контекста
 

@@ -96,7 +96,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["contracts"], 5)
         self.assertEqual(counts["runtime_adapters"], 10)
         self.assertEqual(counts["workflows"], 3)
-        self.assertEqual(counts["prompt_evals"], 22)
+        self.assertEqual(counts["prompt_evals"], 24)
 
     def test_scale_and_assurance_are_selected_independently(self) -> None:
         large_local = self.decision(
@@ -447,6 +447,32 @@ class PipelineTests(unittest.TestCase):
         )
         self.assertIn(
             "no new role gate or artifact",
+            expected["required_output_signals"],
+        )
+
+    def test_execution_economy_preserves_evidence_and_terminal_green(self) -> None:
+        eval_path = (
+            spec_pipeline.ROOT
+            / "evals"
+            / "prompt-cookbook"
+            / "execution-economy-terminal-green.json"
+        )
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        expected = payload["expected"]
+        self.assertIn(
+            "ingest all six pages after the source is selected",
+            expected["required_actions"],
+        )
+        self.assertIn(
+            "claim final or handoff green from named check exit zero alone",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "projection read-back",
+            expected["required_output_signals"],
+        )
+        self.assertIn(
+            "poll_calls and wait_seconds remain human-only telemetry",
             expected["required_output_signals"],
         )
 

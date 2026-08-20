@@ -128,6 +128,13 @@ delta, а не продолжение рассуждений прошлого re
     При `targeted-remediation` изменение необъявленного semantic ID, цели, scope,
     публичного контракта, архитектуры или смысла блока целиком требует
     `scope-escalation: full-block|whole-case`, а не молчаливого расширения review.
+25. Если block объявляет risk surfaces, первый/full-block review обязан закрыть
+    их все за один проход. Верни `finding_batch_complete: true` и по одной
+    строке `risk_surface:
+    <id>=pass|not-applicable|<finding-id>`. При targeted remediation не начинай
+    эту матрицу заново: проверяй только bound findings и прямые регрессии.
+    Координатор после вызова добавляет completed `review_agent_run` текущего
+    subject в сохраняемый report; роль не угадывает будущий run ID.
 
 ## Правила findings
 
@@ -167,6 +174,16 @@ review_scope: targeted-remediation | full-block
 verified_findings: [<stable finding ids>]
 coverage_reused: <immutable review path> | none
 scope_escalation: none | full-block | whole-case
+```
+
+Для initial/full-block review риск-блока перед сводкой дополнительно верни:
+
+```yaml
+review_agent_run: AR-0001
+review_scope: full-block
+finding_batch_complete: true
+risk_surface: partial-failure=pass
+risk_surface: concurrency=REV-004
 ```
 
 Reported counts отражают findings этого независимого прохода до disposition.

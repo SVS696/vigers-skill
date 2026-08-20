@@ -78,6 +78,9 @@ Process only target B03 and return the required output without editing files.
 9. Роль читает только перечисленные `contract_inputs`. `assurance=high` может
    раскрыть полный legacy-набор; `standard|lite` получают только выбранные
    поверхности.
+10. `risk-preflight` получает только kernel/evidence и compact `risk_scope`.
+    Наличие хотя бы одной объявленной surface является trigger; без surfaces
+    этот mode ошибочен. Block artifacts и прошлые findings не подключаются.
 
 Для `vigers-planner` пункты про kernel/method-context не применяются. Вместо них
 проверь planning revision/state, разрешённый mode, project profile, список
@@ -117,6 +120,9 @@ artifacts и не выполняет external mutations.
 Отдельно проверь, что editor не создаёт смысл, reviewer не переписывает текст,
 architect conformance не продолжает design, а block-agent не читает соседний
 независимый блок.
+Для risk-first отдельно проверь два случая: без объявленных surfaces новый
+проход не создаётся; с несколькими связанными surfaces архитектор возвращает
+одну полную матрицу, а reviewer не растягивает их на последовательные циклы.
 Добавь eval с закрытым coverage: координатор должен исправить найденные
 `blocker/major`
 и продолжить pipeline, а не открывать «ещё один археологический круг» без точной

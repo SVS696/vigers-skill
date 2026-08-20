@@ -250,6 +250,34 @@ semantic index по `{baseDir}/references/block-contract.md`. Общие фак�
 
 ## Архитектурное решение
 
+В условном режиме `risk-preflight` архитектор до authoring возвращает один JSON:
+
+```json
+{
+  "schema": 1,
+  "case_id": "<case-id>",
+  "kernel_sha256": "<sha256>",
+  "agent_run_id": "AR-0001",
+  "decisions": ["<concrete cross-surface decision>"],
+  "unresolved": [],
+  "coverage": [
+    {
+      "block_id": "B03",
+      "surface": "partial-failure",
+      "status": "covered",
+      "rationale": "<why the decision closes the surface>",
+      "evidence_refs": ["<source-or-decision-ref>"]
+    }
+  ]
+}
+```
+
+Coverage содержит ровно все объявленные block/surface pairs. `not-applicable`
+требует rationale; `covered` дополнительно требует evidence refs. Непустой
+`unresolved`, чужой kernel/subject или незарегистрированный architect run не
+проходит machine gate. Архитектор возвращает смысловые поля; координатор после
+записи telemetry добавляет фактический `agent_run_id` в сохраняемый JSON.
+
 Архитектор в режиме `design` возвращает:
 
 - состояние гейта и подтверждённые триггеры;
@@ -349,6 +377,10 @@ residual`. `residual` допустим только для `minor` и не бл�
 Evidence integration/global/project/architecture review при каждом `pass`
 копируется в новую immutable revision `reviews/history/*-rNNN`; рабочий файл
 review можно обновлять, но прежнее доказательство не перезаписывается.
+
+После disposition всех accepted `blocker/major` одного gate координатор передаёт
+их одним `begin-remediation --batch-complete`. Это coordinator attestation, а не
+поле, которое reviewer выставляет вместо независимого полного прохода.
 
 ## Handoff во внешнюю поставку
 

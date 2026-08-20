@@ -87,12 +87,31 @@ case-root и свежих block contexts.
 1. Раздели работу по семантическим контрактам, а не заголовкам шаблона.
 2. Каждый блок должен иметь один результат, 1–3 смысловых вопроса и обозримые
    зависимости. Обычно используй 3–8 блоков.
-3. Добавь блоки командой `add-block` в порядке зависимостей.
+3. Добавь блоки командой `add-block` в порядке зависимостей. Для доказанных
+   опасных поверхностей передай повторяемый `--risk-surface`; не объявляй risk
+   только из-за размера блока или «на всякий случай».
 4. Проверь DAG командой `validate`.
 5. Если два блока владеют одним фактом, назначь владельца одному, а второму —
    ссылку через semantic ID.
 
 **Выход:** полный DAG в `ledger.json`; каждый блок имеет card, index и review.
+
+### Условный risk-first preflight
+
+Если ни один блок не объявил risk surface, сразу переходи к фазе 4. Иначе до
+первого `in_progress` один раз получи whole-case `context --role
+solution-architect --role-mode risk-preflight`, запусти архитектора, запиши его
+в `agent-ledger` с `subject_sha256` из context и сохрани полную JSON-матрицу.
+Выполни `record-risk-preflight --evidence <path>`. Матрица обязана покрывать
+каждую пару block/surface текущего `risk_scope`, содержать конкретные decisions
+и пустой `unresolved`.
+Это ранняя стабилизация связных failure semantics, а не ещё один review обычной
+задачи.
+
+Если новую риск-поверхность обнаружили уже в раннем авторинге, выполни
+`declare-risk --id Bxx --risk-surface <id> --reason <evidence>`. Машина поставит
+блок на паузу и потребует обновлённый preflight перед продолжением. Для уже
+проанализированного блока сначала нужен явный semantic/architecture kernel refresh.
 
 ## Фаза 4. Поблочный системный анализ
 
@@ -130,7 +149,8 @@ case-root и свежих block contexts.
 
 **Вход:** `in_progress` block с моделью/index и сработавший архитектурный гейт.
 
-1. Если блок вводит архитектурное решение, получи `context --role
+1. Если блок вводит локальное архитектурное решение, не покрытое risk preflight,
+   получи `context --role
    solution-architect --role-mode design --contract-surface solution-boundary
    --contract-surface diagram --contract-surface reader-projection` и запусти
    отдельный architect; внеси принятое ограничение в `decisions.md`. При глобальном инварианте
@@ -170,8 +190,12 @@ case-root и свежих block contexts.
    интеграции.
 4. Сохрани findings или явный `PASS` в `reviews/Bxx.md`; отчёт обязан содержать
    reported counts, `research_reopen` и `gate_recommendation`. Disposition и open
-   counts координатор фиксирует отдельно.
-5. Для открытых принятых `blocker/major` сначала вызови `begin-remediation`:
+   counts координатор фиксирует отдельно. Для risk-блока сначала запиши reviewer
+   в `agent-ledger`, затем добавь `review_agent_run`, `review_scope: full-block`,
+   `finding_batch_complete: true` и ровно одну строку `risk_surface` для каждой
+   объявленной поверхности.
+5. Собери все открытые принятые `blocker/major` этого gate в один пакет и вызови
+   `begin-remediation --batch-complete` один раз:
    укажи стабильные finding IDs, evidence и точные semantic IDs. Обычный откат
    проверенного блока в `in_progress` запрещён, потому что он теряет прежнее
    покрытие. Исправь bounded delta новым editor, снова переведи блок в
@@ -183,7 +207,9 @@ case-root и свежих block contexts.
    `--full-block` и выполни полный локальный и применимые whole-case review.
 6. При minor-only выполни не более одного пакетного polish-pass для этого review
    gate либо запиши остаток как `residual`; новый полный reviewer не запускай.
-7. Если тот же `blocker/major` остался после двух точечных циклов, верни
+7. После двух remediation batches текущего kernel epoch третий автоматический
+   цикл запрещён даже для нового finding ID. Агрегируй повторяющийся класс
+   проблемы в root-cause kernel change с явным impact либо верни
    `user-decision`. Иначе переведи блок в `reviewed`, когда открытых принятых
    `blocker/major` нет; residual minor переход не блокируют.
    Новый finding открывает следующий цикл только с `delta_relation:

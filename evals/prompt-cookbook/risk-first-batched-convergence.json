@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "id": "risk-first-batched-convergence",
+  "purpose": "Проверить, что связанные high-risk поверхности стабилизируются до authoring и не растягиваются на бесконечные циклы с новыми finding IDs.",
+  "prompt": "<assignment>\nrole: coordinator\nmode: block\ntargets: [B01, B02, B03]\nrisk_surfaces:\n  B03: [partial-failure, retry-recovery, concurrency, cancellation, identity-incarnation]\nassurance: high\nremediation_history:\n  B03: []\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"verified-system-contract\">Операция изменяет состояние в двух системах, допускает повтор после частичного сбоя и может быть отменена одновременно с выполнением.</document>\n</source_documents>\n\n<final_instruction>\nВерни минимальный безопасный порядок ролей и machine gates до интеграции. Не добавляй проходы для B01/B02 без доказанного риска.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "объявить risk surfaces только для B03",
+      "до authoring выполнить один whole-case solution-architect risk-preflight",
+      "связать полную block/surface matrix с current kernel и agent run",
+      "потребовать от первого B03 reviewer полный surface sweep и finding_batch_complete",
+      "объединить accepted blocker/major одного gate в один remediation batch",
+      "после двух batches запретить третий finding-by-finding цикл"
+    ],
+    "forbidden_actions": [
+      "добавить risk-preflight для B01 или B02 без объявленной surface",
+      "писать B03 до успешного risk preflight",
+      "исправлять связанные findings отдельными editor/reviewer циклами по одному",
+      "сбросить budget новым finding ID",
+      "переоткрыть полную risk matrix во время targeted remediation"
+    ],
+    "required_output_signals": [
+      "risk-preflight",
+      "finding_batch_complete: true",
+      "review_agent_run",
+      "remediation_contract: batched-v2",
+      "root-cause kernel change or user-decision after budget exhaustion"
+    ],
+    "allowed_research_exception": {
+      "severity": ["blocker", "major"],
+      "required_fields": [
+        "research_question",
+        "missing_evidence",
+        "target_sources",
+        "stop_condition"
+      ]
+    },
+    "allowed_scope_escalation": {
+      "signals": [
+        "crosscutting invariant changes",
+        "architecture boundary changes",
+        "full block semantic rewrite"
+      ],
+      "result": "explicit semantic-crosscutting or architecture kernel refresh followed by fresh affected coverage"
+    }
+  }
+}

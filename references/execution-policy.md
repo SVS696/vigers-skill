@@ -32,6 +32,44 @@ profile/intake и материализует `SRC-NNN`. Затем planner ра�
 закрывает coverage gate и проводит approval. Второй cluster, конфликт,
 неограниченный gap или risk trigger требует полного planning route.
 
+## Экономное выполнение и terminal green
+
+Перед каждой фазой объединяй известные независимые navigation/recon probes в
+один пакет или параллельный вызов. Второй пакет допустим для вопросов, возникших
+из первого. Если нужно перенять неописанную конвенцию и нет канонического
+profile/template/config, сравни два реальных примера; при наличии канона не
+трать дополнительный lookup.
+
+Узкое inspection-чтение используется только для поиска нужного source unit.
+После включения источника в evidence его объявленная единица читается полностью,
+включая pagination/completeness marker. Нельзя экономить токены усечением
+требований, project instructions, skill contracts или данных для преобразования.
+
+Named check задачи является минимальной проверкой соответствующего результата,
+но не отменяет обязательные project/machine gates. Если один и тот же check дважды
+падает при неизменной гипотезе, зафиксируй альтернативную причину или подход до
+следующей правки; не продолжай последовательное исправление симптомов.
+
+`green` всегда относится к запрошенной границе результата:
+
+- `local-green` — локальный артефакт и обязательные checks/gates актуальны,
+  открытых принятых `blocker|major` нет;
+- `projection-green` — локальный результат спроецирован во все разрешённые
+  обязательные targets, записи прочитаны обратно и bindings актуальны;
+- `handoff-green` — требуемая передача явно зафиксирована, а исходный timing
+  остановлен на handoff boundary;
+- `final-green` — доказан terminal state именно текущего запроса; он может
+  совпадать с одним из уровней выше либо требовать project-owned gate.
+
+Это human-facing proof labels, а не новые case statuses и не способ обойти
+существующую state machine.
+
+Локальная готовность не разрешает внешнюю запись. Read-back является частью
+`projection-green|handoff-green`, а не дополнительным victory pass. После
+достижения запрошенного уровня остановись: новый model review, повторное чтение
+или check допустимы только при новом evidence, изменившемся subject либо явно
+более дальней границе результата.
+
 ## Tracking и projection sync
 
 - Tracking не выводится из assurance: portable default — `fine`, потому что
@@ -53,6 +91,22 @@ profile/intake и материализует `SRC-NNN`. Затем planner ра�
 При одинаковом прочитанном содержимом новый source добавляется как
 `source_bindings` к последнему snapshot, а не создаёт копию update. Последовательность
 `A → B → A` не схлопывается, потому что отражает реальное изменение документа.
+
+## Условный risk-first контур
+
+Planner/координатор объявляет `--risk-surface` только для доказанной поверхности
+отказа или архитектурной границы. Наличие хотя бы одной surface включает один
+whole-case `solution-architect/risk-preflight` до authoring; отсутствие surfaces
+не создаёт нового вызова. Контекст содержит kernel и компактный risk scope, но
+не незаполненные block artifacts и не прошлые reviews. Машина требует полную
+матрицу, пустой `unresolved`, текущий subject hash и завершённый agent run.
+
+Full block review риск-блока обязан вернуть полный список `risk_surface:
+<id>=pass|not-applicable|<finding-id>`, `finding_batch_complete: true` и
+`review_agent_run`. Targeted review после исправления не переоткрывает эту
+матрицу: он проверяет только accepted findings, delta и прямые регрессии.
+После `semantic-local` refresh повторный preflight включает только затронутые
+risk-блоки; актуальные bindings остальных блоков переносятся без нового вызова.
 
 ## Change impact
 
@@ -85,6 +139,15 @@ projection cadence задним числом не ужесточаются.
 связи с delta. Наблюдение в неизменённой области фиксируется отдельно и требует
 coordinator/user decision, а не запускает бесконечный общий review.
 
+Новый блок использует `remediation_contract: batched-v2`: все accepted
+`blocker/major` одного gate передаются одним вызовом `begin-remediation`, а на
+один kernel epoch разрешено максимум два batches даже с разными finding IDs.
+Для `batched-v2` явный `--batch-complete` является обязательной coordinator
+attestation после disposition всех findings этого gate.
+После лимита машина требует root-cause kernel change или user decision.
+Crosscutting/architecture refresh открывает новый epoch явно и инвалидирует
+затронутые risk preflights; обычный новый finding лимит не сбрасывает.
+
 Если исправление меняет смысл блока целиком, набор semantic IDs нельзя честно
 ограничить либо затронуты цель, scope, публичный контракт, архитектура или
 сквозная логика, используй `--full-block`. Предыдущее покрытие тогда не
@@ -109,14 +172,17 @@ assignment разворачивается в прежний полный наб�
 
 Новый case содержит `agent-ledger.json`. После модельного прохода координатор
 фиксирует роль/режим/модель, subject hash, доступные input/output tokens и bytes,
-duration, retries, cache status, outcome и counts findings. Неизвестные токены
-остаются `null`, а не оцениваются по догадке. Ledger не передаётся
+duration, retries, cache status, outcome и counts findings. Доступные
+`tool_calls`, `poll_calls` и `wait_seconds` фиксируются отдельно; неизвестные
+счётчики остаются `null`, а не оцениваются по догадке. Ledger не передаётся
 исполнительным ролям и не создаёт новый model call, reviewer или gate.
 
 `completed|degraded|failed|timed_out` описывает фактический исход уже
 состоявшегося вызова. Idle/hard timeout применяй только через нативный supervisor
 текущего harness и только когда предел объявлен его конфигурацией; не запускай
-CLI-agent или polling-обвязку ради telemetry. После подтверждённого
+CLI-agent или polling-обвязку ради telemetry. Пока harness не сообщил новое
+событие, не poll чаще 30 секунд; для ожидаемо долгой операции используй более
+крупный wait slice. После подтверждённого
 transient/tool/transport сбоя допустим один повтор с тем же assignment по
 `prompt-contract.md`; содержательная ошибка и `degraded` coverage повтором не
 маскируются. Причины деградации сохраняются явно.
@@ -134,6 +200,11 @@ reported finding ровно один раз классифицируется к�
 ещё одного review. Legacy runs без этих полей валидны и считаются
 `unclassified`, а не нулевым качеством.
 
+Для `risk-preflight` и block review объявленных risk surfaces agent-run является
+частью machine gate: роль, mode, current subject hash и `completed` проверяются
+до принятия evidence. Поэтому дорогой условный контур измерим без нового
+метрического model call; обычные блоки не получают дополнительного барьера.
+
 Review с тем же evidence hash и тем же subject идемпотентен и не создаёт новую
 immutable revision. Повтор после изменившегося subject остаётся допустимым.
 
@@ -144,10 +215,15 @@ immutable revision. Повтор после изменившегося subject �
 границей `approved_execution_start → development_handoff`. Использовать уже
 собранные факты: число model passes из `agent-ledger`, full/targeted review,
 инвалидированные/переиспользованные semantic blocks, input/output tokens если
-они реально доступны, active/elapsed timing, retries и findings. Нулевой выигрыш
+они реально доступны, tool/poll calls, wait time, active/elapsed timing,
+retries и findings. Нулевой выигрыш
 на уже минимальном кейсе является корректным результатом.
 
 Сравнение «до/после» требует свежих изолированных contexts, закреплённых версий
 skill/model/project sources и одинаковых safety/acceptance gates. Нельзя считать
 экономией удалённый обязательный контроль, неполный лог или более слабую
 приёмку. Эти метрики остаются human-only и не передаются исполнительным ролям.
+
+Recon/polling tactics адаптированы из Benjamin Plus snapshot
+`532771be5687566b12a9f62e17fbe7ad3591518c` (MIT); внешние проценты не являются
+прогнозом Vigers.
