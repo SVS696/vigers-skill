@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "id": "bounded-recovery-frozen-case",
+  "purpose": "Проверить, что стабилизированный legacy/high case с механически stale блоками завершается по точному recovery scope без нового анализа и каскадного review.",
+  "prompt": "<assignment>\nrole: coordinator\ncase: legacy-frontend-42\nassurance: high\nfrozen_kernel_revision: 6\nfrozen_draft_sha256: 1111111111111111111111111111111111111111111111111111111111111111\nblock_state: {B01: integrated, B02: analyzed, B03: stale, B04: stale, B05: stale}\nlate_findings: [{id: REV-LATE-01, severity: major, disposition: user-decision}]\nrequested_terminal_state: local-green\nuser_decision: finish frozen revision without semantic changes\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"case-ledger\">The draft and kernel are frozen. B03-B05 became stale after a broad machine invalidation; their artifact meaning did not change. No new research or correction is authorized.</document>\n</source_documents>\n\n<final_instruction>\nВерни исполняемый recovery route. Не меняй постановку и не превращай позднюю находку в автоматический новый цикл.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "create and explicitly bind recovery-plan.json to the frozen kernel and draft hashes",
+      "declare exact ordered review surfaces for every recovery block",
+      "carry stale blocks forward only through rebase-recovery-block after baseline hash checks",
+      "record completed agent runs against exact recovery subject hashes",
+      "use one combined final report only for integration_review, global_review, and project_conformance",
+      "complete recovery only after every declared block is integrated and every declared gate passes"
+    ],
+    "forbidden_actions": [
+      "rerun preliminary or full analysis",
+      "refresh the kernel during active recovery",
+      "edit the frozen draft or block meaning",
+      "open begin-remediation from REV-LATE-01 without a new user decision",
+      "review unrelated blocks or surfaces",
+      "run a third attempt for the same role, mode, and subject"
+    ],
+    "required_output_signals": [
+      "review_scope: bounded-recovery",
+      "new_findings_policy: user-decision",
+      "deferred_findings: [] is required for pass",
+      "review_scope: bounded-recovery-final",
+      "bounded recovery stops before semantic correction"
+    ],
+    "allowed_research_exception": {
+      "severity": [],
+      "required_fields": [],
+      "result": "none during active recovery; stop recovery first"
+    },
+    "allowed_scope_escalation": {
+      "signals": [
+        "new blocker or major inside a declared recovery surface",
+        "frozen subject hash changes",
+        "user changes the requested terminal state"
+      ],
+      "result": "stop recovery and return user-decision; use normal remediation only after approval"
+    }
+  }
+}

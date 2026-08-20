@@ -38,48 +38,46 @@ description: "Оркестрирует предварительное иссле
    ETA не передаётся ролям и не влияет на качество или scope.
    Внешняя запись и checklist требуют read-back; checklist использует отдельный `progress_target_id` и штатный migration.
 9. **Качество имеет критерий достаточности.** `blocker` и `major` закрываются
-    пакетной `--batch-complete` remediation: baseline/coverage сохраняются, а re-review
-    проверяет delta. Два batches на kernel epoch — предел; затем только root-cause
-    escalation или user decision. Доказанные high-risk surfaces получают один
-    ранний risk-preflight и полную review matrix; обычная задача — ни одного
-    нового прохода. `minor` и research следуют критерию достаточности из
+    пакетной `--batch-complete` remediation: baseline/coverage сохраняются, re-review
+    проверяет delta, а два batches на kernel epoch — предел. Доказанные high-risk
+    surfaces получают один ранний risk-preflight; обычная задача — ни одного нового
+    прохода. `minor` и research следуют критерию достаточности из
     `{baseDir}/references/convergence-contract.md`.
 10. **Скрытый case не заменяет рабочий документ.** Создай объявленную видимую
     проекцию до анализа. В `milestones` обновляй её полным draft на смысловых
     вехах, в `per-block` — после каждого reviewed блока. Это не публикация.
 11. **Project-conformance имеет машинный барьер.** Если profile объявляет
-    `document_*` contract, core проверяет закреплённый draft и локальную рабочую
-    проекцию до `pass`; текстовый verdict ревьюера не перекрывает ошибку
-    обязательного раздела, оглавления или якоря. После исправления и нового
-    read-back нужен свежий pass только после semantic/project-contract delta.
+    `document_*` contract, core проверяет draft и рабочую проекцию до `pass`;
+    текстовый verdict не перекрывает ошибку раздела, оглавления или якоря.
+    После исправления и read-back нужен свежий pass только после semantic delta.
     Editorial delta закрывается machine check и явным `record-change`.
 12. **Готовая постановка не равна готовой поставке.** Закрытие постановочных
-    gates означает только готовность specification artifact. Внешние terminal
-    statuses, закрытие delivery task или инцидента разрешены только по lifecycle
-    policy проекта и подтверждённому delivery evidence; публикация текста сама
-    по себе таким evidence не является.
-13. **Граница решения защищена с двух сторон.** Частный запрос — наблюдаемый
+    gates означает только готовность specification artifact. Внешний terminal
+    status требует lifecycle policy и подтверждённый delivery evidence.
+13. **Замороженный case восстанавливается только по явной границе.** Не запускай re-analysis
+    из-за stale state: следуй `{baseDir}/references/bounded-recovery.md`; новый major требует user decision.
+14. **Граница решения защищена с двух сторон.** Частный запрос — наблюдаемый
     экземпляр потребности, а не автоматически весь класс задач. Анализируй
     системно, реализуй подтверждённый scope и сохраняй обоснованный путь
     расширения, но не строй механизм «на будущее» без evidence. Выбирай
     `tactical|bounded-systemic|generalized-capability` строго по
     `{baseDir}/references/solution-boundary-contract.md`; финальное решение живёт
     в существующем `decisions.md`, а не в новом артефакте.
-14. **Человекочитаемая User Story не подменяется системной моделью.** Если
+15. **Человекочитаемая User Story не подменяется системной моделью.** Если
     profile объявляет `user_story` contract, каждая история следует одной
     project-owned форме role-goal-value. `RULE/DATA/IF/AC/DOD` остаются
     отдельными трассируемыми слоями; таблицы `ACT` и списки `SCN` не заменяют US.
-15. **Трассировка должна навигировать, а не только перечислять ID.** Если
+16. **Трассировка должна навигировать, а не только перечислять ID.** Если
     profile объявляет `traceability` contract, каждый semantic ID в разделе
     трассировки является отдельной внутренней ссылкой на точный существующий
     heading. Сжатые диапазоны и plain-text ID не проходят machine check.
-16. **Сложность должна получать подходящее представление.** Для состояний,
+17. **Сложность должна получать подходящее представление.** Для состояний,
     ветвящейся логики, взаимодействий, границ и неочевидных связей данных пройди
     diagram gate по `{baseDir}/references/diagram-contract.md`. Диаграмма
     отвечает на один вопрос, трассируется к semantic IDs и проходит render QA;
     перегруженная схема декомпозируется, а не уменьшается до нечитаемого размера.
     Рабочий source, QA-render и publication artifacts следуют profile lifecycle; файлы будущей публикации не создаются до её явного gate.
-17. **Публикуй читательскую проекцию, а не внутреннюю модель.** Служебные ID,
+18. **Публикуй читательскую проекцию, а не внутреннюю модель.** Служебные ID,
     findings, gates и reasoning остаются в case package. AC описывают
     наблюдаемую приёмку и прямо ведут к сценарию/точке входа проверки, DoD — готовность результата к ней, а developer
     self-check не публикуется без нормативной причины. Semantic references во
@@ -334,6 +332,7 @@ specification workflow и выполни его:
 Перед research/review полностью прочитай
 `{baseDir}/references/convergence-contract.md`: он определяет, когда поиск можно
 переоткрыть, какие findings блокируют gate и когда нужно идти дальше.
+Для frozen version прочитай `{baseDir}/references/bounded-recovery.md`; начни только через `begin-recovery`.
 Перед системным анализом, design, author passes и global review используй
 `{baseDir}/references/solution-boundary-contract.md`. Принятый boundary должен
 быть записан в `decisions.md` до `author_passes`; изменение decision или
@@ -458,6 +457,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/references/automation-timing.md` | Прогноз, wall-clock ledger, команды и агрегация истории |
 | `{baseDir}/references/execution-policy.md` | Assurance, convergence, additive supervision, artifact bindings и finding-yield telemetry |
 | `{baseDir}/references/convergence-contract.md` | Порог качества, переоткрытие research и остановка minor-only циклов |
+| `{baseDir}/references/bounded-recovery.md` | Явное восстановление frozen case без нового анализа и бесконечных review |
 | `{baseDir}/references/solution-boundary-contract.md` | Горизонты решения, границы scope и двусторонняя защита от hardcode/overengineering |
 | `{baseDir}/references/diagram-contract.md` | Diagram gate, выбор представления, декомпозиция и render QA |
 | `{baseDir}/references/reader-projection-contract.md` | Граница внутренней модели и итогового текста, UI-пути, AC/DoD, прямые ссылки и ресурсная дисциплина |
@@ -479,7 +479,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/evals/prompt-cookbook/user-journey-screen-context-barrier.json` | Регрессия prompt: UI-сценарий называет экран и видимые поля без повторов и догадок |
 | `{baseDir}/evals/prompt-cookbook/acceptance-verification-context-barrier.json` | Регрессия prompt: каждый AC ведёт тестировщика к точному сценарию или точке входа |
 | `{baseDir}/evals/prompt-cookbook/human-only-timing-boundary.json` | Регрессия prompt: forecast не попадает в модель и не управляет её работой |
-| `{baseDir}/evals/prompt-cookbook/targeted-remediation-preserves-coverage.json`, `{baseDir}/evals/prompt-cookbook/risk-first-batched-convergence.json`, `{baseDir}/evals/prompt-cookbook/execution-economy-terminal-green.json`, `{baseDir}/evals/prompt-cookbook/legacy-transition-authority.json` | Регрессии prompt: bounded convergence, terminal green и один authoritative implementation path |
+| `{baseDir}/evals/prompt-cookbook/targeted-remediation-preserves-coverage.json`, `{baseDir}/evals/prompt-cookbook/risk-first-batched-convergence.json`, `{baseDir}/evals/prompt-cookbook/execution-economy-terminal-green.json`, `{baseDir}/evals/prompt-cookbook/legacy-transition-authority.json`, `{baseDir}/evals/prompt-cookbook/bounded-recovery-frozen-case.json` | Регрессии prompt: bounded convergence, terminal green, frozen recovery и authoritative implementation path |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/runtime-preferences.md` | User/project toggles для timing, progress и task-manager projection |
 | `{baseDir}/references/automation-timing.md` | Active/business/calendar timing, deferred lifecycle и проектный калибратор |

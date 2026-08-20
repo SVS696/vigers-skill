@@ -96,7 +96,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["contracts"], 5)
         self.assertEqual(counts["runtime_adapters"], 10)
         self.assertEqual(counts["workflows"], 3)
-        self.assertEqual(counts["prompt_evals"], 25)
+        self.assertEqual(counts["prompt_evals"], 26)
 
     def test_scale_and_assurance_are_selected_independently(self) -> None:
         large_local = self.decision(
@@ -473,6 +473,32 @@ class PipelineTests(unittest.TestCase):
         )
         self.assertIn(
             "poll_calls and wait_seconds remain human-only telemetry",
+            expected["required_output_signals"],
+        )
+
+    def test_bounded_recovery_keeps_frozen_case_out_of_reanalysis(self) -> None:
+        eval_path = (
+            spec_pipeline.ROOT
+            / "evals"
+            / "prompt-cookbook"
+            / "bounded-recovery-frozen-case.json"
+        )
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        expected = payload["expected"]
+        self.assertIn(
+            "carry stale blocks forward only through rebase-recovery-block after baseline hash checks",
+            expected["required_actions"],
+        )
+        self.assertIn(
+            "rerun preliminary or full analysis",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "run a third attempt for the same role, mode, and subject",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "bounded recovery stops before semantic correction",
             expected["required_output_signals"],
         )
 
