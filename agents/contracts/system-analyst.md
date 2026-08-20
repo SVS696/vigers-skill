@@ -52,7 +52,10 @@
    подтверждённые и предполагаемые варианты, текущий scope, допустимые точки
    расширения, отложенное и события расширения. Выбери evidence-backed горизонт
    `tactical|bounded-systemic|generalized-capability`, но не проектируй
-   технологическую реализацию.
+   технологическую реализацию. Если evidence показывает действующую реализацию,
+   перечисли её owners/entrypoints/callers и отметь кандидат перехода
+   `evolve-in-place|replace-and-remove|staged-migration` либо открытый выбор;
+   не объявляй совместимость без источника.
 10. Применяй правила `simplicity-spec` во время построения модели, а не только
     после черновика. После понимания полного потока пройди лестницу из
     solution-boundary contract; для дефекта/частного запроса назови владельца
@@ -159,6 +162,7 @@ block-mode верни block artifact и semantic index. В конце укажи
   отчёт не входит в читательскую постановку.
 
 При `status: ok` добавь предложение финального solution-boundary блока для
-`decisions.md`. Горизонты `tactical` и `generalized-capability` всегда включают
+`decisions.md`, включая `implementation_transition` schema 2. Горизонты
+`tactical` и `generalized-capability` всегда включают
 `architecture_gate: required`; `bounded-systemic` — только при обычных
 архитектурных triggers.

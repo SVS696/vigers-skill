@@ -479,7 +479,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/evals/prompt-cookbook/user-journey-screen-context-barrier.json` | Регрессия prompt: UI-сценарий называет экран и видимые поля без повторов и догадок |
 | `{baseDir}/evals/prompt-cookbook/acceptance-verification-context-barrier.json` | Регрессия prompt: каждый AC ведёт тестировщика к точному сценарию или точке входа |
 | `{baseDir}/evals/prompt-cookbook/human-only-timing-boundary.json` | Регрессия prompt: forecast не попадает в модель и не управляет её работой |
-| `{baseDir}/evals/prompt-cookbook/targeted-remediation-preserves-coverage.json`, `{baseDir}/evals/prompt-cookbook/risk-first-batched-convergence.json`, `{baseDir}/evals/prompt-cookbook/execution-economy-terminal-green.json` | Регрессии prompt: bounded convergence и terminal green без усечения evidence |
+| `{baseDir}/evals/prompt-cookbook/targeted-remediation-preserves-coverage.json`, `{baseDir}/evals/prompt-cookbook/risk-first-batched-convergence.json`, `{baseDir}/evals/prompt-cookbook/execution-economy-terminal-green.json`, `{baseDir}/evals/prompt-cookbook/legacy-transition-authority.json` | Регрессии prompt: bounded convergence, terminal green и один authoritative implementation path |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/runtime-preferences.md` | User/project toggles для timing, progress и task-manager projection |
 | `{baseDir}/references/automation-timing.md` | Active/business/calendar timing, deferred lifecycle и проектный калибратор |

@@ -96,7 +96,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["contracts"], 5)
         self.assertEqual(counts["runtime_adapters"], 10)
         self.assertEqual(counts["workflows"], 3)
-        self.assertEqual(counts["prompt_evals"], 24)
+        self.assertEqual(counts["prompt_evals"], 25)
 
     def test_scale_and_assurance_are_selected_independently(self) -> None:
         large_local = self.decision(
@@ -473,6 +473,28 @@ class PipelineTests(unittest.TestCase):
         )
         self.assertIn(
             "poll_calls and wait_seconds remain human-only telemetry",
+            expected["required_output_signals"],
+        )
+
+    def test_legacy_transition_has_one_authority_and_retirement(self) -> None:
+        eval_path = (
+            spec_pipeline.ROOT
+            / "evals"
+            / "prompt-cookbook"
+            / "legacy-transition-authority.json"
+        )
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        expected = payload["expected"]
+        self.assertIn(
+            "name one authoritative owner for every migration stage",
+            expected["required_actions"],
+        )
+        self.assertIn(
+            "add new business rules to the legacy bridge",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "retirement_trigger",
             expected["required_output_signals"],
         )
 

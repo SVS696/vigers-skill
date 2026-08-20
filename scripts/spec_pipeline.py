@@ -111,6 +111,7 @@ REQUIRED_PROMPT_EVALS = (
     "evals/prompt-cookbook/targeted-remediation-preserves-coverage.json",
     "evals/prompt-cookbook/risk-first-batched-convergence.json",
     "evals/prompt-cookbook/execution-economy-terminal-green.json",
+    "evals/prompt-cookbook/legacy-transition-authority.json",
     "evals/prompt-cookbook/human-only-timing-boundary.json",
     "evals/prompt-cookbook/native-simplicity-with-control.json",
     "evals/prompt-cookbook/process-yagni-no-new-gate.json",

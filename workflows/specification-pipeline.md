@@ -90,7 +90,10 @@ pack.
    `confirmed|changed|split|rejected` и новые элементы, найденные полным анализом.
 6. Проверь final solution boundary по
    `{baseDir}/references/solution-boundary-contract.md`: disposition planning
-   probe, подтверждённый горизонт, current scope, seams, deferred и triggers.
+   probe, подтверждённый горизонт, current scope, seams, deferred, triggers и
+   schema 2 `implementation_transition`. Для существующего поведения запрещены
+   два неограниченных владельца: replacement/staged mode называет superseded
+   paths, authority и retirement trigger.
    Сохрани принятый JSON block в существующий `decisions.md`; отдельный артефакт
    не создавай.
 7. Проверь `simplicity_authoring`: модель строилась от минимального текущего
@@ -131,7 +134,10 @@ replanning из `planning-pipeline.md`. Не сохраняй частичную
    хранилище, событие, очередь, конфигуратор или иной механизм имеет текущий
    requirement/constraint ref; указаны `chosen_rung`, protected-floor check и
    предел осознанного упрощения; необоснованное удалено или отложено.
-7. `decision-required` вынеси пользователю, только если выбор существенно
+7. При replacement или staged migration сверь одного authoritative owner,
+   полный cutover/rollback и запрет новой бизнес-логики в legacy. Отсутствующий
+   retirement trigger — незакрытое решение, а не допустимый residual.
+8. `decision-required` вынеси пользователю, только если выбор существенно
    меняет scope, необратимость, стоимость или архитектурный канон.
 
 **Выход:** архитектура не требуется либо существует согласованная

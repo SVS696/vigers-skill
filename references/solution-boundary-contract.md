@@ -73,6 +73,31 @@ roadmap или признак дорогой/необратимой будуще
 корневого смысла один раз, а не размножай одинаковые исключения по блокам,
 сценариям и читательским проекциям.
 
+## Жизненный цикл существующей реализации
+
+Если способность уже реализована, решение обязано выбрать один переходный
+режим до delivery:
+
+- `evolve-in-place` — меняется действующий semantic owner без параллельного
+  владельца того же поведения;
+- `replace-and-remove` — новый owner заменяет перечисленные пути, а их удаление
+  входит в текущую поставку;
+- `staged-migration` — временное сосуществование доказано совместимостью,
+  переносом данных или rollback; каждая стадия называет единственного
+  authoritative owner.
+
+Количество routes, adapters или handlers само по себе не определяет дефект.
+Дефект — два необозначенных владельца одного правила либо legacy, которое
+продолжает получать новую бизнес-логику. Для replacement перечисли старые
+entrypoints/callers/routes/data/tests, целевого владельца и событие удаления.
+Для staged migration дополнительно зафиксируй причину сосуществования, стадии,
+rollback boundary и измеримый `retirement_trigger`. Compatibility adapter может
+только переводить контракт; новые правила принадлежат authoritative owner.
+
+Не удаляй старый путь раньше доказанного cutover, если это нарушает protected
+floor совместимости, данных или восстановления. Но и не сохраняй его «на всякий
+случай»: бессрочное сосуществование без trigger — открытое решение, а не дизайн.
+
 ## Два слоя простоты
 
 `simplicity-spec` применяется не как косметический финальный фильтр, а двумя
@@ -145,7 +170,7 @@ refs в `plan.json.solution_boundary_probe`:
 <!-- vigers:solution-boundary:start -->
 ```json
 {
-  "schema": 1,
+  "schema": 2,
   "solution_horizon": "bounded-systemic",
   "observed_case": "Наблюдаемый запрос",
   "root_capability": "Корневая пользовательская способность",
@@ -165,6 +190,15 @@ refs в `plan.json.solution_boundary_probe`:
     "irreversibility_signals": []
   },
   "hotfix_exception": null,
+  "implementation_transition": {
+    "mode": "replace-and-remove",
+    "authoritative_owner": "Целевой semantic owner",
+    "superseded_paths": ["Старый entrypoint или owner"],
+    "coexistence_reason": null,
+    "stages": [],
+    "retirement_trigger": "Новый путь прошёл приёмку текущей поставки",
+    "rollback_boundary": "До необратимого cutover"
+  },
   "planning_probe_disposition": {
     "status": "confirmed",
     "rationale": "Полный анализ подтвердил предварительную границу"
@@ -173,6 +207,8 @@ refs в `plan.json.solution_boundary_probe`:
 ```
 <!-- vigers:solution-boundary:end -->
 
+Schema 1 остаётся валидной для уже начатых case и не содержит
+`implementation_transition`; новые решения используют schema 2.
 `confirmed_variants` всегда имеют evidence. `hypothesized_variants` не входят в
 scope. `extension_seams` могут быть пусты только с
 `extension_seam_absence_reason`. Для `tactical` обязателен `hotfix_exception` с
@@ -190,6 +226,7 @@ scope. `extension_seams` могут быть пусты только с
   `bounded-systemic` включает эти гейты только при обычных архитектурных
   triggers.
 - Постановка и delivery handoff явно разделяют `current_scope`,
-  `extension_seams`, `deferred_variants` и `expansion_triggers`.
+  `extension_seams`, `deferred_variants`, `expansion_triggers` и принятый
+  `implementation_transition`.
 - Исполнитель получает принятый горизонт, но не расширяет scope и не
   переизобретает горизонт самостоятельно.

@@ -84,6 +84,12 @@ SOLUTION_HORIZONS = {
     "bounded-systemic",
     "generalized-capability",
 }
+SOLUTION_BOUNDARY_SCHEMAS = {1, 2}
+IMPLEMENTATION_TRANSITION_MODES = {
+    "evolve-in-place",
+    "replace-and-remove",
+    "staged-migration",
+}
 
 BLOCK_KINDS = {
     "context",
@@ -312,6 +318,10 @@ def planning_role_context(payload: dict[str, Any]) -> dict[str, Any]:
     }
     if payload.get("solution_boundary_probe") is not None:
         result["solution_boundary_probe"] = payload["solution_boundary_probe"]
+    if "minimum_solution_boundary_schema" in payload:
+        result["minimum_solution_boundary_schema"] = payload[
+            "minimum_solution_boundary_schema"
+        ]
     result["fingerprint"] = role_context_fingerprint(result)
     return result
 
@@ -325,6 +335,16 @@ def solution_boundary_probe_present(root: Path, manifest: dict[str, Any]) -> boo
     return isinstance(payload, dict) and isinstance(
         payload.get("solution_boundary_probe"), dict
     )
+
+
+def minimum_solution_boundary_schema(root: Path, manifest: dict[str, Any]) -> int:
+    """Return the pinned schema floor; absence preserves legacy case behavior."""
+    relative = manifest.get("artifacts", {}).get("planning_role_context")
+    if not isinstance(relative, str):
+        return 1
+    payload = read_json(case_file(root, relative))
+    value = payload.get("minimum_solution_boundary_schema")
+    return value if value in SOLUTION_BOUNDARY_SCHEMAS else 1
 
 
 def extract_solution_boundary(path: Path) -> dict[str, Any] | None:
@@ -359,8 +379,9 @@ def validate_solution_boundary(
 ) -> list[str]:
     """Validate the final evidence-bound scope and extensibility decision."""
     errors: list[str] = []
-    if payload.get("schema") != 1:
-        errors.append("solution boundary schema must be 1")
+    schema = payload.get("schema")
+    if schema not in SOLUTION_BOUNDARY_SCHEMAS:
+        errors.append("solution boundary schema must be 1 or 2")
     horizon = payload.get("solution_horizon")
     if horizon not in SOLUTION_HORIZONS:
         errors.append("solution_horizon is invalid")
@@ -462,6 +483,109 @@ def validate_solution_boundary(
             errors.append("planning_probe_disposition requires rationale")
         if planning_probe_present and disposition.get("status") == "not_available":
             errors.append("an available planning probe cannot be marked not_available")
+
+    transition = payload.get("implementation_transition")
+    if schema == 1:
+        if transition is not None:
+            errors.append("implementation_transition requires solution boundary schema 2")
+        return errors
+    if not isinstance(transition, dict):
+        errors.append("schema 2 requires implementation_transition")
+        return errors
+
+    mode = transition.get("mode")
+    if mode not in IMPLEMENTATION_TRANSITION_MODES:
+        errors.append("implementation_transition mode is invalid")
+    owner = transition.get("authoritative_owner")
+    if not isinstance(owner, str) or not owner.strip():
+        errors.append("implementation_transition requires authoritative_owner")
+
+    def transition_text_array(field: str) -> list[str]:
+        value = transition.get(field)
+        if not isinstance(value, list) or any(
+            not isinstance(item, str) or not item.strip() for item in value
+        ):
+            errors.append(f"implementation_transition {field} must be an array of text")
+            return []
+        normalized = [item.strip() for item in value]
+        if len(set(normalized)) != len(normalized):
+            errors.append(f"implementation_transition {field} must be unique")
+        return normalized
+
+    superseded = transition_text_array("superseded_paths")
+    if isinstance(owner, str) and owner.strip() in superseded:
+        errors.append("authoritative_owner cannot be a superseded path")
+
+    stages = transition.get("stages")
+    if not isinstance(stages, list):
+        errors.append("implementation_transition stages must be an array")
+        stages = []
+    stage_names: list[str] = []
+    stage_owners: list[str] = []
+    temporary_path_count = 0
+    for index, stage in enumerate(stages, start=1):
+        label = f"implementation_transition stages[{index}]"
+        if not isinstance(stage, dict):
+            errors.append(f"{label} must be an object")
+            continue
+        for field in ("name", "authoritative_owner"):
+            if not isinstance(stage.get(field), str) or not stage[field].strip():
+                errors.append(f"{label} requires {field}")
+        if isinstance(stage.get("name"), str) and stage["name"].strip():
+            stage_names.append(stage["name"].strip())
+        if (
+            isinstance(stage.get("authoritative_owner"), str)
+            and stage["authoritative_owner"].strip()
+        ):
+            stage_owners.append(stage["authoritative_owner"].strip())
+        temporary = stage.get("temporary_paths")
+        if not isinstance(temporary, list) or any(
+            not isinstance(item, str) or not item.strip() for item in temporary
+        ):
+            errors.append(f"{label} temporary_paths must be an array of text")
+        else:
+            temporary_path_count += len(temporary)
+            if len(set(temporary)) != len(temporary):
+                errors.append(f"{label} temporary_paths must be unique")
+    if len(set(stage_names)) != len(stage_names):
+        errors.append("implementation_transition stage names must be unique")
+
+    coexistence = transition.get("coexistence_reason")
+    retirement = transition.get("retirement_trigger")
+    rollback = transition.get("rollback_boundary")
+    for field, value in (
+        ("coexistence_reason", coexistence),
+        ("retirement_trigger", retirement),
+        ("rollback_boundary", rollback),
+    ):
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            errors.append(f"implementation_transition {field} must be text or null")
+
+    if mode == "evolve-in-place":
+        if superseded or stages or any(
+            value is not None for value in (coexistence, retirement, rollback)
+        ):
+            errors.append("evolve-in-place cannot retain a parallel legacy path")
+    elif mode == "replace-and-remove":
+        if not superseded:
+            errors.append("replace-and-remove requires superseded_paths")
+        if stages or coexistence is not None:
+            errors.append("replace-and-remove cannot declare staged coexistence")
+        if not isinstance(retirement, str) or not retirement.strip():
+            errors.append("replace-and-remove requires retirement_trigger")
+    elif mode == "staged-migration":
+        if not superseded:
+            errors.append("staged-migration requires superseded_paths")
+        if not isinstance(coexistence, str) or not coexistence.strip():
+            errors.append("staged-migration requires coexistence_reason")
+        if not stages or temporary_path_count == 0:
+            errors.append("staged-migration requires stages with temporary_paths")
+        if isinstance(owner, str) and owner.strip() not in stage_owners:
+            errors.append("staged-migration stages must reach authoritative_owner")
+        if not isinstance(retirement, str) or not retirement.strip():
+            errors.append("staged-migration requires retirement_trigger")
+        if not isinstance(rollback, str) or not rollback.strip():
+            errors.append("staged-migration requires rollback_boundary")
     return errors
 
 
@@ -478,10 +602,17 @@ def solution_boundary_errors(
         return None, [str(exc)]
     if payload is None:
         return None, (["decisions.md has no final solution-boundary block"] if required else [])
-    return payload, validate_solution_boundary(
+    errors = validate_solution_boundary(
         payload,
         planning_probe_present=solution_boundary_probe_present(root, manifest),
     )
+    minimum_schema = minimum_solution_boundary_schema(root, manifest)
+    if isinstance(payload.get("schema"), int) and payload["schema"] < minimum_schema:
+        errors.append(
+            f"solution boundary schema {payload['schema']} is below case minimum "
+            f"{minimum_schema}"
+        )
+    return payload, errors
 
 
 def role_context_fingerprint(payload: dict[str, Any]) -> str:

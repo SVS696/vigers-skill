@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "id": "legacy-transition-authority",
+  "purpose": "Проверить, что замена существующей реализации не создаёт бессрочный параллельный legacy path и сохраняет совместимость через ограниченную миграцию.",
+  "prompt": "<assignment>\nrole: solution-architect\nmode: design\ntarget: health synchronization bridge replacement\nsolution_horizon: bounded-systemic\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"repository\">Legacy health bridge owns eight public endpoints and the current business rules. A new health-sync owner already covers the confirmed target capability.</document>\n<document id=\"SRC-002\" origin=\"compatibility-contract\">Existing mobile clients require the old endpoint shape for one release. Contract translation is allowed; new business rules must live only in the new owner.</document>\n<document id=\"SRC-003\" origin=\"release-policy\">The old endpoint can be removed after supported clients migrate and rollback is no longer required.</document>\n</source_documents>\n\n<final_instruction>\nВерни solution-boundary schema 2. Выбери переходный режим, обозначь authority/cutover/rollback/retirement и не расширяй подтверждённый scope.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "choose staged-migration because bounded compatibility evidence requires temporary coexistence",
+      "inventory the legacy bridge as a superseded path",
+      "name one authoritative owner for every migration stage",
+      "bound the old endpoint to contract translation only",
+      "define rollback boundary and measurable retirement trigger"
+    ],
+    "forbidden_actions": [
+      "keep both implementations without a cutover plan",
+      "add new business rules to the legacy bridge",
+      "create adapters independently in every caller",
+      "delete the compatibility path before the supported-client boundary",
+      "treat eight endpoints alone as proof of a defect"
+    ],
+    "required_output_signals": [
+      "implementation_transition: staged-migration",
+      "authoritative_owner",
+      "superseded_paths",
+      "stages with authority",
+      "retirement_trigger",
+      "rollback_boundary"
+    ],
+    "allowed_research_exception": {
+      "severity": ["blocker", "major"],
+      "condition": "only when caller or compatibility evidence cannot identify authority or safe cutover"
+    }
+  }
+}
