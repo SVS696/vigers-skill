@@ -110,6 +110,7 @@ kernel edit: in_progress|analyzed|reviewed|integrated → stale → ready
 ```
 
 - `ready` разрешён только после `reviewed|integrated` всех зависимостей.
+- Переход risk-блока в `in_progress` требует свежий `risk_preflight: pass`.
 - `analyzed` требует заполненные `.md` и `.index.json`.
 - `reviewed` требует review artifact и свежий kernel snapshot.
 - `integrated` требует заполненный `draft.md`.
@@ -128,9 +129,10 @@ Review report — evidence гейта, а не повод автоматичес
 - для minor-only уже использован не более чем один polish-pass текущего гейта.
 
 Повторяй только затронутый review gate и детерминированные проверки. `pass` не
-переоткрывается из-за residual minor. Если тот же `blocker/major` остаётся после
-двух точечных циклов, состояние становится `user-decision`; третий автоматический
-цикл запрещён. Полные правила заданы в
+переоткрывается из-за residual minor. Новый `batched-v2` блок допускает максимум
+два remediation batches на kernel epoch независимо от finding IDs; третий
+finding-by-finding цикл запрещён. Root-cause escalation требует явного
+crosscutting/architecture kernel change. Полные правила заданы в
 `{baseDir}/references/convergence-contract.md`.
 
 ## Базовые команды
@@ -145,7 +147,17 @@ python3 {baseDir}/scripts/case_pipeline.py add-block \
 
 python3 {baseDir}/scripts/case_pipeline.py add-block \
   --case-root "<path>" --id B02 --kind interfaces --title "Публичный контракт" \
-  --depends-on B01
+  --depends-on B01 --risk-surface partial-failure --risk-surface concurrency
+
+python3 {baseDir}/scripts/case_pipeline.py context \
+  --case-root "<path>" --role solution-architect --role-mode risk-preflight
+
+python3 {baseDir}/scripts/case_pipeline.py record-risk-preflight \
+  --case-root "<path>" --evidence "risk-preflight.json"
+
+python3 {baseDir}/scripts/case_pipeline.py declare-risk \
+  --case-root "<path>" --id B03 --risk-surface partial-failure \
+  --reason "Early analysis found a partial-write boundary"
 
 python3 {baseDir}/scripts/case_pipeline.py transition \
   --case-root "<path>" --id B01 --status ready
@@ -162,6 +174,7 @@ python3 {baseDir}/scripts/case_pipeline.py begin-remediation \
   --case-root "<path>" --id B01 \
   --finding "REV-014=major" --semantic-id "REQ-B01-003" \
   --evidence "reviews/history/global_review-r001.md" \
+  --batch-complete \
   --reason "<accepted finding and bounded correction>"
 
 python3 {baseDir}/scripts/case_pipeline.py record-remediation \
@@ -249,7 +262,7 @@ read-back; для `completion_owner: user` нужен новый пользов�
 `method-context.json/md`. Редактору и архитектору эти файлы не выдаются: они
 работают с уже полученной моделью требований и своими контрактами.
 Архитектор получает отдельный `--role solution-architect --role-mode
-design|conformance` и только объявленные contract surfaces.
+risk-preflight|design|conformance` и только объявленные contract surfaces.
 В compact-mode вызывай `context` без `--block`; в block-mode `--block Bxx`
 обязателен.
 
@@ -271,7 +284,8 @@ kernel hash. Широкая инвалидация требует `--invalidate-
 Projection-only не допускает изменений semantic artifacts вообще. Одной
 декларации scope недостаточно для переноса review evidence.
 
-Новый блок с `remediation_contract: targeted-v1` нельзя вернуть из
+Legacy-блок с `remediation_contract: targeted-v1` и новый блок с `batched-v2`
+нельзя вернуть из
 `reviewed|integrated` в работу обычным `transition`. `begin-remediation`
 сохраняет immutable copies предыдущего блока, index и finding evidence, а также
 ограничивает targeted delta перечисленными semantic IDs. Повторный block report
@@ -282,6 +296,13 @@ consistency, document checks и projection read-back `record-remediation`
 создаёт audit receipts и переносит только действительно существовавшие passed
 whole-case review gates. Изменение любого постороннего semantic artifact
 блокирует перенос.
+
+`add-block --risk-surface` включает условный ранний контракт. Один
+`risk-preflight` report покрывает все объявленные block/surface pairs, связан с
+current kernel и завершённым architect agent-run и хранится immutable revision.
+Risk block review также связывается с reviewer run и закрывает полную surface
+matrix одним проходом. Targeted remediation использует прежнее покрытие и эту
+матрицу не открывает заново.
 
 Planning stages `Pxx` и semantic blocks `Bxx` — разные DAG. Первый измеряет
 исполнение approved плана, второй управляет смысловой сборкой постановки. Не

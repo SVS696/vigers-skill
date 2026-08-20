@@ -427,7 +427,13 @@ class CasePipelineTests(unittest.TestCase):
         case_pipeline.refresh_kernel(loaded_root, manifest, ledger, [])
         return root
 
-    def add(self, root: Path, block_id: str, depends_on: list[str] | None = None) -> None:
+    def add(
+        self,
+        root: Path,
+        block_id: str,
+        depends_on: list[str] | None = None,
+        risk_surfaces: list[str] | None = None,
+    ) -> None:
         loaded_root, manifest, ledger = case_pipeline.load_case(root)
         case_pipeline.add_block(
             loaded_root,
@@ -437,6 +443,35 @@ class CasePipelineTests(unittest.TestCase):
             title=f"Block {block_id}",
             kind="scenarios",
             depends_on=depends_on or [],
+            risk_surfaces=risk_surfaces,
+        )
+
+    def record_agent_run(
+        self,
+        root: Path,
+        *,
+        role: str,
+        role_mode: str,
+        subject_sha256: str,
+    ) -> str:
+        loaded_root, manifest, ledger = case_pipeline.load_case(root)
+        return case_pipeline.record_agent_run(
+            loaded_root,
+            manifest,
+            ledger,
+            role=role,
+            role_mode=role_mode,
+            model="test-model",
+            subject_sha256=subject_sha256,
+            input_bytes=100,
+            input_tokens=10,
+            output_tokens=10,
+            duration_seconds=1.0,
+            retries=0,
+            reported_blocker=0,
+            reported_major=0,
+            reported_minor=0,
+            cache_status="miss",
         )
 
     def transition(self, root: Path, block_id: str, status: str, note: str | None = None) -> None:
@@ -552,6 +587,7 @@ class CasePipelineTests(unittest.TestCase):
                 semantic_ids=["SCN-B01-001"],
                 evidence="reviews/global.md",
                 reason="Resolve the accepted ambiguity only",
+                batch_complete=True,
             )
             self.assertEqual(remediation["scope"], "targeted")
 
@@ -615,6 +651,7 @@ class CasePipelineTests(unittest.TestCase):
                 semantic_ids=["REQ-B01-001"],
                 evidence="reviews/global.md",
                 reason="Correct only REQ-B01-001",
+                batch_complete=True,
             )
             index_path = root / "blocks" / "B01.index.json"
             index = json.loads(index_path.read_text(encoding="utf-8"))
@@ -646,6 +683,405 @@ class CasePipelineTests(unittest.TestCase):
             ):
                 self.transition(root, "B01", "in_progress")
 
+    def test_high_risk_block_requires_preflight_and_complete_review_matrix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(
+                root,
+                "B01",
+                risk_surfaces=["partial-failure", "concurrency"],
+            )
+            self.transition(root, "B01", "ready")
+            with self.assertRaisesRegex(
+                case_pipeline.CaseError,
+                "record a complete risk preflight",
+            ):
+                self.transition(root, "B01", "in_progress")
+
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                block_id=None,
+                role="solution-architect",
+                role_mode="risk-preflight",
+            )
+            self.assertEqual(
+                context["risk_scope"][0]["risk_surfaces"],
+                ["partial-failure", "concurrency"],
+            )
+            run_id = self.record_agent_run(
+                root,
+                role="solution-architect",
+                role_mode="risk-preflight",
+                subject_sha256=context["subject_sha256"],
+            )
+            _, manifest, _ = case_pipeline.load_case(root)
+            incomplete = {
+                "schema": case_pipeline.RISK_PREFLIGHT_SCHEMA,
+                "case_id": manifest["case_id"],
+                "kernel_sha256": manifest["kernel"]["sha256"],
+                "agent_run_id": run_id,
+                "decisions": ["Keep destructive state transitions atomic"],
+                "unresolved": [],
+                "coverage": [
+                    {
+                        "block_id": "B01",
+                        "surface": "partial-failure",
+                        "status": "covered",
+                        "rationale": "Partial results have an explicit terminal state",
+                        "evidence_refs": ["DEC-RISK-001"],
+                    }
+                ],
+            }
+            evidence_path = root / "risk-preflight.json"
+            evidence_path.write_text(json.dumps(incomplete, indent=2) + "\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "does not cover"):
+                case_pipeline.record_risk_preflight(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    evidence="risk-preflight.json",
+                )
+
+            complete = dict(incomplete)
+            complete["coverage"] = [
+                *incomplete["coverage"],
+                {
+                    "block_id": "B01",
+                    "surface": "concurrency",
+                    "status": "covered",
+                    "rationale": "The mutation owner serializes conflicting writes",
+                    "evidence_refs": ["DEC-RISK-002"],
+                },
+            ]
+            evidence_path.write_text(json.dumps(complete, indent=2) + "\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_risk_preflight(
+                loaded_root,
+                manifest,
+                ledger,
+                evidence="risk-preflight.json",
+            )
+            self.transition(root, "B01", "in_progress")
+            replace_todo(root / "blocks" / "B01.md", "# B01\n\nHigh-risk analysis")
+            add_definition(root, "B01", "SCN-B01-001", "scenario")
+            self.transition(root, "B01", "analyzed")
+
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            block = case_pipeline.blocks_by_id(ledger)["B01"]
+            review_run = self.record_agent_run(
+                root,
+                role="spec-reviewer",
+                role_mode="block",
+                subject_sha256=case_pipeline.block_review_subject_hash(
+                    loaded_root,
+                    manifest,
+                    block,
+                ),
+            )
+            replace_todo(
+                root / "reviews" / "B01.md",
+                "# Risk review\n\n"
+                f"review_agent_run: {review_run}\n"
+                "review_scope: full-block\n"
+                "finding_batch_complete: true\n"
+                "risk_surface: partial-failure=F-B01-001\n\n"
+                "F-B01-001 major",
+            )
+            with self.assertRaisesRegex(case_pipeline.CaseError, "risk review does not cover"):
+                self.transition(root, "B01", "reviewed")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "initial risk review is incomplete"):
+                case_pipeline.begin_block_remediation(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    block_id="B01",
+                    findings=[{"id": "F-B01-001", "severity": "major"}],
+                    semantic_ids=["SCN-B01-001"],
+                    evidence="reviews/B01.md",
+                    reason="Incomplete surface sweep must not start remediation",
+                    batch_complete=True,
+                )
+            replace_todo(
+                root / "reviews" / "B01.md",
+                "# Risk review\n\n"
+                f"review_agent_run: {review_run}\n"
+                "review_scope: full-block\n"
+                "finding_batch_complete: true\n"
+                "risk_surface: partial-failure=F-B01-001\n"
+                "risk_surface: concurrency=pass\n\n"
+                "F-B01-001 major",
+            )
+            with self.assertRaisesRegex(
+                case_pipeline.CaseError,
+                "open findings requiring begin-remediation",
+            ):
+                self.transition(root, "B01", "reviewed")
+            replace_todo(
+                root / "reviews" / "B01.md",
+                "# Risk review\n\n"
+                f"review_agent_run: {review_run}\n"
+                "review_scope: full-block\n"
+                "finding_batch_complete: true\n"
+                "risk_surface: partial-failure=pass\n"
+                "risk_surface: concurrency=pass\n\nPASS",
+            )
+            self.transition(root, "B01", "reviewed")
+            _, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(case_pipeline.validate_case(root, manifest, ledger, final=False), [])
+
+    def test_discovered_risk_pauses_authoring_until_preflight_is_replaced(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.transition(root, "B01", "ready")
+            self.transition(root, "B01", "in_progress")
+
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            surfaces = case_pipeline.declare_block_risks(
+                loaded_root,
+                manifest,
+                ledger,
+                block_id="B01",
+                risk_surfaces=["partial-failure"],
+                reason="Early analysis found a partial-write boundary",
+            )
+            self.assertEqual(surfaces, ["partial-failure"])
+            _, manifest, ledger = case_pipeline.load_case(root)
+            block = case_pipeline.blocks_by_id(ledger)["B01"]
+            self.assertEqual(block["status"], "blocked")
+            self.assertEqual(block["risk_surfaces"], ["partial-failure"])
+            self.assertTrue(
+                any(
+                    item.get("kind") == "block_risk_declared"
+                    for item in manifest["events"]
+                )
+            )
+
+            self.transition(root, "B01", "ready")
+            with self.assertRaisesRegex(
+                case_pipeline.CaseError,
+                "record a complete risk preflight",
+            ):
+                self.transition(root, "B01", "in_progress")
+
+    def test_targeted_kernel_refresh_reopens_only_affected_risk_preflight(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01", risk_surfaces=["partial-failure"])
+            self.add(root, "B02", risk_surfaces=["concurrency"])
+
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                block_id=None,
+                role="solution-architect",
+                role_mode="risk-preflight",
+            )
+            run_id = self.record_agent_run(
+                root,
+                role="solution-architect",
+                role_mode="risk-preflight",
+                subject_sha256=context["subject_sha256"],
+            )
+            _, manifest, _ = case_pipeline.load_case(root)
+            payload = {
+                "schema": case_pipeline.RISK_PREFLIGHT_SCHEMA,
+                "case_id": manifest["case_id"],
+                "kernel_sha256": manifest["kernel"]["sha256"],
+                "agent_run_id": run_id,
+                "decisions": ["Keep both risk boundaries explicit"],
+                "unresolved": [],
+                "coverage": [
+                    {
+                        "block_id": "B01",
+                        "surface": "partial-failure",
+                        "status": "covered",
+                        "rationale": "Partial failure has a terminal state",
+                        "evidence_refs": ["DEC-RISK-001"],
+                    },
+                    {
+                        "block_id": "B02",
+                        "surface": "concurrency",
+                        "status": "covered",
+                        "rationale": "Conflicting writes are serialized",
+                        "evidence_refs": ["DEC-RISK-002"],
+                    },
+                ],
+            }
+            evidence_path = root / "risk-preflight.json"
+            evidence_path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            first = case_pipeline.record_risk_preflight(
+                loaded_root,
+                manifest,
+                ledger,
+                evidence="risk-preflight.json",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            repeated = case_pipeline.record_risk_preflight(
+                loaded_root,
+                manifest,
+                ledger,
+                evidence="risk-preflight.json",
+            )
+            self.assertEqual(repeated["revision"], first["revision"])
+
+            replace_todo(root / "kernel.md", "# Kernel\n\nB01 local rule changed")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.refresh_kernel(
+                loaded_root,
+                manifest,
+                ledger,
+                ["B01"],
+                change_scope="semantic-local",
+                reason="Only the partial-failure rule changed",
+            )
+            _, manifest, ledger = case_pipeline.load_case(root)
+            blocks = case_pipeline.blocks_by_id(ledger)
+            self.assertEqual(blocks["B01"]["risk_preflight"]["status"], "stale")
+            self.assertEqual(blocks["B02"]["risk_preflight"]["status"], "pass")
+            self.assertEqual(
+                blocks["B02"]["risk_preflight"]["kernel_sha256"],
+                manifest["kernel"]["sha256"],
+            )
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                block_id=None,
+                role="solution-architect",
+                role_mode="risk-preflight",
+            )
+            self.assertEqual(
+                [item["block_id"] for item in context["risk_scope"]],
+                ["B01"],
+            )
+
+    def test_remediation_budget_counts_distinct_findings_and_root_cause_resets_epoch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.analyze_and_review(root, "B01", "SCN-B01-001")
+
+            replace_todo(root / "reviews" / "global.md", "# Finding\n\nF-B01-000 major")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "complete accepted finding batch"):
+                case_pipeline.begin_block_remediation(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    block_id="B01",
+                    findings=[{"id": "F-B01-000", "severity": "major"}],
+                    semantic_ids=["SCN-B01-001"],
+                    evidence="reviews/global.md",
+                    reason="A v2 remediation cannot start from a partial disposition set",
+                )
+
+            for index in (1, 2):
+                finding_id = f"F-B01-00{index}"
+                replace_todo(
+                    root / "reviews" / "global.md",
+                    f"# Finding\n\n{finding_id} major",
+                )
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                remediation = case_pipeline.begin_block_remediation(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    block_id="B01",
+                    findings=[{"id": finding_id, "severity": "major"}],
+                    semantic_ids=["SCN-B01-001"],
+                    evidence="reviews/global.md",
+                    reason=f"Correct batch {index}",
+                    batch_complete=True,
+                )
+                self.assertEqual(remediation["batch_index"], index)
+                replace_todo(
+                    root / "blocks" / "B01.md",
+                    f"# B01\n\nCorrected batch {index}",
+                )
+                index_path = root / "blocks" / "B01.index.json"
+                semantic_index = json.loads(index_path.read_text(encoding="utf-8"))
+                semantic_index["definitions"][0]["summary"] = f"Corrected batch {index}"
+                index_path.write_text(
+                    json.dumps(semantic_index, indent=2) + "\n",
+                    encoding="utf-8",
+                )
+                self.transition(root, "B01", "analyzed")
+                _, _, ledger = case_pipeline.load_case(root)
+                block = case_pipeline.blocks_by_id(ledger)["B01"]
+                prior_review = block["remediations"][-1]["coverage_evidence"]
+                replace_todo(
+                    root / "reviews" / "B01.md",
+                    "# Targeted review\n\n"
+                    "review_scope: targeted-remediation\n"
+                    f"verified_findings: [{finding_id}]\n"
+                    f"coverage_reused: {prior_review}\n\nPASS",
+                )
+                self.transition(root, "B01", "reviewed")
+
+            replace_todo(root / "reviews" / "global.md", "# Finding\n\nF-B01-003 major")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "remediation budget exhausted"):
+                case_pipeline.begin_block_remediation(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    block_id="B01",
+                    findings=[{"id": "F-B01-003", "severity": "major"}],
+                    semantic_ids=["SCN-B01-001"],
+                    evidence="reviews/global.md",
+                    reason="A third unrelated finding must not open another micro-cycle",
+                    batch_complete=True,
+                )
+
+            replace_todo(root / "kernel.md", "# Kernel\n\nRoot-cause architecture corrected")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.refresh_kernel(
+                loaded_root,
+                manifest,
+                ledger,
+                [],
+                change_scope="architecture",
+                invalidate_all=True,
+                reason="Aggregate the repeated findings into one root-cause design change",
+            )
+            _, manifest, ledger = case_pipeline.load_case(root)
+            block = case_pipeline.blocks_by_id(ledger)["B01"]
+            self.assertEqual(block["status"], "stale")
+            self.assertEqual(block["remediation_epoch"], 2)
+            self.assertTrue(
+                any(
+                    item.get("kind") == "remediation_root_cause_reset"
+                    for item in manifest["events"]
+                )
+            )
+
+            self.transition(root, "B01", "ready")
+            self.transition(root, "B01", "in_progress")
+            replace_todo(root / "blocks" / "B01.md", "# B01\n\nRoot-cause rewrite")
+            self.transition(root, "B01", "analyzed")
+            replace_todo(root / "reviews" / "B01.md", "# Review B01\n\nPASS")
+            self.transition(root, "B01", "reviewed")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            remediation = case_pipeline.begin_block_remediation(
+                loaded_root,
+                manifest,
+                ledger,
+                block_id="B01",
+                findings=[{"id": "F-B01-003", "severity": "major"}],
+                semantic_ids=["SCN-B01-001"],
+                evidence="reviews/global.md",
+                reason="First bounded batch after the explicit root-cause reset",
+                batch_complete=True,
+            )
+            self.assertEqual(remediation["epoch"], 2)
+            self.assertEqual(remediation["batch_index"], 1)
+
     def test_full_block_remediation_does_not_reuse_previous_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = self.init(Path(temp))
@@ -663,6 +1099,7 @@ class CasePipelineTests(unittest.TestCase):
                 evidence="reviews/global.md",
                 reason="The block contract must be rewritten",
                 full_block=True,
+                batch_complete=True,
             )
             self.assertIsNone(remediation["coverage_evidence"])
             replace_todo(root / "blocks" / "B01.md", "# B01\n\nRewritten block contract")
@@ -733,6 +1170,7 @@ class CasePipelineTests(unittest.TestCase):
                 semantic_ids=["SCN-B01-001"],
                 evidence="reviews/global.md",
                 reason="Correct the one accepted requirement finding",
+                batch_complete=True,
             )
             replace_todo(root / "blocks" / "B01.md", "# B01\n\nCorrected requirement")
             index_path = root / "blocks" / "B01.index.json"
@@ -927,6 +1365,9 @@ class CasePipelineTests(unittest.TestCase):
                 input_bytes=1200,
                 input_tokens=300,
                 output_tokens=40,
+                tool_calls=9,
+                poll_calls=1,
+                wait_seconds=30,
                 duration_seconds=2.5,
                 retries=0,
                 reported_blocker=0,
@@ -952,6 +1393,9 @@ class CasePipelineTests(unittest.TestCase):
             payload = json.loads((root / case_pipeline.AGENT_LEDGER_JSON).read_text())
             self.assertEqual(payload["runs"][0]["findings"]["major"], 1)
             self.assertEqual(payload["runs"][0]["input_tokens"], 300)
+            self.assertEqual(payload["runs"][0]["tool_calls"], 9)
+            self.assertEqual(payload["runs"][0]["poll_calls"], 1)
+            self.assertEqual(payload["runs"][0]["wait_seconds"], 30)
             self.assertEqual(payload["runs"][0]["lenses"], ["global-logic@1", "project-rules@2"])
             self.assertEqual(
                 payload["runs"][0]["verification"]["dispositions"]["duplicate"],
@@ -960,6 +1404,16 @@ class CasePipelineTests(unittest.TestCase):
             self.assertEqual(
                 case_pipeline.validate_case(loaded_root, manifest, ledger, final=False),
                 [],
+            )
+            payload["runs"][0]["poll_calls"] = -1
+            self.assertTrue(
+                any(
+                    "poll_calls" in error
+                    for error in case_pipeline.validate_agent_ledger(
+                        payload,
+                        case_id=manifest["case_id"],
+                    )
+                )
             )
 
     def test_agent_verification_must_classify_every_finding(self) -> None:
@@ -2246,6 +2700,7 @@ class CasePipelineTests(unittest.TestCase):
                 semantic_ids=["SCN-B01-001"],
                 evidence="reviews/B01.md",
                 reason="Correct the reviewed block before continuing",
+                batch_complete=True,
             )
             replace_todo(root / "blocks" / "B01.md", "# B01\n\nCorrected analysis")
             self.transition(root, "B01", "analyzed")
@@ -2317,6 +2772,7 @@ class CasePipelineTests(unittest.TestCase):
                 semantic_ids=["SCN-B01-001"],
                 evidence="reviews/B01.md",
                 reason="Correct the reviewed block before projection",
+                batch_complete=True,
             )
 
             _, _, ledger = case_pipeline.load_case(root)

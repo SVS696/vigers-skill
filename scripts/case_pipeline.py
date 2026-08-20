@@ -63,6 +63,7 @@ WORKING_PROJECTION_JSON = "working-projection.json"
 WORKING_PROJECTION_SCHEMA = 1
 AGENT_LEDGER_JSON = "agent-ledger.json"
 AGENT_LEDGER_SCHEMA = 1
+RISK_PREFLIGHT_SCHEMA = 1
 PROJECT_CONFORMANCE_CONTRACT_JSON = "project-conformance-contract.json"
 EXTERNAL_READBACK_RECEIPT_SCHEMA = 1
 CASE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
@@ -70,6 +71,7 @@ BLOCK_ID_RE = re.compile(r"^B[0-9]{2,3}$")
 FINDING_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 AGENT_RUN_ID_RE = re.compile(r"^AR-[0-9]{4,}$")
 REVIEW_LENS_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}@[1-9][0-9]*$")
+RISK_SURFACE_RE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 SEMANTIC_ID_RE = re.compile(
     r"^(GOAL|ACT|SCN|RULE|DATA|STATE|IF|QUAL|REQ|AC|DOD|ASM|Q|DEC|CON)-"
     r"(B[0-9]{2,3})-[0-9]{3}$"
@@ -167,6 +169,9 @@ CONTRACT_SURFACES = {
 }
 REMEDIATION_SCOPES = {"targeted", "full-block"}
 REMEDIATION_SEVERITIES = {"blocker", "major"}
+REMEDIATION_CONTRACT_V1 = "targeted-v1"
+REMEDIATION_CONTRACT_V2 = "batched-v2"
+MAX_REMEDIATION_BATCHES = 2
 AGENT_RUN_STATUSES = {"completed", "degraded", "failed", "timed_out"}
 
 
@@ -1865,7 +1870,13 @@ def validate_agent_ledger(payload: Any, *, case_id: str) -> list[str]:
             run["subject_sha256"]
         ):
             errors.append(f"{label} has invalid subject_sha256")
-        for field in ("input_bytes", "input_tokens", "output_tokens"):
+        for field in (
+            "input_bytes",
+            "input_tokens",
+            "output_tokens",
+            "tool_calls",
+            "poll_calls",
+        ):
             value = run.get(field)
             if value is not None and (
                 not isinstance(value, int) or isinstance(value, bool) or value < 0
@@ -1878,6 +1889,13 @@ def validate_agent_ledger(payload: Any, *, case_id: str) -> list[str]:
             or duration < 0
         ):
             errors.append(f"{label} has invalid duration_seconds")
+        wait_seconds = run.get("wait_seconds")
+        if wait_seconds is not None and (
+            not isinstance(wait_seconds, (int, float))
+            or isinstance(wait_seconds, bool)
+            or wait_seconds < 0
+        ):
+            errors.append(f"{label} wait_seconds must be non-negative or null")
         retries = run.get("retries")
         if not isinstance(retries, int) or isinstance(retries, bool) or retries < 0:
             errors.append(f"{label} has invalid retries")
@@ -2038,6 +2056,9 @@ def record_agent_run(
     lenses: list[str] | None = None,
     prompt_artifact: str | None = None,
     output_artifact: str | None = None,
+    tool_calls: int | None = None,
+    poll_calls: int | None = None,
+    wait_seconds: float | None = None,
 ) -> str:
     """Append cost and finding-yield telemetry without exposing it to roles."""
     relative = manifest.get("artifacts", {}).get("agent_ledger")
@@ -2052,6 +2073,8 @@ def record_agent_run(
         "input_bytes": input_bytes,
         "input_tokens": input_tokens,
         "output_tokens": output_tokens,
+        "tool_calls": tool_calls,
+        "poll_calls": poll_calls,
         "retries": retries,
         "reported_blocker": reported_blocker,
         "reported_major": reported_major,
@@ -2062,6 +2085,12 @@ def record_agent_run(
             raise CaseError(f"Agent telemetry {label} must be a non-negative integer or null")
     if duration_seconds < 0:
         raise CaseError("Agent telemetry duration must be non-negative")
+    if wait_seconds is not None and (
+        not isinstance(wait_seconds, (int, float))
+        or isinstance(wait_seconds, bool)
+        or wait_seconds < 0
+    ):
+        raise CaseError("Agent telemetry wait_seconds must be non-negative or null")
     if cache_status not in {"hit", "miss", "unknown"}:
         raise CaseError("Agent telemetry cache status must be hit, miss, or unknown")
     if status not in AGENT_RUN_STATUSES:
@@ -2094,6 +2123,9 @@ def record_agent_run(
         "output_tokens": output_tokens,
         "duration_seconds": duration_seconds,
         "retries": retries,
+        "tool_calls": tool_calls,
+        "poll_calls": poll_calls,
+        "wait_seconds": wait_seconds,
         "findings": {
             "blocker": reported_blocker,
             "major": reported_major,
@@ -2365,6 +2397,7 @@ def add_block(
     title: str,
     kind: str,
     depends_on: list[str],
+    risk_surfaces: list[str] | None = None,
 ) -> None:
     """Add one semantic block to the dependency ledger."""
     if manifest.get("mode") != "block":
@@ -2378,6 +2411,21 @@ def add_block(
     unknown = sorted(set(depends_on) - set(blocks_by_id(ledger)))
     if unknown:
         raise CaseError(f"Unknown dependencies: {', '.join(unknown)}")
+    raw_risk_surfaces = list(risk_surfaces or [])
+    invalid_risk_surfaces = sorted(
+        (
+            item
+            for item in raw_risk_surfaces
+            if not isinstance(item, str) or not RISK_SURFACE_RE.fullmatch(item)
+        ),
+        key=repr,
+    )
+    if invalid_risk_surfaces:
+        raise CaseError(
+            "Risk surfaces must use stable lowercase kebab-case ids: "
+            + ", ".join(repr(item) for item in invalid_risk_surfaces)
+        )
+    normalized_risk_surfaces = list(dict.fromkeys(raw_risk_surfaces))
 
     block = {
         "id": block_id,
@@ -2394,7 +2442,10 @@ def add_block(
         "index_sha256": None,
         "review_sha256": None,
         "review_history": [],
-        "remediation_contract": "targeted-v1",
+        "risk_surfaces": normalized_risk_surfaces,
+        "risk_preflight": None,
+        "remediation_contract": REMEDIATION_CONTRACT_V2,
+        "remediation_epoch": 1,
         "remediations": [],
         "active_remediation": None,
         "status_before_stale": None,
@@ -2426,8 +2477,78 @@ def add_block(
         case_file(root, block["review"]),
         f"# Review {block_id}\n\nVIGERS_TODO\n",
     )
-    manifest["events"].append(event("block_added", block_id=block_id, kind_name=kind))
+    manifest["events"].append(
+        event(
+            "block_added",
+            block_id=block_id,
+            kind_name=kind,
+            risk_surfaces=normalized_risk_surfaces,
+        )
+    )
     save_case(root, manifest, ledger)
+
+
+def declare_block_risks(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    block_id: str,
+    risk_surfaces: list[str],
+    reason: str,
+) -> list[str]:
+    """Add newly evidenced risk surfaces without hand-editing the semantic ledger."""
+    ensure_kernel_synced(root, manifest)
+    blocks = blocks_by_id(ledger)
+    if block_id not in blocks:
+        raise CaseError(f"Unknown block: {block_id}")
+    if not reason.strip():
+        raise CaseError("Declaring block risk requires a reason")
+    if not risk_surfaces:
+        raise CaseError("Declare at least one --risk-surface")
+    invalid = sorted(
+        (
+            surface
+            for surface in risk_surfaces
+            if not isinstance(surface, str) or not RISK_SURFACE_RE.fullmatch(surface)
+        ),
+        key=repr,
+    )
+    if invalid:
+        raise CaseError(
+            "Risk surfaces must use stable lowercase kebab-case ids: "
+            + ", ".join(repr(item) for item in invalid)
+        )
+    block = blocks[block_id]
+    if block.get("status") in {"analyzed", "reviewed", "integrated"}:
+        raise CaseError(
+            f"{block_id}: refresh the kernel with explicit semantic/architecture impact "
+            "before adding risk to an already analyzed block"
+        )
+    current = list(block.get("risk_surfaces", []))
+    added = [surface for surface in dict.fromkeys(risk_surfaces) if surface not in current]
+    if not added:
+        return current
+    block["risk_surfaces"] = [*current, *added]
+    preflight = block.get("risk_preflight")
+    if isinstance(preflight, dict):
+        preflight["status"] = "stale"
+        preflight["stale_reason"] = "risk-scope-expanded"
+    if block.get("status") == "in_progress":
+        block["status"] = "blocked"
+        block["note"] = "new risk surfaces require risk preflight before authoring resumes"
+    block["updated_at"] = now_utc()
+    manifest["events"].append(
+        event(
+            "block_risk_declared",
+            block_id=block_id,
+            added=added,
+            risk_surfaces=block["risk_surfaces"],
+            reason=reason.strip(),
+        )
+    )
+    save_case(root, manifest, ledger)
+    return list(block["risk_surfaces"])
 
 
 def current_kernel(root: Path, manifest: dict[str, Any]) -> tuple[Path, str]:
@@ -2563,6 +2684,23 @@ def refresh_kernel(
         raise CaseError(f"Unknown affected blocks: {', '.join(unknown)}")
     affected = downstream_closure(ledger, seeds)
 
+    root_cause_resets: list[str] = []
+    if change_scope in {"semantic-crosscutting", "architecture"}:
+        for block_id in sorted(affected):
+            block = blocks[block_id]
+            if block.get("remediation_contract") != REMEDIATION_CONTRACT_V2:
+                continue
+            epoch = block.get("remediation_epoch", 1)
+            used = sum(
+                1
+                for remediation in block.get("remediations", [])
+                if isinstance(remediation, dict) and remediation.get("epoch", 1) == epoch
+            )
+            if used == 0:
+                continue
+            block["remediation_epoch"] = epoch + 1
+            root_cause_resets.append(block_id)
+
     previous_assurance = assurance_level(manifest)
     escalated_assurance = previous_assurance
     if change_scope == "architecture" and previous_assurance != "high":
@@ -2597,6 +2735,10 @@ def refresh_kernel(
     stale: list[str] = []
     for block_id in sorted(affected):
         block = blocks[block_id]
+        risk_preflight = block.get("risk_preflight")
+        if isinstance(risk_preflight, dict) and risk_preflight.get("status") == "pass":
+            risk_preflight["status"] = "stale"
+            risk_preflight["stale_reason"] = change_scope or "legacy-full"
         if block["status"] in {"in_progress", "analyzed", "reviewed", "integrated"}:
             block["status_before_stale"] = block["status"]
             block["status"] = "stale"
@@ -2608,6 +2750,10 @@ def refresh_kernel(
     for block_id, block in sorted(blocks.items()):
         if block_id in affected:
             continue
+        risk_preflight = block.get("risk_preflight")
+        if isinstance(risk_preflight, dict) and risk_preflight.get("status") == "pass":
+            risk_preflight["kernel_revision"] = manifest["kernel"]["revision"]
+            risk_preflight["kernel_sha256"] = current_hash
         if block.get("status") in {"analyzed", "reviewed", "integrated"}:
             block["kernel_revision"] = manifest["kernel"]["revision"]
             block["kernel_sha256"] = current_hash
@@ -2652,6 +2798,16 @@ def refresh_kernel(
             reason=reason.strip() if isinstance(reason, str) and reason.strip() else None,
         )
     )
+    for block_id in root_cause_resets:
+        manifest["events"].append(
+            event(
+                "remediation_root_cause_reset",
+                block_id=block_id,
+                remediation_epoch=blocks[block_id]["remediation_epoch"],
+                change_scope=change_scope,
+                reason=reason.strip() if isinstance(reason, str) and reason.strip() else None,
+            )
+        )
     save_case(root, manifest, ledger)
     return stale
 
@@ -2722,6 +2878,407 @@ def immutable_copy(source: Path, target: Path) -> None:
     temporary = target.with_suffix(target.suffix + ".tmp")
     shutil.copy2(source, temporary)
     temporary.replace(target)
+
+
+def required_risk_pairs(
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+) -> set[tuple[str, str]]:
+    """Return risk pairs whose block has no current passed preflight binding."""
+    required: set[tuple[str, str]] = set()
+    current_kernel = manifest.get("kernel", {}).get("sha256")
+    for block in ledger.get("blocks", []):
+        if not isinstance(block, dict):
+            continue
+        surfaces = block.get("risk_surfaces", [])
+        binding = block.get("risk_preflight")
+        is_current = (
+            isinstance(binding, dict)
+            and binding.get("status") == "pass"
+            and binding.get("kernel_sha256") == current_kernel
+        )
+        if is_current:
+            continue
+        required.update(
+            (str(block.get("id")), surface)
+            for surface in surfaces
+            if isinstance(surface, str)
+        )
+    return required
+
+
+def risk_preflight_subject_hash(
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+) -> str:
+    """Hash only the risk assignment that still needs architecture coverage."""
+    required_blocks = {block_id for block_id, _ in required_risk_pairs(manifest, ledger)}
+    scope = [
+        {
+            "block_id": block.get("id"),
+            "title": block.get("title"),
+            "depends_on": block.get("depends_on", []),
+            "risk_surfaces": sorted(block.get("risk_surfaces", [])),
+        }
+        for block in sorted(ledger.get("blocks", []), key=lambda item: item.get("id", ""))
+        if isinstance(block, dict) and block.get("id") in required_blocks
+    ]
+    payload = {
+        "contract": "risk-preflight-v1",
+        "case_id": manifest.get("case_id"),
+        "kernel_sha256": manifest.get("kernel", {}).get("sha256"),
+        "scope": scope,
+    }
+    return hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    ).hexdigest()
+
+
+def declared_risk_pairs(ledger: dict[str, Any]) -> set[tuple[str, str]]:
+    """Return every block/surface pair declared by the semantic DAG."""
+    return {
+        (str(block.get("id")), surface)
+        for block in ledger.get("blocks", [])
+        if isinstance(block, dict)
+        for surface in block.get("risk_surfaces", [])
+        if isinstance(surface, str)
+    }
+
+
+def agent_run_by_id(
+    root: Path,
+    manifest: dict[str, Any],
+    run_id: str,
+) -> dict[str, Any]:
+    """Resolve one validated observability run used by a machine gate."""
+    relative = manifest.get("artifacts", {}).get("agent_ledger")
+    if not isinstance(relative, str):
+        raise CaseError("Case has no agent ledger for risk-gate provenance")
+    payload = read_json(case_file(root, relative))
+    errors = validate_agent_ledger(payload, case_id=str(manifest.get("case_id")))
+    if errors:
+        raise CaseError("agent-ledger.json is invalid: " + "; ".join(errors))
+    matches = [
+        run
+        for run in payload.get("runs", [])
+        if isinstance(run, dict) and run.get("run_id") == run_id
+    ]
+    if len(matches) != 1:
+        raise CaseError(f"Agent run not found: {run_id}")
+    return matches[0]
+
+
+def validate_risk_preflight_payload(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    payload: Any,
+) -> list[dict[str, Any]]:
+    """Validate one complete high-risk architecture matrix and its agent provenance."""
+    if not isinstance(payload, dict):
+        raise CaseError("Risk preflight must be a JSON object")
+    if payload.get("schema") != RISK_PREFLIGHT_SCHEMA:
+        raise CaseError("Risk preflight schema is invalid")
+    if payload.get("case_id") != manifest.get("case_id"):
+        raise CaseError("Risk preflight case_id mismatch")
+    if payload.get("kernel_sha256") != manifest.get("kernel", {}).get("sha256"):
+        raise CaseError("Risk preflight is stale against kernel")
+    expected = required_risk_pairs(manifest, ledger)
+    if not expected:
+        raise CaseError("Risk preflight is not required: every declared surface is current")
+    run_id = payload.get("agent_run_id")
+    if not isinstance(run_id, str) or not AGENT_RUN_ID_RE.fullmatch(run_id):
+        raise CaseError("Risk preflight requires a valid agent_run_id")
+    run = agent_run_by_id(root, manifest, run_id)
+    if (
+        run.get("role") != "solution-architect"
+        or run.get("role_mode") != "risk-preflight"
+        or run.get("subject_sha256") != risk_preflight_subject_hash(manifest, ledger)
+        or run.get("status") != "completed"
+    ):
+        raise CaseError(
+            "Risk preflight agent run must be a completed solution-architect "
+            "risk-preflight run for the current subject"
+        )
+    decisions = payload.get("decisions")
+    if not isinstance(decisions, list) or not decisions or any(
+        not isinstance(item, str) or not item.strip() for item in decisions
+    ):
+        raise CaseError("Risk preflight requires at least one concrete decision")
+    if payload.get("unresolved") != []:
+        raise CaseError("Risk preflight cannot pass with unresolved risk decisions")
+    coverage = payload.get("coverage")
+    if not isinstance(coverage, list):
+        raise CaseError("Risk preflight coverage must be an array")
+    normalized: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for index, item in enumerate(coverage, start=1):
+        if not isinstance(item, dict):
+            raise CaseError(f"Risk preflight coverage row {index} must be an object")
+        block_id = item.get("block_id")
+        surface = item.get("surface")
+        pair = (block_id, surface)
+        if not isinstance(block_id, str) or not isinstance(surface, str) or pair not in expected:
+            raise CaseError(f"Risk preflight coverage row {index} names an unknown surface")
+        if pair in seen:
+            raise CaseError(f"Risk preflight duplicates {block_id}/{surface}")
+        seen.add(pair)
+        status = item.get("status")
+        if status not in {"covered", "not-applicable"}:
+            raise CaseError(f"Risk preflight {block_id}/{surface} has invalid status")
+        rationale = item.get("rationale")
+        if not isinstance(rationale, str) or not rationale.strip():
+            raise CaseError(f"Risk preflight {block_id}/{surface} requires rationale")
+        evidence_refs = item.get("evidence_refs")
+        if not isinstance(evidence_refs, list) or any(
+            not isinstance(ref, str) or not ref.strip() for ref in evidence_refs
+        ):
+            raise CaseError(f"Risk preflight {block_id}/{surface} has invalid evidence_refs")
+        if status == "covered" and not evidence_refs:
+            raise CaseError(f"Risk preflight {block_id}/{surface} requires evidence_refs")
+        normalized.append(
+            {
+                "block_id": block_id,
+                "surface": surface,
+                "status": status,
+                "rationale": rationale.strip(),
+                "evidence_refs": list(evidence_refs),
+            }
+        )
+    missing = sorted(expected - seen)
+    if missing:
+        raise CaseError(
+            "Risk preflight does not cover: "
+            + ", ".join(f"{block_id}/{surface}" for block_id, surface in missing)
+        )
+    return sorted(normalized, key=lambda item: (item["block_id"], item["surface"]))
+
+
+def record_risk_preflight(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    evidence: str,
+) -> dict[str, Any]:
+    """Bind one complete risk-first architecture pass before high-risk authoring."""
+    ensure_kernel_synced(root, manifest)
+    evidence_path = case_file(root, evidence)
+    if not artifact_ready(evidence_path):
+        raise CaseError(f"Risk preflight evidence is missing or incomplete: {evidence}")
+    try:
+        payload = read_json(evidence_path)
+    except CaseError as exc:
+        raise CaseError(f"Invalid risk preflight evidence: {exc}") from exc
+    evidence_sha256 = sha256(evidence_path)
+    history = ledger.setdefault("risk_preflight_history", [])
+    if not isinstance(history, list):
+        raise CaseError("ledger risk_preflight_history must be an array")
+    required = required_risk_pairs(manifest, ledger)
+    if not required:
+        if history:
+            latest = history[-1]
+            if (
+                isinstance(latest, dict)
+                and latest.get("source_sha256") == evidence_sha256
+            ):
+                return latest
+        raise CaseError("Risk preflight is not required: every declared surface is current")
+    coverage = validate_risk_preflight_payload(root, manifest, ledger, payload)
+    subject_sha256 = risk_preflight_subject_hash(manifest, ledger)
+    if history:
+        latest = history[-1]
+        if (
+            isinstance(latest, dict)
+            and latest.get("subject_sha256") == subject_sha256
+            and latest.get("source_sha256") == evidence_sha256
+        ):
+            return latest
+    revision = len(history) + 1
+    snapshot = f"reviews/history/risk-preflight-r{revision:03d}.json"
+    immutable_copy(evidence_path, case_file(root, snapshot))
+    record = {
+        "revision": revision,
+        "recorded_at": now_utc(),
+        "agent_run_id": payload["agent_run_id"],
+        "subject_sha256": subject_sha256,
+        "kernel_revision": manifest["kernel"]["revision"],
+        "kernel_sha256": manifest["kernel"]["sha256"],
+        "source": evidence,
+        "source_sha256": evidence_sha256,
+        "evidence": snapshot,
+        "evidence_sha256": sha256(case_file(root, snapshot)),
+        "coverage": coverage,
+    }
+    history.append(record)
+    covered_blocks = {str(item["block_id"]) for item in coverage}
+    blocks = blocks_by_id(ledger)
+    for block_id in sorted(covered_blocks):
+        block = blocks[block_id]
+        block["risk_preflight"] = {
+            "status": "pass",
+            "revision": revision,
+            "evidence": snapshot,
+            "evidence_sha256": record["evidence_sha256"],
+            "subject_sha256": subject_sha256,
+            "kernel_revision": manifest["kernel"]["revision"],
+            "kernel_sha256": manifest["kernel"]["sha256"],
+        }
+    manifest["events"].append(
+        event(
+            "risk_preflight_recorded",
+            revision=revision,
+            subject_sha256=subject_sha256,
+            blocks=sorted(covered_blocks),
+            evidence=snapshot,
+            agent_run_id=payload["agent_run_id"],
+        )
+    )
+    save_case(root, manifest, ledger)
+    return record
+
+
+def risk_preflight_state_errors(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+) -> list[str]:
+    """Validate immutable risk-preflight history and active block bindings."""
+    errors: list[str] = []
+    history = ledger.get("risk_preflight_history", [])
+    if not isinstance(history, list):
+        return ["ledger risk_preflight_history must be an array"]
+    history_by_revision: dict[int, dict[str, Any]] = {}
+    for index, record in enumerate(history, start=1):
+        label = f"risk preflight r{index:03d}"
+        if not isinstance(record, dict) or record.get("revision") != index:
+            errors.append(f"{label} has invalid revision metadata")
+            continue
+        history_by_revision[index] = record
+        relative = record.get("evidence")
+        if not isinstance(relative, str) or not relative.startswith("reviews/history/"):
+            errors.append(f"{label} has invalid evidence path")
+            continue
+        path = case_file(root, relative)
+        if not path.is_file():
+            errors.append(f"{label} evidence is missing")
+        elif sha256(path) != record.get("evidence_sha256"):
+            errors.append(f"{label} evidence changed after snapshot")
+        if not SHA256_RE.fullmatch(str(record.get("subject_sha256", ""))):
+            errors.append(f"{label} has invalid subject hash")
+    for block in ledger.get("blocks", []):
+        if not isinstance(block, dict):
+            continue
+        block_id = str(block.get("id", "<unknown>"))
+        surfaces = block.get("risk_surfaces", [])
+        if not isinstance(surfaces, list) or any(
+            not isinstance(surface, str) or not RISK_SURFACE_RE.fullmatch(surface)
+            for surface in surfaces
+        ):
+            errors.append(f"{block_id}: invalid risk_surfaces")
+            continue
+        if len(surfaces) != len(set(surfaces)):
+            errors.append(f"{block_id}: duplicate risk_surfaces")
+            continue
+        binding = block.get("risk_preflight")
+        if not surfaces:
+            if binding is not None:
+                errors.append(f"{block_id}: risk preflight exists without declared surfaces")
+            continue
+        if block.get("status") not in {"in_progress", "analyzed", "reviewed", "integrated"}:
+            continue
+        if not isinstance(binding, dict) or binding.get("status") != "pass":
+            errors.append(f"{block_id}: required risk preflight is not passed")
+            continue
+        revision = binding.get("revision")
+        record = history_by_revision.get(revision)
+        if record is None or record.get("evidence") != binding.get("evidence"):
+            errors.append(f"{block_id}: risk preflight revision does not resolve")
+        if binding.get("kernel_sha256") != manifest.get("kernel", {}).get("sha256"):
+            errors.append(f"{block_id}: risk preflight is stale against kernel")
+        path = case_file(root, str(binding.get("evidence", "")))
+        if not path.is_file() or sha256(path) != binding.get("evidence_sha256"):
+            errors.append(f"{block_id}: risk preflight evidence is missing or changed")
+    return errors
+
+
+def risk_review_errors(
+    root: Path,
+    manifest: dict[str, Any],
+    block: dict[str, Any],
+    report_path: Path,
+) -> list[str]:
+    """Require one complete surface sweep and bound reviewer telemetry for risk blocks."""
+    surfaces = block.get("risk_surfaces", [])
+    if not surfaces:
+        return []
+    text = report_path.read_text(encoding="utf-8")
+    errors: list[str] = []
+    run_match = re.search(r"(?m)^\s*review_agent_run\s*:\s*(AR-[0-9]{4,})\s*$", text)
+    if not run_match:
+        errors.append("review_agent_run is required for a risk review")
+    else:
+        try:
+            run = agent_run_by_id(root, manifest, run_match.group(1))
+            if (
+                run.get("role") != "spec-reviewer"
+                or run.get("role_mode") != "block"
+                or run.get("subject_sha256") != block_review_subject_hash(root, manifest, block)
+                or run.get("status") != "completed"
+            ):
+                errors.append("review_agent_run does not match the current block review subject")
+        except CaseError as exc:
+            errors.append(str(exc))
+    remediation = active_block_remediation(block)
+    if remediation is not None and remediation.get("scope") == "targeted":
+        return errors
+    scope_match = re.search(r"(?m)^\s*review_scope\s*:\s*(\S+)\s*$", text)
+    if not scope_match or scope_match.group(1) != "full-block":
+        errors.append("risk review_scope must be full-block")
+    batch_match = re.search(r"(?m)^\s*finding_batch_complete\s*:\s*(\S+)\s*$", text)
+    if not batch_match or batch_match.group(1).lower() != "true":
+        errors.append("finding_batch_complete must be true")
+    rows = re.findall(
+        r"(?m)^\s*risk_surface\s*:\s*([a-z][a-z0-9-]{1,63})\s*=\s*(\S+)\s*$",
+        text,
+    )
+    found: dict[str, str] = {}
+    for surface, outcome in rows:
+        if surface in found:
+            errors.append(f"risk_surface duplicates {surface}")
+            continue
+        found[surface] = outcome
+        if outcome not in {"pass", "not-applicable"} and not FINDING_ID_RE.fullmatch(outcome):
+            errors.append(f"risk_surface {surface} has invalid outcome")
+    missing = sorted(set(surfaces) - set(found))
+    unknown = sorted(set(found) - set(surfaces))
+    if missing:
+        errors.append("risk review does not cover: " + ", ".join(missing))
+    if unknown:
+        errors.append("risk review names undeclared surfaces: " + ", ".join(unknown))
+    return errors
+
+
+def risk_review_open_findings(
+    block: dict[str, Any],
+    report_path: Path,
+) -> list[str]:
+    """Return finding ids from a full risk sweep that still require disposition."""
+    remediation = active_block_remediation(block)
+    if remediation is not None and remediation.get("scope") == "targeted":
+        return []
+    outcomes = re.findall(
+        r"(?m)^\s*risk_surface\s*:\s*[a-z][a-z0-9-]{1,63}\s*=\s*(\S+)\s*$",
+        report_path.read_text(encoding="utf-8"),
+    )
+    return sorted(
+        {
+            outcome
+            for outcome in outcomes
+            if outcome not in {"pass", "not-applicable"}
+            and FINDING_ID_RE.fullmatch(outcome)
+        }
+    )
 
 
 def block_review_subject_hash(
@@ -2819,6 +3376,7 @@ def begin_block_remediation(
     evidence: str,
     reason: str,
     full_block: bool = False,
+    batch_complete: bool = False,
 ) -> dict[str, Any]:
     """Open a bounded correction while preserving prior review and subject snapshots."""
     ensure_kernel_synced(root, manifest)
@@ -2865,6 +3423,27 @@ def begin_block_remediation(
     evidence_path = case_file(root, evidence)
     if not artifact_ready(evidence_path):
         raise CaseError(f"Remediation evidence is missing or incomplete: {evidence}")
+    remediation_contract = block.get("remediation_contract", REMEDIATION_CONTRACT_V1)
+    if remediation_contract == REMEDIATION_CONTRACT_V2 and not batch_complete:
+        raise CaseError(
+            f"{block_id}: confirm one complete accepted finding batch before remediation"
+        )
+    if block.get("risk_surfaces") and not block.get("review_history"):
+        if evidence != block.get("review"):
+            raise CaseError(
+                f"{block_id}: first risk remediation must use the complete local block review"
+            )
+        initial_review_errors = risk_review_errors(
+            root,
+            manifest,
+            block,
+            evidence_path,
+        )
+        if initial_review_errors:
+            raise CaseError(
+                f"{block_id}: initial risk review is incomplete: "
+                + "; ".join(initial_review_errors)
+            )
     projection_errors = working_projection_errors(
         root,
         manifest,
@@ -2888,14 +3467,33 @@ def begin_block_remediation(
                 previous["status"] = "retry_required"
                 previous["completed_at"] = now_utc()
             break
+    remediation_epoch = block.get("remediation_epoch", 1)
+    if remediation_contract == REMEDIATION_CONTRACT_V2:
+        batches_in_epoch = [
+            previous
+            for previous in remediations
+            if isinstance(previous, dict)
+            and previous.get("epoch", 1) == remediation_epoch
+        ]
+        if len(batches_in_epoch) >= MAX_REMEDIATION_BATCHES:
+            raise CaseError(
+                f"{block_id}: remediation budget exhausted after "
+                f"{MAX_REMEDIATION_BATCHES} batches; aggregate the root cause and "
+                "refresh the kernel with semantic-crosscutting or architecture impact "
+                "instead of starting another finding-by-finding review"
+            )
+        batch_index = len(batches_in_epoch) + 1
+    else:
+        batch_index = None
     same_finding_cycles = sum(
         1
         for previous in remediations
         if isinstance(previous, dict)
         and set(previous.get("finding_ids", [])) == finding_ids
+        and previous.get("epoch", 1) == remediation_epoch
     )
     cycle = same_finding_cycles + 1
-    if cycle > 2:
+    if remediation_contract != REMEDIATION_CONTRACT_V2 and cycle > 2:
         raise CaseError(
             "The same blocker/major already used two targeted correction cycles; "
             "record user-decision instead of starting a third"
@@ -2926,8 +3524,13 @@ def begin_block_remediation(
         "scope": scope,
         "status": "in_progress",
         "cycle": cycle,
+        "epoch": remediation_epoch,
+        "batch_index": batch_index,
         "finding_ids": sorted(finding_ids),
         "findings": normalized_findings,
+        "finding_batch_complete": (
+            True if remediation_contract == REMEDIATION_CONTRACT_V2 else None
+        ),
         "semantic_ids": unique_semantic_ids,
         "reason": reason.strip(),
         "opened_at": now_utc(),
@@ -2953,6 +3556,8 @@ def begin_block_remediation(
             remediation_id=remediation_id,
             scope=scope,
             cycle=cycle,
+            epoch=remediation_epoch,
+            batch_index=batch_index,
             finding_ids=sorted(finding_ids),
             semantic_ids=unique_semantic_ids,
             evidence=evidence_snapshot,
@@ -3082,6 +3687,13 @@ def block_review_state_errors(root: Path, block: dict[str, Any]) -> list[str]:
     """Validate immutable local review history and remediation bindings."""
     block_id = str(block.get("id", "<unknown>"))
     errors: list[str] = []
+    remediation_contract = block.get("remediation_contract", REMEDIATION_CONTRACT_V1)
+    if remediation_contract not in {REMEDIATION_CONTRACT_V1, REMEDIATION_CONTRACT_V2}:
+        errors.append(f"{block_id}: invalid remediation_contract")
+    if remediation_contract == REMEDIATION_CONTRACT_V2:
+        epoch = block.get("remediation_epoch")
+        if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 1:
+            errors.append(f"{block_id}: invalid remediation_epoch")
     history = block.get("review_history", [])
     if not isinstance(history, list):
         return [f"{block_id}: review_history must be an array"]
@@ -3114,6 +3726,19 @@ def block_review_state_errors(root: Path, block: dict[str, Any]) -> list[str]:
         remediation_ids.add(remediation["id"])
         if remediation.get("scope") not in REMEDIATION_SCOPES:
             errors.append(f"{label} has invalid scope")
+        if block.get("remediation_contract") == REMEDIATION_CONTRACT_V2:
+            epoch = remediation.get("epoch")
+            batch_index = remediation.get("batch_index")
+            if remediation.get("finding_batch_complete") is not True:
+                errors.append(f"{label} does not attest a complete finding batch")
+            if not isinstance(epoch, int) or isinstance(epoch, bool) or epoch < 1:
+                errors.append(f"{label} has invalid epoch")
+            if (
+                not isinstance(batch_index, int)
+                or isinstance(batch_index, bool)
+                or batch_index not in range(1, MAX_REMEDIATION_BATCHES + 1)
+            ):
+                errors.append(f"{label} has invalid batch_index")
         if remediation.get("status") not in {
             "in_progress",
             "retry_required",
@@ -3181,7 +3806,8 @@ def transition_block(
         raise CaseError(f"Invalid transition {old_status} -> {new_status} for {block_id}")
     if (
         new_status == "in_progress"
-        and block.get("remediation_contract") == "targeted-v1"
+        and block.get("remediation_contract")
+        in {REMEDIATION_CONTRACT_V1, REMEDIATION_CONTRACT_V2}
         and (
             old_status in {"reviewed", "integrated"}
             or (
@@ -3194,6 +3820,19 @@ def transition_block(
             f"{block_id}: use begin-remediation so prior review coverage and the "
             "accepted finding are preserved"
         )
+
+    if new_status == "in_progress" and block.get("risk_surfaces"):
+        risk_preflight = block.get("risk_preflight")
+        if not isinstance(risk_preflight, dict) or risk_preflight.get("status") != "pass":
+            raise CaseError(f"{block_id}: record a complete risk preflight before authoring")
+        if risk_preflight.get("kernel_sha256") != manifest["kernel"]["sha256"]:
+            raise CaseError(f"{block_id}: risk preflight is stale against kernel")
+        risk_evidence = case_file(root, str(risk_preflight.get("evidence", "")))
+        if (
+            not risk_evidence.is_file()
+            or sha256(risk_evidence) != risk_preflight.get("evidence_sha256")
+        ):
+            raise CaseError(f"{block_id}: risk preflight evidence is missing or changed")
 
     if new_status in {"in_progress", "reviewed", "integrated"}:
         rollback_source = (
@@ -3249,6 +3888,13 @@ def transition_block(
         if sha256(case_file(root, block["semantic_index"])) != block["index_sha256"]:
             raise CaseError(f"{block_id}: semantic index changed after analyzed state")
         remediation_errors = remediation_review_errors(root, block, review_path)
+        remediation_errors.extend(risk_review_errors(root, manifest, block, review_path))
+        open_risk_findings = risk_review_open_findings(block, review_path)
+        if open_risk_findings:
+            remediation_errors.append(
+                "risk review has open findings requiring begin-remediation: "
+                + ", ".join(open_risk_findings)
+            )
         if remediation_errors:
             raise CaseError(
                 f"{block_id}: remediation review is invalid: "
@@ -4148,6 +4794,7 @@ def validate_case(
         ensure_acyclic(ledger)
     except CaseError as exc:
         errors.append(str(exc))
+    errors.extend(risk_preflight_state_errors(root, manifest, ledger))
 
     try:
         _, kernel_hash = current_kernel(root, manifest)
@@ -4424,7 +5071,7 @@ def context_bundle(
             or (role == "spec-editor" and role_mode == "integrate")
             or (
                 role == "solution-architect"
-                and role_mode in {"design", "conformance"}
+                and role_mode in {"risk-preflight", "design", "conformance"}
             )
         )
         if manifest.get("mode") != "compact" and not whole_case_block_role:
@@ -4470,8 +5117,10 @@ def context_bundle(
             ]
         elif role == "solution-architect":
             effective_role_mode = role_mode or "design"
-            if effective_role_mode not in {"design", "conformance"}:
-                raise CaseError("Architect role mode must be design or conformance")
+            if effective_role_mode not in {"risk-preflight", "design", "conformance"}:
+                raise CaseError(
+                    "Architect role mode must be risk-preflight, design, or conformance"
+                )
             semantic_inputs = [
                 str(value)
                 for block in ledger.get("blocks", [])
@@ -4479,7 +5128,11 @@ def context_bundle(
                 for value in (block.get("artifact"), block.get("semantic_index"))
                 if isinstance(value, str)
             ]
-            inputs = common + semantic_inputs
+            inputs = (
+                common
+                if effective_role_mode == "risk-preflight"
+                else common + semantic_inputs
+            )
             if effective_role_mode == "conformance":
                 inputs.append("draft.md")
             excluded = [
@@ -4491,6 +5144,25 @@ def context_bundle(
             ]
         else:
             raise CaseError(f"Unsupported compact role: {role}")
+        required_risk_blocks = {
+            block_id for block_id, _ in required_risk_pairs(manifest, ledger)
+        }
+        risk_scope = (
+            [
+                {
+                    "block_id": block.get("id"),
+                    "title": block.get("title"),
+                    "depends_on": block.get("depends_on", []),
+                    "risk_surfaces": block.get("risk_surfaces", []),
+                }
+                for block in ledger.get("blocks", [])
+                if isinstance(block, dict) and block.get("id") in required_risk_blocks
+            ]
+            if role == "solution-architect" and effective_role_mode == "risk-preflight"
+            else []
+        )
+        if role == "solution-architect" and effective_role_mode == "risk-preflight" and not risk_scope:
+            raise CaseError("Risk preflight context requires at least one declared risk surface")
         return {
             "case_id": manifest["case_id"],
             "target": "whole-case",
@@ -4498,6 +5170,12 @@ def context_bundle(
             "role_mode": effective_role_mode,
             "assurance_level": assurance,
             "review_strategy": REVIEW_STRATEGIES[assurance],
+            "subject_sha256": (
+                risk_preflight_subject_hash(manifest, ledger)
+                if risk_scope
+                else None
+            ),
+            "risk_scope": risk_scope,
             "covered_gates": covered_gates_for(effective_role_mode),
             "contract_surfaces": sorted(selected_surfaces),
             "contract_inputs": list(dict.fromkeys(contract_inputs)),
@@ -4638,19 +5316,25 @@ def render_status(root: Path, manifest: dict[str, Any], ledger: dict[str, Any]) 
             "",
             "## Blocks",
             "",
-            "| ID | Kind | Status | Depends on | Title |",
-            "|---|---|---|---|---|",
+            "| ID | Kind | Status | Risk preflight | Depends on | Title |",
+            "|---|---|---|---|---|---|",
         ]
     )
     if ledger["blocks"]:
         for block in ledger["blocks"]:
             dependencies = ", ".join(block["depends_on"]) or "—"
+            risk_surfaces = block.get("risk_surfaces", [])
+            risk_status = (
+                str((block.get("risk_preflight") or {}).get("status", "pending"))
+                if risk_surfaces
+                else "not-required"
+            )
             lines.append(
                 f"| {block['id']} | {block['kind']} | {block['status']} | "
-                f"{dependencies} | {block['title']} |"
+                f"{risk_status} | {dependencies} | {block['title']} |"
             )
     else:
-        lines.append("| — | — | — | — | compact mode or blocks not planned |")
+        lines.append("| — | — | — | — | — | compact mode or blocks not planned |")
 
     lines.extend(["", "## Gates", ""])
     for name in GATE_NAMES:
@@ -4744,6 +5428,33 @@ def build_parser() -> argparse.ArgumentParser:
     add_parser.add_argument("--title", required=True)
     add_parser.add_argument("--kind", choices=sorted(BLOCK_KINDS), required=True)
     add_parser.add_argument("--depends-on", action="append", default=[])
+    add_parser.add_argument(
+        "--risk-surface",
+        action="append",
+        default=[],
+        help="Stable high-risk contract surface requiring an early architecture preflight",
+    )
+
+    risk_preflight_parser = subparsers.add_parser(
+        "record-risk-preflight",
+        help="Bind a complete risk-first architecture matrix before high-risk authoring",
+    )
+    risk_preflight_parser.add_argument("--case-root", required=True)
+    risk_preflight_parser.add_argument("--evidence", required=True)
+
+    declare_risk_parser = subparsers.add_parser(
+        "declare-risk",
+        help="Pause a block when early analysis discovers a new high-risk surface",
+    )
+    declare_risk_parser.add_argument("--case-root", required=True)
+    declare_risk_parser.add_argument("--id", required=True)
+    declare_risk_parser.add_argument(
+        "--risk-surface",
+        action="append",
+        default=[],
+        help="Stable newly evidenced high-risk contract surface",
+    )
+    declare_risk_parser.add_argument("--reason", required=True)
 
     transition_parser = subparsers.add_parser("transition", help="Move one block")
     transition_parser.add_argument("--case-root", required=True)
@@ -4767,6 +5478,11 @@ def build_parser() -> argparse.ArgumentParser:
     remediation_parser.add_argument("--evidence", required=True)
     remediation_parser.add_argument("--reason", required=True)
     remediation_parser.add_argument("--full-block", action="store_true")
+    remediation_parser.add_argument(
+        "--batch-complete",
+        action="store_true",
+        help="Confirm that every accepted blocker/major from this gate is in the batch",
+    )
 
     refresh_parser = subparsers.add_parser("refresh-kernel", help="Record a kernel edit")
     refresh_parser.add_argument("--case-root", required=True)
@@ -4853,6 +5569,9 @@ def build_parser() -> argparse.ArgumentParser:
     agent_parser.add_argument("--input-bytes", type=int)
     agent_parser.add_argument("--input-tokens", type=int)
     agent_parser.add_argument("--output-tokens", type=int)
+    agent_parser.add_argument("--tool-calls", type=int)
+    agent_parser.add_argument("--poll-calls", type=int)
+    agent_parser.add_argument("--wait-seconds", type=float)
     agent_parser.add_argument("--duration-seconds", type=float, required=True)
     agent_parser.add_argument("--retries", type=int, default=0)
     agent_parser.add_argument("--reported-blocker", type=int, default=0)
@@ -4955,8 +5674,35 @@ def main() -> int:
                 title=args.title,
                 kind=args.kind,
                 depends_on=args.depends_on,
+                risk_surfaces=args.risk_surface,
             )
             print(f"PASS block={args.id} status=planned")
+            return 0
+        if args.command == "record-risk-preflight":
+            result = record_risk_preflight(
+                root,
+                manifest,
+                ledger,
+                evidence=args.evidence,
+            )
+            print(
+                f"PASS risk-preflight=r{result['revision']} "
+                f"surfaces={len(result['coverage'])}"
+            )
+            return 0
+        if args.command == "declare-risk":
+            surfaces = declare_block_risks(
+                root,
+                manifest,
+                ledger,
+                block_id=args.id,
+                risk_surfaces=args.risk_surface,
+                reason=args.reason,
+            )
+            print(
+                f"PASS block={args.id} risks={','.join(surfaces)} "
+                f"status={blocks_by_id(ledger)[args.id]['status']}"
+            )
             return 0
         if args.command == "transition":
             transition_block(
@@ -4980,10 +5726,12 @@ def main() -> int:
                 evidence=args.evidence,
                 reason=args.reason,
                 full_block=args.full_block,
+                batch_complete=args.batch_complete,
             )
             print(
                 f"PASS block={args.id} remediation={remediation['id']} "
-                f"scope={remediation['scope']} cycle={remediation['cycle']}"
+                f"scope={remediation['scope']} cycle={remediation['cycle']} "
+                f"batch={remediation.get('batch_index') or '-'}"
             )
             return 0
         if args.command == "refresh-kernel":
@@ -5098,6 +5846,9 @@ def main() -> int:
                 lenses=args.lens,
                 prompt_artifact=args.prompt_artifact,
                 output_artifact=args.output_artifact,
+                tool_calls=args.tool_calls,
+                poll_calls=args.poll_calls,
+                wait_seconds=args.wait_seconds,
             )
             print(f"PASS agent-run={run_id} role={args.role}/{args.role_mode}")
             return 0

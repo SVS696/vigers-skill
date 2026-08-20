@@ -18,8 +18,8 @@ description: "Оркестрирует предварительное иссле
    `{baseDir}/references/handoff-contract.md`. `kernel.md` удерживает общие
    инварианты, `method-context.md/json` фиксируют выбранную выжимку метода, а
    `manifest.json` и `ledger.json` — состояние и зависимости.
-3. **Свежий ограниченный контекст.** Каждый вызов получает `contract_inputs` и
-   нужные артефакты. Не передавай историю автора, нерелевантные блоки и findings.
+3. **Ограниченный recon и полный evidence.** Объединяй navigation probes; узкий
+   inspection допустим, но источник читай целиком, а роли не передавай findings.
 4. **Архитектор вызывается по влиянию.** Архитектурная роль существует всегда,
    но режимы `design` и `conformance` запускаются только при срабатывании гейта.
 5. **Внешние изменения отдельно.** Подготовка текста не разрешает публиковать
@@ -38,12 +38,12 @@ description: "Оркестрирует предварительное иссле
    ETA не передаётся ролям и не влияет на качество или scope.
    Внешняя запись и checklist требуют read-back; checklist использует отдельный `progress_target_id` и штатный migration.
 9. **Качество имеет критерий достаточности.** `blocker` и `major` закрываются
-    обязательно через bounded remediation: finding, baseline, semantic IDs и
-    прежнее покрытие сохраняются, а re-review проверяет delta, не весь блок заново.
-    `minor` не блокируют следующий этап. Новый research после coverage
-    gate разрешён только для доказанной существенной evidence-дыры. Minor-only polish
-    выполняется не более одного раза на review gate; затем остаток фиксируется и
-    pipeline идёт дальше по `{baseDir}/references/convergence-contract.md`.
+    пакетной `--batch-complete` remediation: baseline/coverage сохраняются, а re-review
+    проверяет delta. Два batches на kernel epoch — предел; затем только root-cause
+    escalation или user decision. Доказанные high-risk surfaces получают один
+    ранний risk-preflight и полную review matrix; обычная задача — ни одного
+    нового прохода. `minor` и research следуют критерию достаточности из
+    `{baseDir}/references/convergence-contract.md`.
 10. **Скрытый case не заменяет рабочий документ.** Создай объявленную видимую
     проекцию до анализа. В `milestones` обновляй её полным draft на смысловых
     вехах, в `per-block` — после каждого reviewed блока. Это не публикация.
@@ -271,10 +271,9 @@ decision и case package согласованы.
 |---|---|---|---|
 | `vigers-planner` | До Vigers case; свежий context на research cluster, plan и revision | `{baseDir}/agents/contracts/planner.md` | Research coverage, DAG плана и проект внешних артефактов |
 | `vigers-system-analyst` | Всегда; в block-mode отдельно на каждый блок | `{baseDir}/agents/contracts/system-analyst.md` | Модель требований или блока |
-| `vigers-solution-architect` | По архитектурному гейту, отдельно `design` и `conformance` | `{baseDir}/agents/contracts/solution-architect.md` | Решение или архитектурное заключение |
+| `vigers-solution-architect` | По архитектурному гейту: `risk-preflight`, `design`, `conformance` | `{baseDir}/agents/contracts/solution-architect.md` | Риск-матрица, решение или архитектурное заключение |
 | `vigers-spec-editor` | После модели; режимы `document`, `block-render`, `integrate` | `{baseDir}/agents/contracts/spec-editor.md` | Черновик блока или всего документа |
 | `vigers-spec-reviewer` | `block`, `integration`, `global`, `final`, `project-conformance` | `{baseDir}/agents/contracts/spec-reviewer.md` | Независимые findings |
-
 Business analysis не является отдельной обязательной ролью. Системный аналитик
 включает линзу `business-context`, когда неизвестны потребность, участники,
 процесс, эффект или владелец решения. Он не принимает бизнес-решения от имени
@@ -285,7 +284,6 @@ Business analysis не является отдельной обязательн�
 Запусти архитектора, если затронуто хотя бы одно:
 
 - выбран `tactical` или `generalized-capability` по контракту границы решения;
-
 - границы сервисов, компонентов или владение данными;
 - новая интеграция, выбор sync/async или транспорт;
 - новый API-контракт либо обратная совместимость;
@@ -294,6 +292,8 @@ Business analysis не является отдельной обязательн�
 - транзакционность, идемпотентность, миграция или откат;
 - существенные качества: производительность, доступность, масштабирование;
 - новый сервис, хранилище, инфраструктурный механизм или изменение ADR.
+  Связанные failure/concurrency/recovery surfaces объявляй при `add-block`:
+  один risk-preflight до authoring заменяет поздние поштучные открытия.
 
 Не запускай архитектора для редакционной правки, локального UI-текста,
 уточнения сообщения об ошибке или прямого расширения уже принятого решения без
@@ -430,9 +430,9 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
   traceability не хранит транзитивное замыкание.
 - AC исполнимы фактическим приёмщиком: UI-критерий ведёт к точному сценарию с экраном/маршрутом либо содержит их сам, а non-UI — к системной точке входа; DoD фиксирует готовность к приёмке, developer self-check исключён без нормативного основания.
 - После локальной правки `begin-remediation` сохранил immutable review/baseline;
-  проверены finding, объявленные semantic IDs и прямые регрессии. Полный block/
-  whole-case review запущен только при смысловой переписи, изменении цели,
-  границы, публичного контракта, архитектуры или сквозной логики.
+  проверены пакет findings, объявленные semantic IDs и прямые регрессии. Risk
+  surfaces закрыты ранней матрицей; третий batch запрещён без root-cause kernel
+  change. Полный review запущен только при смысловой/сквозной переписи.
 - Diagram gate имеет `required|not-required|blocked`; все required surfaces
   представлены, семантически сверены и просмотрены в фактическом render. Одна
   гигантская нечитаемая схема не считается покрытием нескольких surfaces.
@@ -479,7 +479,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/evals/prompt-cookbook/user-journey-screen-context-barrier.json` | Регрессия prompt: UI-сценарий называет экран и видимые поля без повторов и догадок |
 | `{baseDir}/evals/prompt-cookbook/acceptance-verification-context-barrier.json` | Регрессия prompt: каждый AC ведёт тестировщика к точному сценарию или точке входа |
 | `{baseDir}/evals/prompt-cookbook/human-only-timing-boundary.json` | Регрессия prompt: forecast не попадает в модель и не управляет её работой |
-| `{baseDir}/evals/prompt-cookbook/targeted-remediation-preserves-coverage.json` | Регрессия prompt: major проверяется по delta без потери прежнего покрытия |
+| `{baseDir}/evals/prompt-cookbook/targeted-remediation-preserves-coverage.json`, `{baseDir}/evals/prompt-cookbook/risk-first-batched-convergence.json`, `{baseDir}/evals/prompt-cookbook/execution-economy-terminal-green.json` | Регрессии prompt: bounded convergence и terminal green без усечения evidence |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/runtime-preferences.md` | User/project toggles для timing, progress и task-manager projection |
 | `{baseDir}/references/automation-timing.md` | Active/business/calendar timing, deferred lifecycle и проектный калибратор |
