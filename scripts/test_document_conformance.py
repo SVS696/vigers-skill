@@ -539,6 +539,92 @@ class DocumentConformanceTests(unittest.TestCase):
             [],
         )
 
+    def test_reader_projection_rejects_editor_width_hard_wrap(self) -> None:
+        text = VALID_TRACE.replace(
+            "Текст.\n\n## Требования",
+            "Обычный смысловой абзац перенесён\nпо ширине редактора.\n\n## Требования",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            projection_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("reader prose paragraph is hard-wrapped" in item for item in errors))
+
+    def test_legacy_reader_projection_does_not_gain_new_layout_gate(self) -> None:
+        payload = projection_contract()
+        reader_projection = payload["reader_projection"]
+        assert isinstance(reader_projection, dict)
+        reader_projection.pop("prose_layout")
+        text = VALID_TRACE.replace(
+            "Текст.\n\n## Требования",
+            "Старый pinned contract сохраняет\nпрежнее форматирование.\n\n## Требования",
+        )
+        self.assertEqual(
+            document_conformance.validate_markdown(
+                text,
+                payload,
+                label="legacy-draft",
+            ),
+            [],
+        )
+
+    def test_reader_projection_allows_structural_markdown_line_breaks(self) -> None:
+        text = VALID_TRACE.replace(
+            "Текст.\n\n## Требования",
+            """- Первый пункт списка без hard-wrap.
+- Второй пункт.
+- Пункт с вложенной структурой:
+  - Вложенный пункт.
+- Пункт с блоком кода:
+    indented_code()
+
+> [!NOTE]
+> Текст callout.
+
+| Поле | Значение |
+|---|---|
+| A | B |
+
+Явный Markdown break.""" + "  \n" + """Следующая строка.
+
+```text
+строка кода
+ещё строка
+```\n\n## Требования""",
+        )
+        self.assertEqual(
+            document_conformance.validate_markdown(
+                text,
+                projection_contract(),
+                label="draft",
+            ),
+            [],
+        )
+
+    def test_reader_projection_rejects_hard_wrapped_list_item(self) -> None:
+        text = VALID_TRACE.replace(
+            "Текст.\n\n## Требования",
+            "- Обычный текст пункта перенесён\n  по ширине редактора.\n\n## Требования",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            projection_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("reader list item is hard-wrapped" in item for item in errors))
+
+    def test_reader_projection_ignores_frontmatter_list(self) -> None:
+        text = "---\ntags:\n  - rtl\nanalysis_stage: ready\n---\n\n" + VALID_TRACE
+        self.assertEqual(
+            document_conformance.validate_markdown(
+                text,
+                projection_contract(),
+                label="draft",
+            ),
+            [],
+        )
+
     def test_reader_projection_rejects_analysis_only_ids_anywhere(self) -> None:
         text = VALID_TRACE.replace(
             "Текст.\n\n## Требования",

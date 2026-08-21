@@ -18,6 +18,7 @@ USER_STORY_TITLE_SEPARATORS = {".", ":"}
 TRACEABILITY_POLICIES = {"semantic-id-links"}
 TRACEABILITY_LINK_STYLES = {"obsidian-heading-exact"}
 READER_PROJECTION_POLICIES = {"required"}
+PROSE_LAYOUT_POLICIES = {"semantic-paragraph-one-line", "unconstrained"}
 SEMANTIC_REFERENCE_POLICIES = {"exact-heading-links"}
 TRACEABILITY_DENSITIES = {"direct-edges"}
 ACCEPTANCE_FOCI = {"observable-behavior"}
@@ -86,6 +87,7 @@ def build_profile_contract(
         "document_dod_focus",
         "document_developer_checks",
         "document_prose_language",
+        "document_prose_layout",
         "document_user_journey_context",
         "document_ui_field_naming",
         "document_diagram_working_source",
@@ -134,8 +136,12 @@ def build_profile_contract(
     }
     if any(traceability_fields.values()):
         contract["traceability"] = traceability_fields
+    reader_projection_policy = metadata.get("document_reader_projection", "").strip().casefold()
+    prose_layout = metadata.get("document_prose_layout", "").strip().casefold()
+    if not prose_layout and reader_projection_policy == "required":
+        prose_layout = "semantic-paragraph-one-line"
     reader_projection_fields: dict[str, Any] = {
-        "policy": metadata.get("document_reader_projection", "").strip().casefold(),
+        "policy": reader_projection_policy,
         "public_id_prefixes": list(_csv(metadata.get("document_public_id_prefixes", ""))),
         "internal_id_prefixes": list(_csv(metadata.get("document_internal_id_prefixes", ""))),
         "semantic_references": metadata.get("document_semantic_references", "").strip().casefold(),
@@ -144,6 +150,7 @@ def build_profile_contract(
         "dod_focus": metadata.get("document_dod_focus", "").strip().casefold(),
         "developer_checks": metadata.get("document_developer_checks", "").strip().casefold(),
         "prose_language": metadata.get("document_prose_language", "").strip(),
+        "prose_layout": prose_layout,
     }
     if any(reader_projection_fields.values()):
         contract["reader_projection"] = reader_projection_fields
@@ -320,6 +327,9 @@ def validate_contract(payload: Any) -> list[str]:
                 r"[a-z]{2}(?:-[A-Z]{2})?", prose_language
             ):
                 errors.append("document contract has an invalid prose language")
+            prose_layout = reader_projection.get("prose_layout")
+            if prose_layout is not None and prose_layout not in PROSE_LAYOUT_POLICIES:
+                errors.append("document contract has an unsupported prose layout policy")
             traceability = payload.get("traceability")
             if isinstance(traceability, dict) and isinstance(public_prefixes, list):
                 unknown = sorted(set(traceability.get("id_prefixes", [])) - set(public_prefixes))
@@ -753,6 +763,100 @@ def _validate_reader_projection(
             "must be an exact internal link: "
             + ", ".join(dict.fromkeys(plain_refs))
         )
+    if policy.get("prose_layout") == "semantic-paragraph-one-line":
+        errors.extend(_validate_reader_prose_layout(lines, label=label))
+    return errors
+
+
+def _validate_reader_prose_layout(lines: list[str], *, label: str) -> list[str]:
+    """Reject editor-width hard wraps in ordinary reader-facing prose paragraphs."""
+    outside = _outside_fences(lines)
+    errors: list[str] = []
+    current: list[tuple[int, str]] = []
+    list_item_re = re.compile(r"^(?P<indent>\s*)(?:[-+*]|\d+[.)])\s+")
+    structural_continuation_re = re.compile(
+        r"^(?:#{1,6}\s+|>|\||```|~~~|\$\$|:::|!!!|</?[A-Za-z!]|!\[\[)"
+    )
+    frontmatter_lines: set[int] = set()
+    if lines and lines[0].strip() == "---":
+        frontmatter_lines.add(0)
+        for index in range(1, len(lines)):
+            frontmatter_lines.add(index)
+            if lines[index].strip() == "---":
+                break
+
+    for index, line in enumerate(lines):
+        if not outside[index] or index in frontmatter_lines:
+            continue
+        item = list_item_re.match(line)
+        if item is None:
+            continue
+        continuation_end = index
+        for cursor in range(index + 1, len(lines)):
+            candidate = lines[cursor]
+            if (
+                not outside[cursor]
+                or cursor in frontmatter_lines
+                or not candidate.strip()
+                or candidate.startswith(("    ", "\t"))
+                or lines[cursor - 1].endswith(("  ", "\\"))
+            ):
+                break
+            if list_item_re.match(candidate) or structural_continuation_re.match(
+                candidate.lstrip()
+            ):
+                break
+            continuation_end = cursor
+        if continuation_end > index:
+            errors.append(
+                f"{label}: reader list item is hard-wrapped across physical lines "
+                f"{index + 1}-{continuation_end + 1}; keep one prose item on one line"
+            )
+
+    def flush() -> None:
+        if len(current) < 2:
+            current.clear()
+            return
+        stripped_lines = [line.strip() for _, line in current]
+        structural_patterns = (
+            r"#{1,6}\s+",  # ATX heading
+            r"(?:[-+*]|\d+[.)])\s+",  # list item
+            r">",  # blockquote or Obsidian callout
+            r"\|",  # table with a leading pipe
+            r"(?:---+|\*\*\*+|___+)\s*$",  # thematic break or frontmatter fence
+            r"(?:```|~~~|\$\$|:::|!!!)",  # fenced/directive blocks
+            r"</?[A-Za-z!]",  # HTML block or comment
+            r"\[[^]]+\]:\s+",  # link reference definition
+            r"\[\^[^]]+\]:\s+",  # footnote definition
+            r"!\[\[",  # Obsidian embed
+        )
+        is_structural = any(
+            line.startswith(("    ", "\t"))
+            or any(re.match(pattern, stripped) for pattern in structural_patterns)
+            for (_, line), stripped in zip(current, stripped_lines, strict=True)
+        )
+        has_explicit_break = any(
+            line.endswith("  ") or line.endswith("\\") for _, line in current[:-1]
+        )
+        has_setext_or_table_separator = any(
+            re.fullmatch(r"\s*(?:=+|-+|:?-{3,}:?(?:\s*\|\s*:?-{3,}:?)+)\s*", line)
+            for line in stripped_lines
+        )
+        if not is_structural and not has_explicit_break and not has_setext_or_table_separator:
+            start = current[0][0] + 1
+            end = current[-1][0] + 1
+            errors.append(
+                f"{label}: reader prose paragraph is hard-wrapped across physical lines "
+                f"{start}-{end}; keep one semantic paragraph on one line"
+            )
+        current.clear()
+
+    for index, (line, is_outside) in enumerate(zip(lines, outside, strict=True)):
+        if not is_outside or not line.strip():
+            flush()
+            continue
+        current.append((index, line))
+    flush()
     return errors
 
 
