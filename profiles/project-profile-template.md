@@ -39,6 +39,7 @@ document_acceptance_focus:
 document_dod_focus:
 document_developer_checks:
 document_prose_language:
+document_prose_layout:
 document_user_journey_context:
 document_ui_field_naming:
 document_diagram_working_source:
@@ -199,6 +200,9 @@ plain-text IDs machine check отклоняет. Для Obsidian-таблиц pr
 - `document_dod_focus: acceptance-readiness`;
 - `document_developer_checks: omit-unless-normative`;
 - язык обычной прозы в `document_prose_language`, например `ru`.
+- `document_prose_layout: semantic-paragraph-one-line`, чтобы обычный абзац и
+  текст одного пункта списка не получали hard-wrap по ширине редактора;
+  `unconstrained` оставляет проекту прежнее форматирование.
 
 Общая бизнес-цель остаётся обязательным содержанием постановки. Если проект
 использует semantic IDs и навигационную трассировку, включи `GOAL` в публичные,
