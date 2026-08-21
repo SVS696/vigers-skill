@@ -3882,6 +3882,27 @@ Text.
                     evidence="reviews/global.md",
                     note="Combined bounded recovery final review",
                 )
+            _, manifest, _ = case_pipeline.load_case(root)
+            gate_evidence = root / manifest["gates"]["integration_review"]["evidence"]
+            original_gate_evidence = gate_evidence.read_text(encoding="utf-8")
+            gate_evidence.write_text(
+                original_gate_evidence + "\npost-pass drift\n",
+                encoding="utf-8",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(
+                case_pipeline.CaseError,
+                "Bounded recovery is not local-green",
+            ):
+                case_pipeline.complete_bounded_recovery(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    note="Must not persist a false complete state",
+                )
+            _, manifest, _ = case_pipeline.load_case(root)
+            self.assertEqual(manifest["bounded_recovery"]["status"], "active")
+            gate_evidence.write_text(original_gate_evidence, encoding="utf-8")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             case_pipeline.complete_bounded_recovery(
                 loaded_root,
@@ -3891,6 +3912,46 @@ Text.
             )
             _, manifest, _ = case_pipeline.load_case(root)
             self.assertEqual(manifest["bounded_recovery"]["status"], "complete")
+
+    def test_bounded_recovery_plan_must_include_stale_pass_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.analyze_and_review(root, "B01", "SCN-B01-001")
+            replace_todo(root / "draft.md", "# Draft\n\nFrozen revision")
+            replace_todo(root / "evidence.md", "# Evidence\n\nReviewed source set")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="evidence",
+                status="pass",
+                evidence="evidence.md",
+                note="Current evidence",
+            )
+            replace_todo(root / "evidence.md", "# Evidence\n\nChanged after pass")
+            allowed_gates = [
+                gate_name
+                for gate_name in case_pipeline.GATE_NAMES
+                if gate_name != "evidence"
+            ]
+            plan_path = self.write_recovery_plan(
+                root,
+                block_scopes={"B01": ["scenario-flow"]},
+                allowed_gates=allowed_gates,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(
+                case_pipeline.CaseError,
+                "omits gates requiring recovery: evidence",
+            ):
+                case_pipeline.begin_bounded_recovery(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    plan_path=plan_path,
+                )
 
     def test_bounded_recovery_detects_content_drift(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

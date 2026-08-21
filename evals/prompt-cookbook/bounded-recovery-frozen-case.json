@@ -10,6 +10,8 @@
       "carry stale blocks forward only through rebase-recovery-block after baseline hash checks",
       "record completed agent runs against exact recovery subject hashes",
       "use one combined final report only for integration_review, global_review, and project_conformance",
+      "include stale-pass gates whose evidence or subject already drifted",
+      "complete projected checklist progress before local-green",
       "complete recovery only after every declared block is integrated and every declared gate passes"
     ],
     "forbidden_actions": [
@@ -26,7 +28,8 @@
       "new_findings_policy: user-decision",
       "deferred_findings: [] is required for pass",
       "review_scope: bounded-recovery-final",
-      "bounded recovery stops before semantic correction"
+      "bounded recovery stops before semantic correction",
+      "complete-recovery refuses to persist complete before final validation passes"
     ],
     "allowed_research_exception": {
       "severity": [],

@@ -55,7 +55,8 @@
 findings, не входящие в текущую работу, сохраняются в `deferred_findings`:
 `blocker|major` допускают только `user-decision`; `residual` допустим только для
 `minor` и требует основания. `allowed_gates` обязан включать каждый gate,
-который в момент старта ещё `pending|blocked`; уже актуальные `pass|not_required`
+который в момент старта ещё `pending|blocked`, а также формально `pass`, если
+его evidence или subject уже устарел. Только актуальные `pass|not_required`
 повторять не требуется.
 
 ## Команды и переходы
@@ -146,9 +147,11 @@ decision: pass
 
 Architecture conformance остаётся отдельной ролью, если gate перечислен в
 `allowed_gates`. `complete-recovery` требует `integrated` для каждого declared
-block и terminal `pass|not_required` для каждого case gate; required gate
-обычная state machine всё равно не даст отметить `not_required`. До completion
-финальная validation fail-closed.
+block, актуальный `pass|not_required` для каждого case gate и зелёную final
+validation, включая terminal automation stage и живой read-back обязательных
+checklist items. Required gate обычная state machine всё равно не даст отметить
+`not_required`. Статус `complete` записывается только после этого preflight;
+ошибка оставляет recovery активным.
 
 ## Supervisor
 

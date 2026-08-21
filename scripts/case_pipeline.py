@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import hashlib
 import json
 import re
@@ -812,20 +813,58 @@ def load_bounded_recovery(
     )
     if errors:
         raise CaseError("Invalid bounded recovery plan: " + "; ".join(errors))
-    open_gates = [
-        gate_name
-        for gate_name in GATE_NAMES
-        if manifest.get("gates", {}).get(gate_name, {}).get("status")
-        not in {"pass", "not_required"}
-    ]
+    open_gates = recovery_required_gates(root, manifest, ledger)
     omitted_gates = [
         gate_name for gate_name in open_gates if gate_name not in plan["allowed_gates"]
     ]
     if omitted_gates:
         raise CaseError(
-            "Recovery plan omits open gates: " + ", ".join(omitted_gates)
+            "Recovery plan omits gates requiring recovery: "
+            + ", ".join(omitted_gates)
         )
     return binding, plan
+
+
+def recovery_gate_freshness_errors(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    gate_name: str,
+) -> list[str]:
+    """Return status or evidence drift that a recovery plan must explicitly cover."""
+    gate = manifest.get("gates", {}).get(gate_name, {})
+    status = gate.get("status")
+    if status == "not_required":
+        return []
+    if status != "pass":
+        return [f"status is {status or 'missing'}"]
+    evidence = gate.get("evidence")
+    if not isinstance(evidence, str) or not evidence:
+        return ["passed gate has no evidence"]
+    path = case_file(root, evidence)
+    errors: list[str] = []
+    if not artifact_ready(path):
+        errors.append("evidence is incomplete")
+    elif sha256(path) != gate.get("evidence_sha256"):
+        errors.append("evidence changed after pass")
+    if gate_subject_hash(root, manifest, ledger, gate_name) != gate.get(
+        "subject_sha256"
+    ):
+        errors.append("subject changed after pass")
+    return errors
+
+
+def recovery_required_gates(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+) -> list[str]:
+    """List non-terminal and stale-pass gates that recovery must declare."""
+    return [
+        gate_name
+        for gate_name in GATE_NAMES
+        if recovery_gate_freshness_errors(root, manifest, ledger, gate_name)
+    ]
 
 
 def runtime_automation_plan(
@@ -1905,6 +1944,16 @@ def begin_bounded_recovery(
         raise CaseError("Recovery plan kernel hash is stale")
     if plan["draft_sha256"] != sha256(draft_path):
         raise CaseError("Recovery plan draft hash is stale")
+    omitted_gates = [
+        gate_name
+        for gate_name in recovery_required_gates(root, manifest, ledger)
+        if gate_name not in plan["allowed_gates"]
+    ]
+    if omitted_gates:
+        raise CaseError(
+            "Recovery plan omits gates requiring recovery: "
+            + ", ".join(omitted_gates)
+        )
 
     baselines: dict[str, dict[str, Any]] = {}
     for block_id in plan["block_scopes"]:
@@ -2116,7 +2165,22 @@ def complete_bounded_recovery(
     ]
     if open_gates:
         raise CaseError("Bounded recovery gates are incomplete: " + ", ".join(open_gates))
+    previous_binding = dict(binding)
+    active_role_manifest = copy.deepcopy(role_manifest(manifest))
     binding.update(status="complete", completed_at=now_utc(), note=note.strip() or None)
+    final_errors = validate_case(
+        root,
+        manifest,
+        ledger,
+        final=True,
+        accepted_role_manifests=[active_role_manifest],
+    )
+    if final_errors:
+        binding.clear()
+        binding.update(previous_binding)
+        raise CaseError(
+            "Bounded recovery is not local-green: " + "; ".join(final_errors)
+        )
     manifest["events"].append(
         event("bounded_recovery_completed", plan_sha256=binding["sha256"], note=note.strip())
     )
@@ -5427,6 +5491,7 @@ def validate_case(
     *,
     final: bool,
     ignore_consistency_gate: bool = False,
+    accepted_role_manifests: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Return structural, freshness, traceability, and optional final errors."""
     errors: list[str] = []
@@ -5648,7 +5713,11 @@ def validate_case(
         try:
             stored_role_manifest = read_json(case_file(root, ROLE_MANIFEST_JSON))
             expected_role_manifest = role_manifest(manifest)
-            if stored_role_manifest != expected_role_manifest:
+            accepted_role_manifests = accepted_role_manifests or []
+            if (
+                stored_role_manifest != expected_role_manifest
+                and stored_role_manifest not in accepted_role_manifests
+            ):
                 errors.append("role-manifest.json differs from coordinator manifest projection")
         except CaseError as exc:
             errors.append(f"Invalid role manifest: {exc}")
