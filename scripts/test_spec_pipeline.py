@@ -502,6 +502,14 @@ class PipelineTests(unittest.TestCase):
             expected["required_output_signals"],
         )
         self.assertIn(
+            "include stale-pass gates whose evidence or subject already drifted",
+            expected["required_actions"],
+        )
+        self.assertIn(
+            "complete-recovery refuses to persist complete before final validation passes",
+            expected["required_output_signals"],
+        )
+        self.assertIn(
             "method-context.* is excluded and its absence is not input-error",
             expected["required_output_signals"],
         )
