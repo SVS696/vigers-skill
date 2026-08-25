@@ -108,7 +108,7 @@ def projection_contract() -> dict[str, object]:
         "document_traceability_link_style": "obsidian-heading-exact",
         "document_traceability_id_prefixes": "US, REQ, AC, DOD",
         "document_reader_projection": "required",
-        "document_public_id_prefixes": "GOAL, US, SCN, RULE, DATA, STATE, IF, REQ, AC, DOD",
+        "document_public_id_prefixes": "GOAL, US, SCN, RULE, DATA, STATE, INTF, IF, REQ, AC, DOD",
         "document_internal_id_prefixes": "ACT, CON, DEC, ARCH, ASM, Q, PUS, PDOD",
         "document_semantic_references": "exact-heading-links",
         "document_traceability_density": "direct-edges",
@@ -116,6 +116,40 @@ def projection_contract() -> dict[str, object]:
         "document_dod_focus": "acceptance-readiness",
         "document_developer_checks": "omit-unless-normative",
         "document_prose_language": "ru",
+    }
+    result = document_conformance.build_profile_contract(
+        metadata,
+        profile_id="project-alpha",
+        profile_text=PROFILE,
+        source=Path("profile.md"),
+    )
+    assert result is not None
+    return result
+
+
+def navigation_contract() -> dict[str, object]:
+    metadata = {
+        "document_checks": "draft, working_projection",
+        "document_required_headings": (
+            "Оглавление, Кратко о задаче, Состав изменений, "
+            "История изменений, Полезные ссылки"
+        ),
+        "document_toc": "obsidian-h2-exact",
+        "document_toc_heading": "Оглавление",
+        "document_toc_separators": "required",
+        "document_reader_navigation": "required",
+        "document_reader_summary_policy": "problem-goal-solution",
+        "document_reader_summary_heading": "Кратко о задаче",
+        "document_reader_summary_parts": "Проблема, Цель, Суть решения",
+        "document_component_ownership_policy": "separated-summary",
+        "document_component_ownership_heading": "Состав изменений",
+        "document_component_owners": "Backend (BE), Frontend (FE)",
+        "document_public_history_policy": "semantic-releases-only",
+        "document_public_history_heading": "История изменений",
+        "document_forbidden_reader_headings": "Статус",
+        "document_forbidden_reader_phrases": (
+            "Согласовано и опубликовано | Владислав утвердил | Исполнитель анализа"
+        ),
     }
     result = document_conformance.build_profile_contract(
         metadata,
@@ -267,6 +301,65 @@ VALID_TRACE = r"""# Постановка
 | [[#US-1. Просмотр результата\|US-1]] | [[#REQ-B01-001 — Показать результат\|REQ-B01-001]] |
 | [[#AC-B01-001 — Результат показан\|AC-B01-001]] | [[#REQ-B01-001 — Показать результат\|REQ-B01-001]] |
 | [[#DOD-B01-001 — Проверка добавлена\|DOD-B01-001]] | [[#AC-B01-001 — Результат показан\|AC-B01-001]] |
+
+## Полезные ссылки
+
+Текст.
+"""
+
+
+VALID_NAVIGATION = """# Постановка
+
+---
+
+## Оглавление
+
+1. [[#Кратко о задаче]]
+2. [[#Состав изменений]]
+3. [[#История изменений]]
+4. [[#Влияние на API]]
+5. [[#Требования]]
+6. [[#Полезные ссылки]]
+
+---
+
+## Кратко о задаче
+
+### Проблема
+
+Сейчас пользователь получает устаревшие данные.
+
+### Цель
+
+Пользователь видит актуальный результат.
+
+### Суть решения
+
+Система связывает ответ с текущим контекстом запроса.
+
+## Состав изменений
+
+### Backend (BE)
+
+Добавить идентификатор объекта в ответ. Подробнее: [[#Влияние на API]].
+
+### Frontend (FE)
+
+Сопоставлять строки по идентификатору и игнорировать поздний ответ. Подробнее: [[#Требования]].
+
+## История изменений
+
+| Версия | Дата | Комментарий |
+|---|---|---|
+| 1.0 | 26.08.2026 | Первичная публикация требований. |
+
+## Влияние на API
+
+Контракт ответа.
+
+## Требования
+
+Наблюдаемое поведение клиента.
 
 ## Полезные ссылки
 
@@ -719,6 +812,117 @@ class DocumentConformanceTests(unittest.TestCase):
                 profile_text=PROFILE,
                 source=Path("profile.md"),
             )
+
+    def test_reader_navigation_accepts_summary_ownership_and_public_history(self) -> None:
+        self.assertEqual(
+            document_conformance.validate_markdown(
+                VALID_NAVIGATION,
+                navigation_contract(),
+                label="draft",
+            ),
+            [],
+        )
+
+    def test_reader_navigation_requires_all_summary_parts(self) -> None:
+        text = VALID_NAVIGATION.replace("### Суть решения", "### Подход")
+        errors = document_conformance.validate_markdown(
+            text,
+            navigation_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("Суть решения" in item for item in errors))
+
+    def test_reader_navigation_requires_each_component_owner(self) -> None:
+        text = VALID_NAVIGATION.replace("### Frontend (FE)", "### Клиент")
+        errors = document_conformance.validate_markdown(
+            text,
+            navigation_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("Frontend (FE)" in item for item in errors))
+
+    def test_reader_navigation_requires_non_empty_summary_part(self) -> None:
+        text = VALID_NAVIGATION.replace(
+            "### Цель\n\nПользователь видит актуальный результат.",
+            "### Цель",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            navigation_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("reader summary part 'Цель'" in item for item in errors))
+
+    def test_reader_navigation_requires_owner_detail_link(self) -> None:
+        text = VALID_NAVIGATION.replace(
+            " Подробнее: [[#Требования]].",
+            ".",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            navigation_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("component owner 'Frontend (FE)' must link" in item for item in errors))
+
+    def test_reader_navigation_accepts_explicit_no_change_owner(self) -> None:
+        text = VALID_NAVIGATION.replace(
+            "Сопоставлять строки по идентификатору и игнорировать поздний ответ. Подробнее: [[#Требования]].",
+            "Изменений нет.",
+        )
+        self.assertEqual(
+            document_conformance.validate_markdown(
+                text,
+                navigation_contract(),
+                label="draft",
+            ),
+            [],
+        )
+
+    def test_reader_navigation_rejects_unresolved_owner_link(self) -> None:
+        text = VALID_NAVIGATION.replace("[[#Требования]]", "[[#Несуществующий раздел]]")
+        errors = document_conformance.validate_markdown(
+            text,
+            navigation_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("unresolved detail links" in item for item in errors))
+
+    def test_reader_navigation_requires_semantic_version_row(self) -> None:
+        text = VALID_NAVIGATION.replace(
+            "| 1.0 | 26.08.2026 | Первичная публикация требований. |",
+            "История пока не заполнена.",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            navigation_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("must contain a semantic version row" in item for item in errors))
+
+    def test_reader_navigation_rejects_lifecycle_heading(self) -> None:
+        text = VALID_NAVIGATION.replace(
+            "Сейчас пользователь получает устаревшие данные.",
+            "Сейчас пользователь получает устаревшие данные.\n\n### Статус\n\nВ работе.",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            navigation_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("forbidden lifecycle headings: Статус" in item for item in errors))
+
+    def test_reader_navigation_rejects_internal_history_phrase(self) -> None:
+        text = VALID_NAVIGATION.replace(
+            "Первичная публикация требований.",
+            "Владислав утвердил постановку.",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            navigation_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("Владислав утвердил" in item for item in errors))
 
 
 if __name__ == "__main__":

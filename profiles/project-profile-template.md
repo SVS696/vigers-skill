@@ -40,6 +40,17 @@ document_dod_focus:
 document_developer_checks:
 document_prose_language:
 document_prose_layout:
+document_reader_navigation:
+document_reader_summary_policy:
+document_reader_summary_heading:
+document_reader_summary_parts:
+document_component_ownership_policy:
+document_component_ownership_heading:
+document_component_owners:
+document_public_history_policy:
+document_public_history_heading:
+document_forbidden_reader_headings:
+document_forbidden_reader_phrases:
 document_user_journey_context:
 document_ui_field_naming:
 document_diagram_working_source:
@@ -212,6 +223,26 @@ plain-text IDs machine check отклоняет. Для Obsidian-таблиц pr
 dangling semantic references во всей читательской проекции. Смысловые правила
 AC/DoD, прямой трассировки, языка и ресурсной дисциплины проверяют editor и
 reviewer по `references/reader-projection-contract.md`.
+
+Если читателю нужен быстрый вход и явная граница ответственности компонентов,
+объяви единый navigation contract:
+
+- `document_reader_navigation: required`;
+- `document_reader_summary_policy: problem-goal-solution`, H2 в
+  `document_reader_summary_heading` и ровно три H3 в
+  `document_reader_summary_parts`;
+- `document_component_ownership_policy: separated-summary`, H2 карты изменений
+  и фактические labels владельцев в `document_component_owners`;
+- `document_public_history_policy: semantic-releases-only` и H2 публичной
+  истории;
+- project-owned denylist служебных H2 и точных lifecycle-фраз в
+  `document_forbidden_reader_headings` и `document_forbidden_reader_phrases`.
+
+Machine check требует непустые части summary, а от каждого owner-блока — точную
+внутреннюю ссылку на подробности либо явное `Изменений нет`. История должна
+содержать хотя бы одну строку смысловой версии. Denylist не заменяет review:
+profile включает в него только устойчивые локальные формулировки, а reviewer
+ловит перефразированный approval, review, publication, assignment и handoff.
 
 Если постановка содержит пользовательские UI-сценарии, объяви оба правила:
 

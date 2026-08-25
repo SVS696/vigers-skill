@@ -408,6 +408,28 @@ class PipelineTests(unittest.TestCase):
             expected["required_output_signals"],
         )
 
+    def test_reader_navigation_eval_separates_owners_and_internal_lifecycle(self) -> None:
+        eval_path = (
+            spec_pipeline.ROOT
+            / "evals"
+            / "prompt-cookbook"
+            / "reader-navigation-lifecycle-barrier.json"
+        )
+        payload = json.loads(eval_path.read_text(encoding="utf-8"))
+        expected = payload["expected"]
+        self.assertIn(
+            "копировать полный раздел Компоненты и интерфейсы в краткую выжимку",
+            expected["forbidden_actions"],
+        )
+        self.assertIn(
+            "semantic public history only",
+            expected["required_output_signals"],
+        )
+        self.assertIn(
+            "INTF preferred; legacy IF accepted",
+            expected["required_output_signals"],
+        )
+
     def test_simplicity_is_native_and_has_one_bounded_control(self) -> None:
         eval_path = (
             spec_pipeline.ROOT

@@ -18,6 +18,10 @@ USER_STORY_TITLE_SEPARATORS = {".", ":"}
 TRACEABILITY_POLICIES = {"semantic-id-links"}
 TRACEABILITY_LINK_STYLES = {"obsidian-heading-exact"}
 READER_PROJECTION_POLICIES = {"required"}
+READER_NAVIGATION_POLICIES = {"required"}
+READER_SUMMARY_POLICIES = {"problem-goal-solution"}
+COMPONENT_OWNERSHIP_POLICIES = {"separated-summary"}
+PUBLIC_HISTORY_POLICIES = {"semantic-releases-only"}
 PROSE_LAYOUT_POLICIES = {"semantic-paragraph-one-line", "unconstrained"}
 SEMANTIC_REFERENCE_POLICIES = {"exact-heading-links"}
 TRACEABILITY_DENSITIES = {"direct-edges"}
@@ -51,6 +55,10 @@ class DocumentContractError(RuntimeError):
 
 def _csv(value: str) -> tuple[str, ...]:
     return tuple(item.strip() for item in value.split(",") if item.strip())
+
+
+def _pipe_list(value: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in value.split("|") if item.strip())
 
 
 def build_profile_contract(
@@ -88,6 +96,17 @@ def build_profile_contract(
         "document_developer_checks",
         "document_prose_language",
         "document_prose_layout",
+        "document_reader_navigation",
+        "document_reader_summary_policy",
+        "document_reader_summary_heading",
+        "document_reader_summary_parts",
+        "document_component_ownership_policy",
+        "document_component_ownership_heading",
+        "document_component_owners",
+        "document_public_history_policy",
+        "document_public_history_heading",
+        "document_forbidden_reader_headings",
+        "document_forbidden_reader_phrases",
         "document_user_journey_context",
         "document_ui_field_naming",
         "document_diagram_working_source",
@@ -154,6 +173,33 @@ def build_profile_contract(
     }
     if any(reader_projection_fields.values()):
         contract["reader_projection"] = reader_projection_fields
+    reader_navigation_fields: dict[str, Any] = {
+        "policy": metadata.get("document_reader_navigation", "").strip().casefold(),
+        "summary_policy": metadata.get("document_reader_summary_policy", "")
+        .strip()
+        .casefold(),
+        "summary_heading": metadata.get("document_reader_summary_heading", "").strip(),
+        "summary_parts": list(_csv(metadata.get("document_reader_summary_parts", ""))),
+        "ownership_policy": metadata.get("document_component_ownership_policy", "")
+        .strip()
+        .casefold(),
+        "ownership_heading": metadata.get(
+            "document_component_ownership_heading", ""
+        ).strip(),
+        "owners": list(_csv(metadata.get("document_component_owners", ""))),
+        "history_policy": metadata.get("document_public_history_policy", "")
+        .strip()
+        .casefold(),
+        "history_heading": metadata.get("document_public_history_heading", "").strip(),
+        "forbidden_headings": list(
+            _csv(metadata.get("document_forbidden_reader_headings", ""))
+        ),
+        "forbidden_phrases": list(
+            _pipe_list(metadata.get("document_forbidden_reader_phrases", ""))
+        ),
+    }
+    if any(reader_navigation_fields.values()):
+        contract["reader_navigation"] = reader_navigation_fields
     user_journey_fields = {
         "context": metadata.get("document_user_journey_context", "")
         .strip()
@@ -337,6 +383,52 @@ def validate_contract(payload: Any) -> list[str]:
                     errors.append(
                         "traceability prefixes are not public reader IDs: " + ", ".join(unknown)
                     )
+
+    reader_navigation = payload.get("reader_navigation")
+    if reader_navigation is not None:
+        if not isinstance(reader_navigation, dict):
+            errors.append("document contract reader_navigation must be an object")
+        else:
+            if reader_navigation.get("policy") not in READER_NAVIGATION_POLICIES:
+                errors.append("document contract has an unsupported reader navigation policy")
+            if reader_navigation.get("summary_policy") not in READER_SUMMARY_POLICIES:
+                errors.append("document contract has an unsupported reader summary policy")
+            if reader_navigation.get("ownership_policy") not in COMPONENT_OWNERSHIP_POLICIES:
+                errors.append("document contract has an unsupported component ownership policy")
+            if reader_navigation.get("history_policy") not in PUBLIC_HISTORY_POLICIES:
+                errors.append("document contract has an unsupported public history policy")
+            for name in ("summary_heading", "ownership_heading", "history_heading"):
+                value = reader_navigation.get(name)
+                if not isinstance(value, str) or not value.strip():
+                    errors.append(f"document contract reader_navigation has no {name}")
+                elif isinstance(headings, list) and value not in headings:
+                    errors.append(
+                        f"reader navigation {name} must be included in required_headings"
+                    )
+            summary_parts = reader_navigation.get("summary_parts")
+            if not isinstance(summary_parts, list) or len(summary_parts) != 3:
+                errors.append(
+                    "document contract reader summary must define exactly three parts"
+                )
+            elif not all(isinstance(item, str) and item.strip() for item in summary_parts):
+                errors.append("document contract reader summary has an invalid part")
+            elif len(summary_parts) != len(set(summary_parts)):
+                errors.append("document contract reader summary has duplicate parts")
+            owners = reader_navigation.get("owners")
+            if not isinstance(owners, list) or len(owners) < 2:
+                errors.append(
+                    "document contract component ownership must define at least two owners"
+                )
+            elif not all(isinstance(item, str) and item.strip() for item in owners):
+                errors.append("document contract component ownership has an invalid owner")
+            elif len(owners) != len(set(owners)):
+                errors.append("document contract component ownership has duplicate owners")
+            for name in ("forbidden_headings", "forbidden_phrases"):
+                values = reader_navigation.get(name)
+                if not isinstance(values, list) or not all(
+                    isinstance(item, str) and item.strip() for item in values
+                ):
+                    errors.append(f"document contract reader_navigation has invalid {name}")
 
     user_journey = payload.get("user_journey")
     if user_journey is not None:
@@ -768,6 +860,197 @@ def _validate_reader_projection(
     return errors
 
 
+def _section_h3(
+    lines: list[str],
+    headings: list[tuple[str, int]],
+    *,
+    heading: str,
+) -> list[str]:
+    section_matches = [(name, index) for name, index in headings if name == heading]
+    if len(section_matches) != 1:
+        return []
+    section_start = section_matches[0][1]
+    section_end = next(
+        (index for _name, index in headings if index > section_start),
+        len(lines),
+    )
+    outside = _outside_fences(lines)
+    result: list[str] = []
+    for index in range(section_start + 1, section_end):
+        if not outside[index]:
+            continue
+        match = H3_RE.match(lines[index])
+        if match:
+            result.append(_heading_text(match.group(1)))
+    return result
+
+
+def _section_h3_blocks(
+    lines: list[str],
+    headings: list[tuple[str, int]],
+    *,
+    heading: str,
+) -> dict[str, list[str]]:
+    """Return H3 bodies for one H2 section, excluding fenced content."""
+    section_matches = [(name, index) for name, index in headings if name == heading]
+    if len(section_matches) != 1:
+        return {}
+    section_start = section_matches[0][1]
+    section_end = next(
+        (index for _name, index in headings if index > section_start),
+        len(lines),
+    )
+    outside = _outside_fences(lines)
+    entries: list[tuple[str, int]] = []
+    for index in range(section_start + 1, section_end):
+        if not outside[index]:
+            continue
+        match = H3_RE.match(lines[index])
+        if match:
+            entries.append((_heading_text(match.group(1)), index))
+    result: dict[str, list[str]] = {}
+    for position, (name, start) in enumerate(entries):
+        end = entries[position + 1][1] if position + 1 < len(entries) else section_end
+        result[name] = [
+            lines[index]
+            for index in range(start + 1, end)
+            if outside[index] and lines[index].strip()
+        ]
+    return result
+
+
+def _frontmatter_lines(lines: list[str]) -> set[int]:
+    result: set[int] = set()
+    if not lines or lines[0].strip() != "---":
+        return result
+    result.add(0)
+    for index in range(1, len(lines)):
+        result.add(index)
+        if lines[index].strip() == "---":
+            break
+    return result
+
+
+def _validate_reader_navigation(
+    lines: list[str],
+    headings: list[tuple[str, int]],
+    contract: dict[str, Any],
+    *,
+    label: str,
+) -> list[str]:
+    """Require a reader summary/ownership map and reject project-declared process leaks."""
+    policy = contract["reader_navigation"]
+    errors: list[str] = []
+    for section_name, required in (
+        (policy["summary_heading"], policy["summary_parts"]),
+        (policy["ownership_heading"], policy["owners"]),
+    ):
+        actual = _section_h3(lines, headings, heading=section_name)
+        missing = [item for item in required if actual.count(item) != 1]
+        if missing:
+            errors.append(
+                f"{label}: {section_name!r} must contain exactly one H3 for: "
+                + ", ".join(missing)
+            )
+
+    summary_blocks = _section_h3_blocks(
+        lines, headings, heading=policy["summary_heading"]
+    )
+    for part in policy["summary_parts"]:
+        if part in summary_blocks and not summary_blocks[part]:
+            errors.append(
+                f"{label}: reader summary part {part!r} must contain a concise explanation"
+            )
+
+    document_headings = _all_atx_headings(lines)
+    ownership_blocks = _section_h3_blocks(
+        lines, headings, heading=policy["ownership_heading"]
+    )
+    for owner in policy["owners"]:
+        body = ownership_blocks.get(owner)
+        if body is None:
+            continue
+        if not body:
+            errors.append(
+                f"{label}: component owner {owner!r} must describe work or state that changes are absent"
+            )
+            continue
+        body_text = "\n".join(body)
+        if "изменений нет" in body_text.casefold():
+            continue
+        links = [
+            match.group("target").strip()
+            for match in OBSIDIAN_HEADING_LINK_RE.finditer(body_text)
+        ]
+        if not links:
+            errors.append(
+                f"{label}: component owner {owner!r} must link to detailed sections "
+                "or state 'Изменений нет'"
+            )
+            continue
+        dangling = [
+            target for target in links if len(document_headings.get(target, [])) != 1
+        ]
+        if dangling:
+            errors.append(
+                f"{label}: component owner {owner!r} has unresolved detail links: "
+                + ", ".join(dict.fromkeys(dangling))
+            )
+
+    history_matches = [
+        index for name, index in headings if name == policy["history_heading"]
+    ]
+    if len(history_matches) == 1:
+        history_start = history_matches[0]
+        history_end = next(
+            (index for _name, index in headings if index > history_start),
+            len(lines),
+        )
+        outside = _outside_fences(lines)
+        version_row_re = re.compile(r"^\|\s*[1-9][0-9]*(?:\.[0-9]+)+\s*\|")
+        if not any(
+            outside[index] and version_row_re.match(lines[index].strip())
+            for index in range(history_start + 1, history_end)
+        ):
+            errors.append(
+                f"{label}: {policy['history_heading']!r} must contain a semantic version row"
+            )
+
+    all_headings = _all_atx_headings(lines)
+    forbidden_heading_map = {
+        item.casefold(): item for item in policy.get("forbidden_headings", [])
+    }
+    leaked_headings = [
+        forbidden_heading_map[name.casefold()]
+        for name in all_headings
+        if name.casefold() in forbidden_heading_map
+    ]
+    if leaked_headings:
+        errors.append(
+            f"{label}: reader projection contains forbidden lifecycle headings: "
+            + ", ".join(dict.fromkeys(leaked_headings))
+        )
+
+    forbidden_phrases = policy.get("forbidden_phrases", [])
+    if forbidden_phrases:
+        outside = _outside_fences(lines)
+        frontmatter = _frontmatter_lines(lines)
+        leaked_phrases: list[str] = []
+        for index, line in enumerate(lines):
+            if not outside[index] or index in frontmatter:
+                continue
+            folded = line.casefold()
+            leaked_phrases.extend(
+                phrase for phrase in forbidden_phrases if phrase.casefold() in folded
+            )
+        if leaked_phrases:
+            errors.append(
+                f"{label}: reader projection contains forbidden lifecycle phrases: "
+                + ", ".join(dict.fromkeys(leaked_phrases))
+            )
+    return errors
+
+
 def _validate_reader_prose_layout(lines: list[str], *, label: str) -> list[str]:
     """Reject editor-width hard wraps in ordinary reader-facing prose paragraphs."""
     outside = _outside_fences(lines)
@@ -914,6 +1197,10 @@ def validate_markdown(text: str, contract: dict[str, Any], *, label: str) -> lis
         errors.extend(_validate_traceability_section(lines, headings, contract, label=label))
     if contract.get("reader_projection") is not None:
         errors.extend(_validate_reader_projection(lines, contract, label=label))
+    if contract.get("reader_navigation") is not None:
+        errors.extend(
+            _validate_reader_navigation(lines, headings, contract, label=label)
+        )
     return errors
 
 

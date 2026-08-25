@@ -3399,6 +3399,26 @@ class CasePipelineTests(unittest.TestCase):
             errors = case_pipeline.validate_case(loaded_root, manifest, ledger, final=False)
             self.assertTrue(any("invalid semantic id" in item for item in errors))
 
+    def test_new_interface_prefix_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            add_definition(root, "B01", "INTF-B01-001", "interface")
+            ids, _traces = case_pipeline.validate_index(
+                root / "blocks" / "B01.index.json", "B01"
+            )
+            self.assertIn("INTF-B01-001", ids)
+
+    def test_legacy_interface_prefix_remains_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            add_definition(root, "B01", "IF-B01-001", "interface")
+            ids, _traces = case_pipeline.validate_index(
+                root / "blocks" / "B01.index.json", "B01"
+            )
+            self.assertIn("IF-B01-001", ids)
+
     def test_unresolved_trace_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = self.init(Path(temp))

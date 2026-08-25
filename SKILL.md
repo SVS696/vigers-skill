@@ -65,7 +65,7 @@ description: "Оркестрирует предварительное иссле
     в существующем `decisions.md`, а не в новом артефакте.
 15. **Человекочитаемая User Story не подменяется системной моделью.** Если
     profile объявляет `user_story` contract, каждая история следует одной
-    project-owned форме role-goal-value. `RULE/DATA/IF/AC/DOD` остаются
+    project-owned форме role-goal-value. `RULE/DATA/INTF/AC/DOD` остаются
     отдельными трассируемыми слоями; таблицы `ACT` и списки `SCN` не заменяют US.
 16. **Трассировка должна навигировать, а не только перечислять ID.** Если
     profile объявляет `traceability` contract, каждый semantic ID в разделе
@@ -80,12 +80,12 @@ description: "Оркестрирует предварительное иссле
 18. **Публикуй читательскую проекцию, а не внутреннюю модель.** Служебные ID,
     findings, gates и reasoning остаются в case package. AC описывают
     наблюдаемую приёмку и прямо ведут к сценарию/точке входа проверки, DoD — готовность результата к ней, а developer
-    self-check не публикуется без нормативной причины. Semantic references во
-    всём документе разрешаются в точные headings; трассировка хранит прямые
+    self-check не публикуется без нормативной причины. Semantic references во всём документе разрешаются в точные headings; трассировка хранит прямые
     связи. Сначала запускай machine check, затем только необходимые дорогие
     проходы по `{baseDir}/references/reader-projection-contract.md`.
     Общая бизнес-цель остаётся обязательной; объявленный profile публичный
     `GOAL-*` не является служебным ID и сохраняется как вершина трассировки.
+19. **Читатель сразу видит смысл и владельцев работы.** Reader-facing документ начинается с `Проблема → Цель → Суть решения`, затем кратко разделяет изменения по component owners и ведёт к каноническим подробностям. Публичная история хранит только смысловые версии требований; внутренний lifecycle не публикуется. Новые интерфейсы используют `INTF`, legacy `IF` остаётся читаемым.
 
 ## Когда применять
 
@@ -427,6 +427,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 - Объявленная reader projection не содержит внутренних IDs и process jargon;
   каждое публичное semantic reference во всём теле является точной ссылкой, а
   traceability не хранит транзитивное замыкание.
+- Объявленная reader navigation содержит непустые `Проблема`, `Цель`, `Суть решения`, component-owner блоки со ссылками и versioned историю без внутреннего lifecycle.
 - AC исполнимы фактическим приёмщиком: UI-критерий ведёт к точному сценарию с экраном/маршрутом либо содержит их сам, а non-UI — к системной точке входа; DoD фиксирует готовность к приёмке, developer self-check исключён без нормативного основания.
 - После локальной правки `begin-remediation` сохранил immutable review/baseline;
   проверены пакет findings, объявленные semantic IDs и прямые регрессии. Risk
@@ -475,14 +476,13 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/evals/prompt-cookbook/traceability-link-barrier.json` | Регрессия prompt: plain-text IDs и диапазоны не обходят linked traceability gate |
 | `{baseDir}/evals/prompt-cookbook/diagram-complexity-barrier.json` | Регрессия prompt: полный текст не подменяет required diagrams и visual QA |
 | `{baseDir}/evals/prompt-cookbook/diagram-render-lifecycle-barrier.json` | Регрессия prompt: рабочий QA не создаёт PNG/source до publication gate |
-| `{baseDir}/evals/prompt-cookbook/reader-projection-barrier.json` | Регрессия prompt: служебная модель, developer checks и транзитивная трассировка не протекают в постановку |
+| `{baseDir}/evals/prompt-cookbook/reader-projection-barrier.json`, `{baseDir}/evals/prompt-cookbook/reader-navigation-lifecycle-barrier.json` | Регрессии prompt: служебная модель не протекает в постановку, быстрый вход и ownership не дублируют подробности |
 | `{baseDir}/evals/prompt-cookbook/user-journey-screen-context-barrier.json` | Регрессия prompt: UI-сценарий называет экран и видимые поля без повторов и догадок |
 | `{baseDir}/evals/prompt-cookbook/acceptance-verification-context-barrier.json` | Регрессия prompt: каждый AC ведёт тестировщика к точному сценарию или точке входа |
 | `{baseDir}/evals/prompt-cookbook/human-only-timing-boundary.json` | Регрессия prompt: forecast не попадает в модель и не управляет её работой |
 | `{baseDir}/evals/prompt-cookbook/targeted-remediation-preserves-coverage.json`, `{baseDir}/evals/prompt-cookbook/risk-first-batched-convergence.json`, `{baseDir}/evals/prompt-cookbook/execution-economy-terminal-green.json`, `{baseDir}/evals/prompt-cookbook/legacy-transition-authority.json`, `{baseDir}/evals/prompt-cookbook/bounded-recovery-frozen-case.json` | Регрессии prompt: bounded convergence, terminal green, frozen recovery и authoritative implementation path |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/runtime-preferences.md` | User/project toggles для timing, progress и task-manager projection |
-| `{baseDir}/references/automation-timing.md` | Active/business/calendar timing, deferred lifecycle и проектный калибратор |
 | `{baseDir}/references/block-contract.md` | Контракт семантического блока и sidecar index |
 | `{baseDir}/references/knowledge-map.md` | Детерминированная карта методических маршрутов |
 | `{baseDir}/workflows/specification-pipeline.md` | Мультиагентный pipeline |

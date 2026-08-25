@@ -77,7 +77,7 @@ REVIEW_LENS_RE = re.compile(r"^[a-z][a-z0-9._-]{0,63}@[1-9][0-9]*$")
 RISK_SURFACE_RE = re.compile(r"^[a-z][a-z0-9-]{1,63}$")
 RECOVERY_SCOPE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 SEMANTIC_ID_RE = re.compile(
-    r"^(GOAL|ACT|SCN|RULE|DATA|STATE|IF|QUAL|REQ|AC|DOD|ASM|Q|DEC|CON)-"
+    r"^(GOAL|ACT|SCN|RULE|DATA|STATE|IF|INTF|QUAL|REQ|AC|DOD|ASM|Q|DEC|CON)-"
     r"(B[0-9]{2,3})-[0-9]{3}$"
 )
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -135,7 +135,7 @@ SEMANTIC_KIND_PREFIX = {
     "rule": "RULE",
     "data": "DATA",
     "state": "STATE",
-    "interface": "IF",
+    "interface": "INTF",
     "quality": "QUAL",
     "requirement": "REQ",
     "acceptance": "AC",
@@ -144,6 +144,10 @@ SEMANTIC_KIND_PREFIX = {
     "question": "Q",
     "decision": "DEC",
     "constraint": "CON",
+}
+
+LEGACY_SEMANTIC_KIND_PREFIXES = {
+    "interface": {"IF"},
 }
 
 GATE_NAMES = (
@@ -3543,7 +3547,11 @@ def validate_index(path: Path, expected_block: str) -> tuple[list[str], list[dic
             errors.append(f"{path.name}: invalid semantic id {semantic_id!r}")
         if kind not in SEMANTIC_KIND_PREFIX:
             errors.append(f"{path.name}: invalid semantic kind {kind!r}")
-        elif match and match.group(1) != SEMANTIC_KIND_PREFIX[kind]:
+        elif (
+            match
+            and match.group(1) != SEMANTIC_KIND_PREFIX[kind]
+            and match.group(1) not in LEGACY_SEMANTIC_KIND_PREFIXES.get(kind, set())
+        ):
             errors.append(f"{path.name}: id {semantic_id!r} does not match kind {kind!r}")
         if not isinstance(summary, str) or not summary.strip():
             errors.append(f"{path.name}: {semantic_id!r} needs a summary")

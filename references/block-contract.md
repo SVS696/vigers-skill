@@ -82,7 +82,7 @@
 | goal | GOAL | actor | ACT |
 | scenario | SCN | rule | RULE |
 | data | DATA | state | STATE |
-| interface | IF | quality | QUAL |
+| interface | INTF | quality | QUAL |
 | requirement | REQ | acceptance | AC |
 | dod | DOD | assumption | ASM |
 | question | Q | decision | DEC |
@@ -91,6 +91,8 @@
 Каждый ID принадлежит одному блоку: `<PREFIX>-Bxx-<NNN>`. Направление trace:
 `from` уточняет, проверяет или выводится из `to`. Поэтому `AC → REQ`, а
 `REQ → SCN|RULE|GOAL|...`.
+
+`IF` остаётся допустимым legacy alias при чтении существующих schema-2 indexes, но новые interface definitions получают `INTF`: `IF` слишком легко считывается как условный оператор и не должен появляться в новом reader-facing документе.
 
 Для новой `acceptance` definition обязателен `verification_context`. Он хранит
 `kind: ui-scenario|api|batch|system`, точные `scenario_refs` и подтверждённую
