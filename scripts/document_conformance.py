@@ -977,6 +977,11 @@ def _validate_reader_navigation(
             continue
         body_text = "\n".join(body)
         if "изменений нет" in body_text.casefold():
+            if body_text.strip().casefold().rstrip(".") != "изменений нет":
+                errors.append(
+                    f"{label}: unchanged component owner {owner!r} must contain only "
+                    "'Изменений нет.'"
+                )
             continue
         links = [
             match.group("target").strip()

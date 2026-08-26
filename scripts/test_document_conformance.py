@@ -879,6 +879,18 @@ class DocumentConformanceTests(unittest.TestCase):
             [],
         )
 
+    def test_reader_navigation_rejects_expanded_no_change_owner(self) -> None:
+        text = VALID_NAVIGATION.replace(
+            "Сопоставлять строки по идентификатору и игнорировать поздний ответ. Подробнее: [[#Требования]].",
+            "Изменений нет. API, БД и права сохраняются; подробнее: [[#Требования]].",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            navigation_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("must contain only 'Изменений нет.'" in item for item in errors))
+
     def test_reader_navigation_rejects_unresolved_owner_link(self) -> None:
         text = VALID_NAVIGATION.replace("[[#Требования]]", "[[#Несуществующий раздел]]")
         errors = document_conformance.validate_markdown(

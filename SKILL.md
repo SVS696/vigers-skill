@@ -427,7 +427,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 - Объявленная reader projection не содержит внутренних IDs и process jargon;
   каждое публичное semantic reference во всём теле является точной ссылкой, а
   traceability не хранит транзитивное замыкание.
-- Объявленная reader navigation содержит непустые `Проблема`, `Цель`, `Суть решения`, component-owner блоки со ссылками и versioned историю без внутреннего lifecycle.
+- Объявленная reader navigation содержит непустые `Проблема`, `Цель`, `Суть решения`, component-owner блоки со ссылками и versioned историю без внутреннего lifecycle; неизменяемый owner ограничен фразой `Изменений нет.`, а reader projection не воспроизводит неизменяемые контракты.
 - AC исполнимы фактическим приёмщиком: UI-критерий ведёт к точному сценарию с экраном/маршрутом либо содержит их сам, а non-UI — к системной точке входа; DoD фиксирует готовность к приёмке, developer self-check исключён без нормативного основания.
 - После локальной правки `begin-remediation` сохранил immutable review/baseline;
   проверены пакет findings, объявленные semantic IDs и прямые регрессии. Risk

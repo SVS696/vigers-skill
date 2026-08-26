@@ -1,8 +1,8 @@
 {
   "schema": 1,
   "id": "reader-navigation-lifecycle-barrier",
-  "purpose": "Проверить быстрый вход в постановку, явную component ownership, недублирующую выжимку и запрет служебного lifecycle в публичной истории.",
-  "prompt": "<assignment>\nrole: spec-reviewer\nmode: final\nprofile_id: project-alpha\nreader_navigation:\n  summary: [Проблема, Цель, Суть решения]\n  owners: [Backend (BE), Frontend (FE)]\n  public_history: semantic-releases-only\ndraft_findings:\n  - 'Раздел Компоненты и интерфейсы уже существует, но вперемешку описывает FE-компоненты и BE API.'\n  - 'В начале есть GOAL, но нет отдельной проблемы и общей сути решения.'\n  - 'Backend и Frontend нельзя быстро выделить; верхней owner map со ссылками нет.'\n  - 'Статус содержит исполнителя анализа, ссылку на FE-задачу и зависимость objectId.'\n  - 'История содержит согласование, независимое ревью и публикацию в tracker.'\n  - 'Новый интерфейс назван IF-B01-001.'\ncandidate_next_step: скопировать весь раздел Компоненты и интерфейсы наверх и оставить Статус как полезный контекст\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"project-profile\">\nВ начале обязательны отдельные Проблема, Цель и Суть решения. Рядом Backend и Frontend кратко описывают свою работу и ссылаются на подробности. Это разрешённая выжимка, а не копия полных требований. Публичная история содержит только смысловые версии требований. Status, approval, review, publication, assignment и handoff остаются внутренними. Значимая dependency переносится в предметный раздел. Новые интерфейсы используют INTF; legacy IF читается без массовой миграции.\n</document>\n</source_documents>\n\n<final_instruction>\nВерни findings и минимальный план правки. Не редактируй файлы и не публикуй документ.\n</final_instruction>",
+  "purpose": "Проверить быстрый вход в постановку, явную component ownership, delta-only плотность, недублирующую выжимку и запрет служебного lifecycle в публичной истории.",
+  "prompt": "<assignment>\nrole: spec-reviewer\nmode: final\nprofile_id: project-alpha\nreader_navigation:\n  summary: [Проблема, Цель, Суть решения]\n  owners: [Backend (BE), Frontend (FE)]\n  public_history: semantic-releases-only\ndraft_findings:\n  - 'Раздел Компоненты и интерфейсы уже существует, но вперемешку описывает FE-компоненты и BE API.'\n  - 'В начале есть GOAL, но нет отдельной проблемы и общей сути решения.'\n  - 'Backend и Frontend нельзя быстро выделить; верхней owner map со ссылками нет.'\n  - 'Статус содержит исполнителя анализа, ссылку на FE-задачу и зависимость objectId.'\n  - 'История содержит согласование, независимое ревью и публикацию в tracker.'\n  - 'Новый интерфейс назван IF-B01-001.'\n  - 'Backend не меняется, но его блок перечисляет неизменяемые API, БД и права со ссылками; ниже приведены полный request и error body только чтобы показать, что они сохраняются.'\ncandidate_next_step: скопировать весь раздел Компоненты и интерфейсы наверх и оставить Статус как полезный контекст\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"project-profile\">\nВ начале обязательны отдельные Проблема, Цель и Суть решения. Рядом Backend и Frontend кратко описывают свою работу и ссылаются на подробности. Это разрешённая выжимка, а не копия полных требований. Неизменяемый owner содержит только `Изменений нет.` Reader projection описывает дельту: неизменяемые request/response/error примеры и таблицы не публикуются; допустима одна короткая граница совместимости при риске расширения scope. Публичная история содержит только смысловые версии требований. Status, approval, review, publication, assignment и handoff остаются внутренними. Значимая dependency переносится в предметный раздел. Новые интерфейсы используют INTF; legacy IF читается без массовой миграции.\n</document>\n</source_documents>\n\n<final_instruction>\nВерни findings и минимальный план правки. Не редактируй файлы и не публикуй документ.\n</final_instruction>",
   "expected": {
     "required_actions": [
       "сохранить существующие подробные разделы и перегруппировать implementer-specific содержание по Backend и Frontend",
@@ -10,7 +10,8 @@
       "добавить отдельные Backend и Frontend owner-блоки с точными ссылками на подробности",
       "удалить из reader projection статус, согласование, review, publication, assignment и handoff",
       "перенести предметную зависимость objectId в суть решения, интерфейсный контракт или owner map",
-      "использовать INTF для нового интерфейса и сохранить чтение legacy IF"
+      "использовать INTF для нового интерфейса и сохранить чтение legacy IF",
+      "сократить неизменяемый owner до фразы Изменений нет и удалить baseline-примеры request/error body"
     ],
     "forbidden_actions": [
       "считать наличие общего раздела достаточной границей ownership",
@@ -18,13 +19,15 @@
       "оставлять служебный Статус как читательский контекст",
       "удалять предметную зависимость вместе со служебным lifecycle",
       "переносить внутренние правки и ревью в публичную историю",
-      "массово переименовывать frozen legacy IF identifiers"
+      "массово переименовывать frozen legacy IF identifiers",
+      "публиковать payload-примеры и таблицы только ради подтверждения отсутствия изменений"
     ],
     "required_output_signals": [
       "reader navigation: blocked",
       "owner boundaries required",
       "semantic public history only",
-      "INTF preferred; legacy IF accepted"
+      "INTF preferred; legacy IF accepted",
+      "delta only; unchanged baseline omitted"
     ],
     "allowed_research_exception": {
       "allowed": false,

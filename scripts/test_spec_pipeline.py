@@ -429,6 +429,14 @@ class PipelineTests(unittest.TestCase):
             "INTF preferred; legacy IF accepted",
             expected["required_output_signals"],
         )
+        self.assertIn(
+            "delta only; unchanged baseline omitted",
+            expected["required_output_signals"],
+        )
+        self.assertIn(
+            "публиковать payload-примеры и таблицы только ради подтверждения отсутствия изменений",
+            expected["forbidden_actions"],
+        )
 
     def test_simplicity_is_native_and_has_one_bounded_control(self) -> None:
         eval_path = (
