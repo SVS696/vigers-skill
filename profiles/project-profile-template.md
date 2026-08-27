@@ -48,6 +48,7 @@ document_component_ownership_policy:
 document_component_ownership_heading:
 document_component_owners:
 document_component_detail_links:
+document_reader_map_layout:
 document_public_history_policy:
 document_public_history_heading:
 document_forbidden_reader_headings:
@@ -237,6 +238,9 @@ reviewer по `references/reader-projection-contract.md`.
 - `document_component_detail_links: described-owner-specific`, чтобы каждый
   изменяемый owner объяснял назначение ссылок и вёл хотя бы к одному точному
   owner-specific пункту, а не только к общим разделам;
+- `document_reader_map_layout: structured-lists`, чтобы `Проблема`, `Цель`,
+  `Суть решения` и изменяемые owner-блоки были короткими Markdown-списками, а
+  ссылки при необходимости выносились во вложенные пункты;
 - `document_public_history_policy: semantic-releases-only` и H2 публичной
   истории;
 - project-owned denylist служебных H2 и точных lifecycle-фраз в

@@ -145,6 +145,7 @@ def navigation_contract() -> dict[str, object]:
         "document_component_ownership_heading": "Состав изменений",
         "document_component_owners": "Backend (BE), Frontend (FE)",
         "document_component_detail_links": "described-owner-specific",
+        "document_reader_map_layout": "structured-lists",
         "document_public_history_policy": "semantic-releases-only",
         "document_public_history_heading": "История изменений",
         "document_forbidden_reader_headings": "Статус",
@@ -328,25 +329,28 @@ VALID_NAVIGATION = """# Постановка
 
 ### Проблема
 
-Сейчас пользователь получает устаревшие данные.
+- Сейчас пользователь получает устаревшие данные.
 
 ### Цель
 
-Пользователь видит актуальный результат.
+- Пользователь видит актуальный результат.
 
 ### Суть решения
 
-Система связывает ответ с текущим контекстом запроса.
+- Система связывает ответ с текущим контекстом запроса.
+  - Правило сопоставления описано в [[#REQ-1. Проверка контекста|REQ-1]].
 
 ## Состав изменений
 
 ### Backend (BE)
 
-Добавить идентификатор объекта в ответ. Серверный контракт ответа — [[#INTF-1. Ответ API|INTF-1]].
+- Добавить идентификатор объекта в ответ.
+  - Серверный контракт ответа: [[#INTF-1. Ответ API|INTF-1]].
 
 ### Frontend (FE)
 
-Сопоставлять строки по идентификатору и игнорировать поздний ответ. Клиентская проверка контекста — [[#REQ-1. Проверка контекста|REQ-1]].
+- Сопоставлять строки по идентификатору и игнорировать поздний ответ.
+  - Клиентская проверка контекста: [[#REQ-1. Проверка контекста|REQ-1]].
 
 ## История изменений
 
@@ -848,7 +852,7 @@ class DocumentConformanceTests(unittest.TestCase):
 
     def test_reader_navigation_requires_non_empty_summary_part(self) -> None:
         text = VALID_NAVIGATION.replace(
-            "### Цель\n\nПользователь видит актуальный результат.",
+            "### Цель\n\n- Пользователь видит актуальный результат.",
             "### Цель",
         )
         errors = document_conformance.validate_markdown(
@@ -858,9 +862,33 @@ class DocumentConformanceTests(unittest.TestCase):
         )
         self.assertTrue(any("reader summary part 'Цель'" in item for item in errors))
 
+    def test_reader_navigation_rejects_dense_summary_prose(self) -> None:
+        text = VALID_NAVIGATION.replace(
+            "- Пользователь видит актуальный результат.",
+            "Пользователь видит актуальный результат.",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            navigation_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("summary part 'Цель' must use Markdown list" in item for item in errors))
+
+    def test_reader_navigation_rejects_dense_owner_prose(self) -> None:
+        text = VALID_NAVIGATION.replace(
+            "- Добавить идентификатор объекта в ответ.\n  - Серверный контракт ответа: [[#INTF-1. Ответ API|INTF-1]].",
+            "Добавить идентификатор объекта в ответ. Серверный контракт ответа: [[#INTF-1. Ответ API|INTF-1]].",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            navigation_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("component owner 'Backend (BE)' must use Markdown list" in item for item in errors))
+
     def test_reader_navigation_requires_owner_detail_link(self) -> None:
         text = VALID_NAVIGATION.replace(
-            " Клиентская проверка контекста — [[#REQ-1. Проверка контекста|REQ-1]].",
+            "  - Клиентская проверка контекста: [[#REQ-1. Проверка контекста|REQ-1]].",
             "",
         )
         errors = document_conformance.validate_markdown(
@@ -872,7 +900,7 @@ class DocumentConformanceTests(unittest.TestCase):
 
     def test_reader_navigation_accepts_explicit_no_change_owner(self) -> None:
         text = VALID_NAVIGATION.replace(
-            "Сопоставлять строки по идентификатору и игнорировать поздний ответ. Клиентская проверка контекста — [[#REQ-1. Проверка контекста|REQ-1]].",
+            "- Сопоставлять строки по идентификатору и игнорировать поздний ответ.\n  - Клиентская проверка контекста: [[#REQ-1. Проверка контекста|REQ-1]].",
             "Изменений нет.",
         )
         self.assertEqual(
@@ -886,7 +914,7 @@ class DocumentConformanceTests(unittest.TestCase):
 
     def test_reader_navigation_rejects_expanded_no_change_owner(self) -> None:
         text = VALID_NAVIGATION.replace(
-            "Сопоставлять строки по идентификатору и игнорировать поздний ответ. Клиентская проверка контекста — [[#REQ-1. Проверка контекста|REQ-1]].",
+            "- Сопоставлять строки по идентификатору и игнорировать поздний ответ.\n  - Клиентская проверка контекста: [[#REQ-1. Проверка контекста|REQ-1]].",
             "Изменений нет. API, БД и права сохраняются; подробнее: [[#Требования]].",
         )
         errors = document_conformance.validate_markdown(
@@ -910,7 +938,7 @@ class DocumentConformanceTests(unittest.TestCase):
 
     def test_reader_navigation_rejects_generic_more_link_list(self) -> None:
         text = VALID_NAVIGATION.replace(
-            "Клиентская проверка контекста — [[#REQ-1. Проверка контекста|REQ-1]].",
+            "Клиентская проверка контекста: [[#REQ-1. Проверка контекста|REQ-1]].",
             "Подробнее: [[#REQ-1. Проверка контекста|REQ-1]].",
         )
         errors = document_conformance.validate_markdown(
@@ -922,8 +950,8 @@ class DocumentConformanceTests(unittest.TestCase):
 
     def test_reader_navigation_requires_owner_specific_detail_heading(self) -> None:
         text = VALID_NAVIGATION.replace(
-            "Клиентская проверка контекста — [[#REQ-1. Проверка контекста|REQ-1]].",
-            "Клиентские требования — [[#Требования]].",
+            "Клиентская проверка контекста: [[#REQ-1. Проверка контекста|REQ-1]].",
+            "Клиентские требования: [[#Требования]].",
         )
         errors = document_conformance.validate_markdown(
             text,

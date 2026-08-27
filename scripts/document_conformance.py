@@ -22,6 +22,7 @@ READER_NAVIGATION_POLICIES = {"required"}
 READER_SUMMARY_POLICIES = {"problem-goal-solution"}
 COMPONENT_OWNERSHIP_POLICIES = {"separated-summary"}
 COMPONENT_DETAIL_LINK_POLICIES = {"described-owner-specific"}
+READER_MAP_LAYOUT_POLICIES = {"structured-lists"}
 PUBLIC_HISTORY_POLICIES = {"semantic-releases-only"}
 PROSE_LAYOUT_POLICIES = {"semantic-paragraph-one-line", "unconstrained"}
 SEMANTIC_REFERENCE_POLICIES = {"exact-heading-links"}
@@ -105,6 +106,7 @@ def build_profile_contract(
         "document_component_ownership_heading",
         "document_component_owners",
         "document_component_detail_links",
+        "document_reader_map_layout",
         "document_public_history_policy",
         "document_public_history_heading",
         "document_forbidden_reader_headings",
@@ -192,6 +194,9 @@ def build_profile_contract(
         "ownership_detail_links": metadata.get(
             "document_component_detail_links", ""
         )
+        .strip()
+        .casefold(),
+        "map_layout": metadata.get("document_reader_map_layout", "")
         .strip()
         .casefold(),
         "history_policy": metadata.get("document_public_history_policy", "")
@@ -410,6 +415,9 @@ def validate_contract(payload: Any) -> list[str]:
                 errors.append(
                     "document contract has an unsupported component detail link policy"
                 )
+            map_layout = reader_navigation.get("map_layout")
+            if map_layout and map_layout not in READER_MAP_LAYOUT_POLICIES:
+                errors.append("document contract has an unsupported reader map layout")
             if reader_navigation.get("history_policy") not in PUBLIC_HISTORY_POLICIES:
                 errors.append("document contract has an unsupported public history policy")
             for name in ("summary_heading", "ownership_heading", "history_heading"):
@@ -976,6 +984,18 @@ def _validate_reader_navigation(
             errors.append(
                 f"{label}: reader summary part {part!r} must contain a concise explanation"
             )
+        if policy.get("map_layout") == "structured-lists" and part in summary_blocks:
+            non_list_lines = [
+                line
+                for line in summary_blocks[part]
+                if not re.fullmatch(r"\s*(?:---+|\*\*\*+|___+)\s*", line)
+                and not re.match(r"^\s*(?:[-+*]|\d+[.)])\s+", line)
+            ]
+            if non_list_lines:
+                errors.append(
+                    f"{label}: reader summary part {part!r} must use Markdown list "
+                    "items instead of dense prose"
+                )
 
     document_headings = _all_atx_headings(lines)
     ownership_blocks = _section_h3_blocks(
@@ -990,7 +1010,12 @@ def _validate_reader_navigation(
                 f"{label}: component owner {owner!r} must describe work or state that changes are absent"
             )
             continue
-        body_text = "\n".join(body)
+        content_body = [
+            line
+            for line in body
+            if not re.fullmatch(r"\s*(?:---+|\*\*\*+|___+)\s*", line)
+        ]
+        body_text = "\n".join(content_body)
         if "изменений нет" in body_text.casefold():
             if body_text.strip().casefold().rstrip(".") != "изменений нет":
                 errors.append(
@@ -998,6 +1023,17 @@ def _validate_reader_navigation(
                     "'Изменений нет.'"
                 )
             continue
+        if policy.get("map_layout") == "structured-lists":
+            non_list_lines = [
+                line
+                for line in content_body
+                if not re.match(r"^\s*(?:[-+*]|\d+[.)])\s+", line)
+            ]
+            if non_list_lines:
+                errors.append(
+                    f"{label}: component owner {owner!r} must use Markdown list "
+                    "items instead of dense prose"
+                )
         links = [
             match.group("target").strip()
             for match in OBSIDIAN_HEADING_LINK_RE.finditer(body_text)
