@@ -47,6 +47,7 @@ document_reader_summary_parts:
 document_component_ownership_policy:
 document_component_ownership_heading:
 document_component_owners:
+document_component_detail_links:
 document_public_history_policy:
 document_public_history_heading:
 document_forbidden_reader_headings:
@@ -233,14 +234,20 @@ reviewer по `references/reader-projection-contract.md`.
   `document_reader_summary_parts`;
 - `document_component_ownership_policy: separated-summary`, H2 карты изменений
   и фактические labels владельцев в `document_component_owners`;
+- `document_component_detail_links: described-owner-specific`, чтобы каждый
+  изменяемый owner объяснял назначение ссылок и вёл хотя бы к одному точному
+  owner-specific пункту, а не только к общим разделам;
 - `document_public_history_policy: semantic-releases-only` и H2 публичной
   истории;
 - project-owned denylist служебных H2 и точных lifecycle-фраз в
   `document_forbidden_reader_headings` и `document_forbidden_reader_phrases`.
 
 Machine check требует непустые части summary, а от каждого owner-блока — точную
-внутреннюю ссылку на подробности либо явное `Изменений нет`. История должна
-содержать хотя бы одну строку смысловой версии. Denylist не заменяет review:
+внутреннюю ссылку на подробности либо явное `Изменений нет`. При политике
+`described-owner-specific` список `Подробнее: логика, требования, приёмка`
+запрещён: карта объясняет назначение ссылок и содержит хотя бы одну ссылку на
+точный H3/H4-пункт конкретного владельца. История должна содержать хотя бы одну
+строку смысловой версии. Denylist не заменяет review:
 profile включает в него только устойчивые локальные формулировки, а reviewer
 ловит перефразированный approval, review, publication, assignment и handoff.
 

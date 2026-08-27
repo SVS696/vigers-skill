@@ -144,6 +144,7 @@ def navigation_contract() -> dict[str, object]:
         "document_component_ownership_policy": "separated-summary",
         "document_component_ownership_heading": "Состав изменений",
         "document_component_owners": "Backend (BE), Frontend (FE)",
+        "document_component_detail_links": "described-owner-specific",
         "document_public_history_policy": "semantic-releases-only",
         "document_public_history_heading": "История изменений",
         "document_forbidden_reader_headings": "Статус",
@@ -341,11 +342,11 @@ VALID_NAVIGATION = """# Постановка
 
 ### Backend (BE)
 
-Добавить идентификатор объекта в ответ. Подробнее: [[#Влияние на API]].
+Добавить идентификатор объекта в ответ. Серверный контракт ответа — [[#INTF-1. Ответ API|INTF-1]].
 
 ### Frontend (FE)
 
-Сопоставлять строки по идентификатору и игнорировать поздний ответ. Подробнее: [[#Требования]].
+Сопоставлять строки по идентификатору и игнорировать поздний ответ. Клиентская проверка контекста — [[#REQ-1. Проверка контекста|REQ-1]].
 
 ## История изменений
 
@@ -355,9 +356,13 @@ VALID_NAVIGATION = """# Постановка
 
 ## Влияние на API
 
+### INTF-1. Ответ API
+
 Контракт ответа.
 
 ## Требования
+
+### REQ-1. Проверка контекста
 
 Наблюдаемое поведение клиента.
 
@@ -855,8 +860,8 @@ class DocumentConformanceTests(unittest.TestCase):
 
     def test_reader_navigation_requires_owner_detail_link(self) -> None:
         text = VALID_NAVIGATION.replace(
-            " Подробнее: [[#Требования]].",
-            ".",
+            " Клиентская проверка контекста — [[#REQ-1. Проверка контекста|REQ-1]].",
+            "",
         )
         errors = document_conformance.validate_markdown(
             text,
@@ -867,7 +872,7 @@ class DocumentConformanceTests(unittest.TestCase):
 
     def test_reader_navigation_accepts_explicit_no_change_owner(self) -> None:
         text = VALID_NAVIGATION.replace(
-            "Сопоставлять строки по идентификатору и игнорировать поздний ответ. Подробнее: [[#Требования]].",
+            "Сопоставлять строки по идентификатору и игнорировать поздний ответ. Клиентская проверка контекста — [[#REQ-1. Проверка контекста|REQ-1]].",
             "Изменений нет.",
         )
         self.assertEqual(
@@ -881,7 +886,7 @@ class DocumentConformanceTests(unittest.TestCase):
 
     def test_reader_navigation_rejects_expanded_no_change_owner(self) -> None:
         text = VALID_NAVIGATION.replace(
-            "Сопоставлять строки по идентификатору и игнорировать поздний ответ. Подробнее: [[#Требования]].",
+            "Сопоставлять строки по идентификатору и игнорировать поздний ответ. Клиентская проверка контекста — [[#REQ-1. Проверка контекста|REQ-1]].",
             "Изменений нет. API, БД и права сохраняются; подробнее: [[#Требования]].",
         )
         errors = document_conformance.validate_markdown(
@@ -892,13 +897,52 @@ class DocumentConformanceTests(unittest.TestCase):
         self.assertTrue(any("must contain only 'Изменений нет.'" in item for item in errors))
 
     def test_reader_navigation_rejects_unresolved_owner_link(self) -> None:
-        text = VALID_NAVIGATION.replace("[[#Требования]]", "[[#Несуществующий раздел]]")
+        text = VALID_NAVIGATION.replace(
+            "[[#REQ-1. Проверка контекста|REQ-1]]",
+            "[[#Несуществующий раздел|REQ-1]]",
+        )
         errors = document_conformance.validate_markdown(
             text,
             navigation_contract(),
             label="draft",
         )
         self.assertTrue(any("unresolved detail links" in item for item in errors))
+
+    def test_reader_navigation_rejects_generic_more_link_list(self) -> None:
+        text = VALID_NAVIGATION.replace(
+            "Клиентская проверка контекста — [[#REQ-1. Проверка контекста|REQ-1]].",
+            "Подробнее: [[#REQ-1. Проверка контекста|REQ-1]].",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            navigation_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("generic 'Подробнее:' link list" in item for item in errors))
+
+    def test_reader_navigation_requires_owner_specific_detail_heading(self) -> None:
+        text = VALID_NAVIGATION.replace(
+            "Клиентская проверка контекста — [[#REQ-1. Проверка контекста|REQ-1]].",
+            "Клиентские требования — [[#Требования]].",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            navigation_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("owner-specific detail heading" in item for item in errors))
+
+    def test_reader_navigation_rejects_bold_component_boundary(self) -> None:
+        text = VALID_NAVIGATION.replace(
+            "## Требования\n\n",
+            "## Требования\n\n**Frontend (FE).**\n\n",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            navigation_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("must use ATX headings" in item for item in errors))
 
     def test_reader_navigation_requires_semantic_version_row(self) -> None:
         text = VALID_NAVIGATION.replace(

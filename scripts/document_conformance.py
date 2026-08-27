@@ -21,6 +21,7 @@ READER_PROJECTION_POLICIES = {"required"}
 READER_NAVIGATION_POLICIES = {"required"}
 READER_SUMMARY_POLICIES = {"problem-goal-solution"}
 COMPONENT_OWNERSHIP_POLICIES = {"separated-summary"}
+COMPONENT_DETAIL_LINK_POLICIES = {"described-owner-specific"}
 PUBLIC_HISTORY_POLICIES = {"semantic-releases-only"}
 PROSE_LAYOUT_POLICIES = {"semantic-paragraph-one-line", "unconstrained"}
 SEMANTIC_REFERENCE_POLICIES = {"exact-heading-links"}
@@ -103,6 +104,7 @@ def build_profile_contract(
         "document_component_ownership_policy",
         "document_component_ownership_heading",
         "document_component_owners",
+        "document_component_detail_links",
         "document_public_history_policy",
         "document_public_history_heading",
         "document_forbidden_reader_headings",
@@ -187,6 +189,11 @@ def build_profile_contract(
             "document_component_ownership_heading", ""
         ).strip(),
         "owners": list(_csv(metadata.get("document_component_owners", ""))),
+        "ownership_detail_links": metadata.get(
+            "document_component_detail_links", ""
+        )
+        .strip()
+        .casefold(),
         "history_policy": metadata.get("document_public_history_policy", "")
         .strip()
         .casefold(),
@@ -395,6 +402,14 @@ def validate_contract(payload: Any) -> list[str]:
                 errors.append("document contract has an unsupported reader summary policy")
             if reader_navigation.get("ownership_policy") not in COMPONENT_OWNERSHIP_POLICIES:
                 errors.append("document contract has an unsupported component ownership policy")
+            ownership_detail_links = reader_navigation.get("ownership_detail_links")
+            if (
+                ownership_detail_links is not None
+                and ownership_detail_links not in COMPONENT_DETAIL_LINK_POLICIES
+            ):
+                errors.append(
+                    "document contract has an unsupported component detail link policy"
+                )
             if reader_navigation.get("history_policy") not in PUBLIC_HISTORY_POLICIES:
                 errors.append("document contract has an unsupported public history policy")
             for name in ("summary_heading", "ownership_heading", "history_heading"):
@@ -1001,6 +1016,44 @@ def _validate_reader_navigation(
                 f"{label}: component owner {owner!r} has unresolved detail links: "
                 + ", ".join(dict.fromkeys(dangling))
             )
+        if policy.get("ownership_detail_links") == "described-owner-specific":
+            if "подробнее:" in body_text.casefold():
+                errors.append(
+                    f"{label}: component owner {owner!r} must describe what each detail "
+                    "link contains instead of using a generic 'Подробнее:' link list"
+                )
+            specific_targets = [
+                target
+                for target in links
+                if any(
+                    len(lines[index]) - len(lines[index].lstrip("#")) >= 3
+                    for index in document_headings.get(target, [])
+                )
+            ]
+            if not specific_targets:
+                errors.append(
+                    f"{label}: component owner {owner!r} must link to at least one exact "
+                    "owner-specific detail heading, not only broad H2 sections"
+                )
+
+    outside = _outside_fences(lines)
+    role_labels = [*policy["owners"], "Совместно: BE + FE"]
+    bold_role_re = re.compile(
+        r"^\s*\*\*(?:"
+        + "|".join(re.escape(role) for role in role_labels)
+        + r")(?:[.:])?\*\*"
+    )
+    bold_role_lines = [
+        index + 1
+        for index, (line, is_outside) in enumerate(zip(lines, outside, strict=True))
+        if is_outside and bold_role_re.match(line)
+    ]
+    if bold_role_lines:
+        errors.append(
+            f"{label}: detailed component boundaries must use ATX headings, not bold "
+            "paragraph labels; lines: "
+            + ", ".join(str(index) for index in bold_role_lines)
+        )
 
     history_matches = [
         index for name, index in headings if name == policy["history_heading"]
