@@ -785,6 +785,18 @@ class DocumentConformanceTests(unittest.TestCase):
         )
         self.assertTrue(any("must not use compressed ranges" in item for item in errors))
 
+    def test_reader_projection_rejects_compact_linked_range(self) -> None:
+        text = VALID_TRACE.replace(
+            "Текст.\n\n## Требования",
+            "Диапазон: [[#REQ-B01-001 — Показать результат|REQ-B01-001]]–[[#AC-B01-001 — Результат показан|AC-B01-001]].\n\n## Требования",
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            projection_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("linked semantic ranges must use readable" in item for item in errors))
+
     def test_reader_projection_rejects_dangling_link_outside_traceability(self) -> None:
         text = VALID_TRACE.replace(
             "Текст.\n\n## Требования",

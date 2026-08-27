@@ -804,6 +804,7 @@ def _validate_reader_projection(
     errors: list[str] = []
     internal_ids: list[str] = []
     compressed_refs: list[str] = []
+    compact_link_ranges: list[str] = []
     plain_refs: list[str] = []
 
     for line, is_outside in zip(lines, outside, strict=True):
@@ -811,6 +812,7 @@ def _validate_reader_projection(
             continue
         internal_ids.extend(match.group(0) for match in internal_re.finditer(line))
         masked = list(line)
+        semantic_link_matches: list[re.Match[str]] = []
         for match in OBSIDIAN_HEADING_LINK_RE.finditer(line):
             target = match.group("target").strip()
             alias = (match.group("alias") or "").strip()
@@ -822,6 +824,7 @@ def _validate_reader_projection(
             )
             alias_is_id = bool(public_full_re.fullmatch(alias))
             if target_id or alias_is_id:
+                semantic_link_matches.append(match)
                 semantic_id = alias if alias_is_id else target_id
                 assert semantic_id is not None
                 if alias != semantic_id:
@@ -849,6 +852,13 @@ def _validate_reader_projection(
             for index in range(match.start(), match.end()):
                 masked[index] = " "
 
+        for left, right in zip(semantic_link_matches, semantic_link_matches[1:]):
+            separator = line[left.end() : right.start()]
+            if re.fullmatch(r"\s*[–—-]\s*", separator):
+                compact_link_ranges.append(
+                    line[left.start() : right.end()]
+                )
+
         heading_match = ATX_HEADING_RE.match(line)
         if heading_match:
             heading_text = _heading_text(heading_match.group(1))
@@ -871,6 +881,12 @@ def _validate_reader_projection(
         errors.append(
             f"{label}: semantic references must not use compressed ranges: "
             + ", ".join(dict.fromkeys(compressed_refs))
+        )
+    if compact_link_ranges:
+        errors.append(
+            f"{label}: linked semantic ranges must use readable 'от ID — название "
+            "до ID — название' wording instead of a compact dash: "
+            + ", ".join(dict.fromkeys(compact_link_ranges))
         )
     if plain_refs:
         errors.append(
