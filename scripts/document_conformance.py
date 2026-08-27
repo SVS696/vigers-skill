@@ -802,6 +802,7 @@ def _validate_reader_projection(
     document_headings = _all_atx_headings(lines)
     outside = _outside_fences(lines)
     errors: list[str] = []
+    errors.extend(_validate_json_readability(lines, label=label))
     internal_ids: list[str] = []
     compressed_refs: list[str] = []
     compact_link_ranges: list[str] = []
@@ -896,6 +897,48 @@ def _validate_reader_projection(
         )
     if policy.get("prose_layout") == "semantic-paragraph-one-line":
         errors.extend(_validate_reader_prose_layout(lines, label=label))
+    return errors
+
+
+def _validate_json_readability(lines: list[str], *, label: str) -> list[str]:
+    """Reject machine-dense JSON examples in a human-facing specification."""
+    errors: list[str] = []
+    fence: str | None = None
+    language = ""
+    fence_start = 0
+    body: list[str] = []
+    inline_json_re = re.compile(r"`[^`\n]*(?:\{\s*\"|\[\s*\{\s*\")[^`\n]*`")
+
+    for index, line in enumerate(lines):
+        stripped = line.lstrip()
+        marker = stripped[:3]
+        if marker in {"```", "~~~"}:
+            if fence is None:
+                fence = marker
+                language = stripped[3:].strip().casefold()
+                fence_start = index
+                body = []
+            elif marker == fence:
+                if language == "json":
+                    nonblank = [item for item in body if item.strip()]
+                    if len(nonblank) == 1:
+                        errors.append(
+                            f"{label}: JSON example at lines {fence_start + 1}-{index + 1} "
+                            "must be formatted across multiple lines"
+                        )
+                fence = None
+                language = ""
+                body = []
+            continue
+        if fence is not None:
+            body.append(line)
+            continue
+        if inline_json_re.search(line):
+            errors.append(
+                f"{label}: inline JSON at line {index + 1} must use a readable "
+                "multi-line JSON block or prose field description"
+            )
+
     return errors
 
 

@@ -797,6 +797,30 @@ class DocumentConformanceTests(unittest.TestCase):
         )
         self.assertTrue(any("linked semantic ranges must use readable" in item for item in errors))
 
+    def test_reader_projection_rejects_one_line_json_block(self) -> None:
+        text = VALID_TRACE.replace(
+            "Текст.\n\n## Требования",
+            '```json\n{"items":[]}\n```\n\n## Требования',
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            projection_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("JSON example" in item and "multiple lines" in item for item in errors))
+
+    def test_reader_projection_rejects_inline_json(self) -> None:
+        text = VALID_TRACE.replace(
+            "Текст.\n\n## Требования",
+            'Ответ `{"items":[]}`.\n\n## Требования',
+        )
+        errors = document_conformance.validate_markdown(
+            text,
+            projection_contract(),
+            label="draft",
+        )
+        self.assertTrue(any("inline JSON" in item for item in errors))
+
     def test_reader_projection_rejects_dangling_link_outside_traceability(self) -> None:
         text = VALID_TRACE.replace(
             "Текст.\n\n## Требования",
