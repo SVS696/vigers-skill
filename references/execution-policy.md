@@ -87,6 +87,9 @@ Named check задачи является минимальной проверк�
   `draft|integration` read-back.
 - `projection_sync=per-block` сохраняет отдельный Bxx read-back после каждого
   reviewed блока.
+- `intent=review` всегда использует `projection_sync=milestones`. Готовая
+  постановка или архитектура проверяется локально и проецируется целиком на
+  смысловой вехе, а не перепубликуется после каждого block review.
 
 При одинаковом прочитанном содержимом новый source добавляется как
 `source_bindings` к последнему snapshot, а не создаёт копию update. Последовательность
@@ -146,7 +149,9 @@ coordinator/user decision, а не запускает бесконечный о�
 attestation после disposition всех findings этого gate.
 После лимита машина требует root-cause kernel change или user decision.
 Crosscutting/architecture refresh открывает новый epoch явно и инвалидирует
-затронутые risk preflights; обычный новый finding лимит не сбрасывает.
+затронутые risk preflights; первый reset разрешён автоматически, второй и
+последующие требуют hash-bound `--user-decision-evidence`. Обычный новый finding
+лимит не сбрасывает.
 
 Если исправление меняет смысл блока целиком, набор semantic IDs нельзя честно
 ограничить либо затронуты цель, scope, публичный контракт, архитектура или

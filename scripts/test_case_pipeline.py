@@ -1139,6 +1139,115 @@ class CasePipelineTests(unittest.TestCase):
             self.assertEqual(remediation["epoch"], 2)
             self.assertEqual(remediation["batch_index"], 1)
 
+            replace_todo(root / "kernel.md", "# Kernel\n\nAnother root-cause rewrite")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "user-decision evidence"):
+                case_pipeline.refresh_kernel(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    [],
+                    change_scope="architecture",
+                    invalidate_all=True,
+                    reason="A second reset must not silently renew the budget",
+                )
+
+            (root / "decisions" / "second-reset.md").parent.mkdir(exist_ok=True)
+            (root / "decisions" / "second-reset.md").write_text(
+                "# User decision\n\nProceed with one additional root-cause correction.\n",
+                encoding="utf-8",
+            )
+            case_pipeline.refresh_kernel(
+                loaded_root,
+                manifest,
+                ledger,
+                [],
+                change_scope="architecture",
+                invalidate_all=True,
+                reason="User accepted one additional root-cause correction",
+                user_decision_evidence="decisions/second-reset.md",
+            )
+            _, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(
+                case_pipeline.blocks_by_id(ledger)["B01"]["remediation_epoch"], 3
+            )
+            reset_events = [
+                item
+                for item in manifest["events"]
+                if item.get("kind") == "remediation_root_cause_reset"
+            ]
+            self.assertEqual(
+                reset_events[-1]["user_decision"]["ref"],
+                "decisions/second-reset.md",
+            )
+
+    def test_review_case_rejects_per_block_projection_churn(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(root, projection_sync="per-block")
+            with self.assertRaisesRegex(case_pipeline.CaseError, "milestone projection"):
+                case_pipeline.init_case(
+                    root,
+                    case_id="review-case",
+                    mode="block",
+                    intent="review",
+                    profile_id="generic",
+                    route_id="core",
+                    project_root=None,
+                    allow_unplanned=True,
+                )
+
+    def test_delivery_handoff_binds_exact_vigers_revision(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp), mode="compact")
+            replace_todo(root / "draft.md", "# Specification\n\nStable delivery contract")
+            replace_todo(root / "decisions.md", "# Decisions\n\nNo architecture delta")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            payload = case_pipeline.build_delivery_handoff(
+                loaded_root,
+                manifest,
+                ledger,
+            )
+            self.assertEqual(payload["schema"], 1)
+            self.assertEqual(payload["case_id"], manifest["case_id"])
+            self.assertEqual(payload["spec_revision"], manifest["kernel"]["revision"])
+            self.assertEqual(payload["spec_fingerprint"], case_pipeline.sha256(root / "draft.md"))
+            self.assertRegex(payload["acceptance_fingerprint"], r"^[0-9a-f]{64}$")
+            self.assertRegex(payload["fingerprint"], r"^[0-9a-f]{64}$")
+
+            feedback = Path(temp) / "feedback.json"
+            feedback.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "batch_id": "FB-002-001",
+                        "batch_complete": True,
+                        "target_vigers_case_id": manifest["case_id"],
+                        "target_spec_revision": manifest["kernel"]["revision"],
+                        "target_spec_fingerprint": payload["spec_fingerprint"],
+                        "accepted_spec_gaps": ["GAP-001 missing timeout"],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            binding = case_pipeline.import_delivery_feedback(
+                loaded_root,
+                manifest,
+                ledger,
+                feedback=feedback,
+            )
+            self.assertEqual(binding["batch_id"], "FB-002-001")
+            _, manifest, _ = case_pipeline.load_case(root)
+            self.assertEqual(manifest["delivery_feedback"][0], binding)
+            imported = root / binding["ref"]
+            imported.write_text("{}\n", encoding="utf-8")
+            _, manifest, ledger = case_pipeline.load_case(root)
+            self.assertIn(
+                "delivery feedback FB-002-001 changed after import",
+                case_pipeline.validate_case(root, manifest, ledger, final=False),
+            )
+
     def test_full_block_remediation_does_not_reuse_previous_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = self.init(Path(temp))
@@ -2631,7 +2740,11 @@ class CasePipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "case"
             self.write_method_context(root)
-            self.write_mode_decision(root, selected_mode="compact")
+            self.write_mode_decision(
+                root,
+                selected_mode="compact",
+                projection_sync="milestones",
+            )
             case_pipeline.init_case(
                 root,
                 case_id="review-without-planning",

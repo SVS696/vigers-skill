@@ -59,6 +59,9 @@ update. Последующие существенные исправления �
 Канал выбирается из project profile: локальный документ остаётся обычным
 проектным файлом, а tracker/wiki проекция записывается непосредственно в
 объявленный внешний target. Универсальный параллельный файл core не создаёт.
+Для нового `intent=review` разрешён только `projection_sync=milestones`: это
+предотвращает повторную внешнюю проекцию неизменённого готового документа после
+каждого локального reviewer pass.
 
 Для `local_file` evidence команда сама читает bound project file и сверяет его
 SHA-256. Путь обязан точно совпадать с `object_id` target и находиться за
@@ -132,10 +135,30 @@ Review report — evidence гейта, а не повод автоматичес
 переоткрывается из-за residual minor. Новый `batched-v2` блок допускает максимум
 два remediation batches на kernel epoch независимо от finding IDs; третий
 finding-by-finding цикл запрещён. Root-cause escalation требует явного
-crosscutting/architecture kernel change. Полные правила заданы в
+crosscutting/architecture kernel change; второй reset того же блока требует
+case-local `--user-decision-evidence`. Полные правила заданы в
 `{baseDir}/references/convergence-contract.md`.
 
 ## Базовые команды
+
+После final-green передай Delivery immutable source revision:
+
+```text
+python3 {baseDir}/scripts/case_pipeline.py export-delivery-handoff \
+  --case-root <case> --output <delivery-case>/delivery-handoff.json
+```
+
+Команда fail-closed проверяет final Vigers state и не перезаписывает существующий
+handoff. Delivery связывает revision и SHA-256, поэтому более поздние spec gaps
+возвращаются одним complete feedback batch к точной исходной revision.
+
+```text
+python3 {baseDir}/scripts/case_pipeline.py import-delivery-feedback \
+  --case-root <case> --feedback <delivery-case>/feedback-batches/FB-*.json
+```
+
+Import только связывает immutable batch с exact case/revision/draft fingerprint;
+он не открывает kernel refresh и не принимает изменение scope за пользователя.
 
 ```text
 python3 {baseDir}/scripts/case_pipeline.py init \

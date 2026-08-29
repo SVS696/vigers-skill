@@ -64,6 +64,7 @@ WORKING_PROJECTION_JSON = "working-projection.json"
 WORKING_PROJECTION_SCHEMA = 1
 AGENT_LEDGER_JSON = "agent-ledger.json"
 AGENT_LEDGER_SCHEMA = 1
+DELIVERY_HANDOFF_SCHEMA = 1
 RECOVERY_PLAN_JSON = "recovery-plan.json"
 RECOVERY_PLAN_SCHEMA = 1
 RISK_PREFLIGHT_SCHEMA = 1
@@ -1664,6 +1665,11 @@ def init_case(
         raise CaseError(f"Invalid tracking policy: {selected_tracking!r}")
     if selected_projection_sync not in PROJECTION_SYNC_POLICIES:
         raise CaseError(f"Invalid projection sync: {selected_projection_sync!r}")
+    if intent == "review" and selected_projection_sync == "per-block":
+        raise CaseError(
+            "Review/conformance cases require milestone projection; per-block external "
+            "projection republishes an unchanged target after every local review cycle"
+        )
     if decision_payload is not None and "selected_assurance" in decision_payload:
         mismatches = [
             label
@@ -3353,6 +3359,7 @@ def refresh_kernel(
     change_scope: str | None = None,
     invalidate_all: bool = False,
     reason: str | None = None,
+    user_decision_evidence: str | None = None,
 ) -> list[str]:
     """Advance kernel revision with explicit impact for new assurance-aware cases."""
     if active_bounded_recovery(manifest) is not None:
@@ -3390,6 +3397,7 @@ def refresh_kernel(
     affected = downstream_closure(ledger, seeds)
 
     root_cause_resets: list[str] = []
+    reset_decisions: dict[str, dict[str, str] | None] = {}
     if change_scope in {"semantic-crosscutting", "architecture"}:
         for block_id in sorted(affected):
             block = blocks[block_id]
@@ -3403,6 +3411,32 @@ def refresh_kernel(
             )
             if used == 0:
                 continue
+            previous_resets = sum(
+                1
+                for item in manifest.get("events", [])
+                if isinstance(item, dict)
+                and item.get("kind") == "remediation_root_cause_reset"
+                and item.get("block_id") == block_id
+            )
+            if previous_resets >= 1:
+                if not isinstance(user_decision_evidence, str) or not user_decision_evidence.strip():
+                    raise CaseError(
+                        f"{block_id}: another remediation epoch reset requires explicit "
+                        "user-decision evidence; repeated kernel refresh cannot renew the "
+                        "correction budget automatically"
+                    )
+                decision_path = case_file(root, user_decision_evidence.strip())
+                if not artifact_ready(decision_path):
+                    raise CaseError(
+                        "User-decision evidence is missing or incomplete: "
+                        f"{user_decision_evidence}"
+                    )
+                reset_decisions[block_id] = {
+                    "ref": user_decision_evidence.strip(),
+                    "sha256": sha256(decision_path),
+                }
+            else:
+                reset_decisions[block_id] = None
             block["remediation_epoch"] = epoch + 1
             root_cause_resets.append(block_id)
 
@@ -3511,10 +3545,145 @@ def refresh_kernel(
                 remediation_epoch=blocks[block_id]["remediation_epoch"],
                 change_scope=change_scope,
                 reason=reason.strip() if isinstance(reason, str) and reason.strip() else None,
+                user_decision=reset_decisions.get(block_id),
             )
         )
     save_case(root, manifest, ledger)
     return stale
+
+
+def build_delivery_handoff(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+) -> dict[str, Any]:
+    """Build an immutable, model-free source revision for Delivery Engineering."""
+    draft_path = case_file(root, manifest["artifacts"]["draft"])
+    if not artifact_ready(draft_path):
+        raise CaseError("Delivery handoff requires a complete integrated draft")
+    semantic_bindings: list[dict[str, str]] = []
+    acceptance_digest = hashlib.sha256()
+    for block in sorted(ledger.get("blocks", []), key=lambda item: item.get("id", "")):
+        if not isinstance(block, dict) or not isinstance(block.get("semantic_index"), str):
+            continue
+        relative = block["semantic_index"]
+        path = case_file(root, relative)
+        binding = {"ref": relative, "sha256": sha256(path)}
+        semantic_bindings.append(binding)
+        acceptance_digest.update(relative.encode("utf-8"))
+        acceptance_digest.update(b"\0")
+        acceptance_digest.update(path.read_bytes())
+        acceptance_digest.update(b"\0")
+    decisions_path = case_file(root, manifest["artifacts"]["decisions"])
+    boundary = extract_solution_boundary(decisions_path)
+    payload: dict[str, Any] = {
+        "schema": DELIVERY_HANDOFF_SCHEMA,
+        "case_id": manifest["case_id"],
+        "spec_revision": manifest["kernel"]["revision"],
+        "spec_fingerprint": sha256(draft_path),
+        "acceptance_fingerprint": acceptance_digest.hexdigest(),
+        "generated_at": now_utc(),
+        "artifacts": {
+            "draft": {
+                "ref": manifest["artifacts"]["draft"],
+                "sha256": sha256(draft_path),
+            },
+            "decisions": {
+                "ref": manifest["artifacts"]["decisions"],
+                "sha256": sha256(decisions_path),
+            },
+            "semantic_indexes": semantic_bindings,
+        },
+        "implementation_transition": (
+            boundary.get("implementation_transition")
+            if isinstance(boundary, dict)
+            else None
+        ),
+    }
+    payload["fingerprint"] = hashlib.sha256(
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return payload
+
+
+def export_delivery_handoff(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    output: Path,
+) -> dict[str, Any]:
+    """Export only a final-green Vigers revision for implementation."""
+    errors = validate_case(root, manifest, ledger, final=True)
+    if errors:
+        raise CaseError(
+            "Delivery handoff requires final-green Vigers state: " + "; ".join(errors)
+        )
+    output = output.expanduser().resolve()
+    if output.exists():
+        raise CaseError(f"Refusing to overwrite delivery handoff: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    payload = build_delivery_handoff(root, manifest, ledger)
+    atomic_json(output, payload)
+    return payload
+
+
+def import_delivery_feedback(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    feedback: Path,
+) -> dict[str, Any]:
+    """Bind one complete Delivery feedback batch to the exact exported revision."""
+    source = feedback.expanduser().resolve()
+    try:
+        payload = read_json(source)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise CaseError(f"Invalid delivery feedback: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("schema") != 1:
+        raise CaseError("Delivery feedback must be a schema-1 object")
+    if payload.get("batch_complete") is not True:
+        raise CaseError("Delivery feedback batch must be complete")
+    if payload.get("target_vigers_case_id") != manifest["case_id"]:
+        raise CaseError("Delivery feedback targets another Vigers case")
+    if payload.get("target_spec_revision") != manifest["kernel"]["revision"]:
+        raise CaseError("Delivery feedback targets another Vigers revision")
+    draft_path = case_file(root, manifest["artifacts"]["draft"])
+    if payload.get("target_spec_fingerprint") != sha256(draft_path):
+        raise CaseError("Delivery feedback targets another specification fingerprint")
+    gaps = payload.get("accepted_spec_gaps")
+    if not isinstance(gaps, list) or not gaps or any(
+        not isinstance(item, str) or not item.strip() for item in gaps
+    ):
+        raise CaseError("Delivery feedback requires accepted_spec_gaps")
+    batch_id = payload.get("batch_id")
+    if not isinstance(batch_id, str) or not CASE_ID_RE.fullmatch(batch_id):
+        raise CaseError("Delivery feedback has invalid batch_id")
+    relative = f"delivery-feedback/{batch_id}.json"
+    target = case_file(root, relative)
+    if target.exists():
+        raise CaseError(f"Delivery feedback already imported: {batch_id}")
+    target.parent.mkdir(exist_ok=True)
+    shutil.copyfile(source, target)
+    binding = {"batch_id": batch_id, "ref": relative, "sha256": sha256(target)}
+    manifest.setdefault("delivery_feedback", []).append(binding)
+    manifest["events"].append(
+        event(
+            "delivery_feedback_imported",
+            batch_id=batch_id,
+            target_spec_revision=payload["target_spec_revision"],
+            accepted_gap_count=len(gaps),
+            feedback_sha256=binding["sha256"],
+        )
+    )
+    save_case(root, manifest, ledger)
+    return binding
 
 
 def validate_index(path: Path, expected_block: str) -> tuple[list[str], list[dict[str, Any]]]:
@@ -5504,6 +5673,31 @@ def validate_case(
     """Return structural, freshness, traceability, and optional final errors."""
     errors: list[str] = []
     errors.extend(bounded_recovery_errors(root, manifest, ledger, final=final))
+    feedback_bindings = manifest.get("delivery_feedback", [])
+    if not isinstance(feedback_bindings, list):
+        errors.append("delivery_feedback must be an array")
+    else:
+        seen_feedback: set[str] = set()
+        for binding in feedback_bindings:
+            if not isinstance(binding, dict):
+                errors.append("delivery_feedback binding must be an object")
+                continue
+            batch_id = binding.get("batch_id")
+            relative = binding.get("ref")
+            expected = binding.get("sha256")
+            if not isinstance(batch_id, str) or batch_id in seen_feedback:
+                errors.append("delivery_feedback batch_id is invalid or duplicate")
+                continue
+            seen_feedback.add(batch_id)
+            if not isinstance(relative, str) or not isinstance(expected, str):
+                errors.append(f"delivery feedback {batch_id} binding is incomplete")
+                continue
+            try:
+                path = case_file(root, relative)
+                if not path.is_file() or sha256(path) != expected:
+                    errors.append(f"delivery feedback {batch_id} changed after import")
+            except CaseError as exc:
+                errors.append(f"delivery feedback {batch_id}: {exc}")
     boundary_required = solution_boundary_probe_present(root, manifest)
     boundary, boundary_errors = solution_boundary_errors(
         root,
@@ -6596,6 +6790,10 @@ def build_parser() -> argparse.ArgumentParser:
     refresh_parser.add_argument("--change-scope", choices=sorted(CHANGE_SCOPES))
     refresh_parser.add_argument("--invalidate-all", action="store_true")
     refresh_parser.add_argument("--reason")
+    refresh_parser.add_argument(
+        "--user-decision-evidence",
+        help="Case-local explicit user decision required after the first root-cause budget reset",
+    )
 
     gate_parser = subparsers.add_parser("set-gate", help="Record a workflow gate")
     gate_parser.add_argument("--case-root", required=True)
@@ -6726,6 +6924,18 @@ def build_parser() -> argparse.ArgumentParser:
     status_parser = subparsers.add_parser("status", help="Refresh and print status")
     status_parser.add_argument("--case-root", required=True)
     status_parser.add_argument("--json", action="store_true")
+    delivery_parser = subparsers.add_parser(
+        "export-delivery-handoff",
+        help="Export one immutable final-green source revision for Delivery Engineering",
+    )
+    delivery_parser.add_argument("--case-root", required=True)
+    delivery_parser.add_argument("--output", required=True)
+    feedback_parser = subparsers.add_parser(
+        "import-delivery-feedback",
+        help="Bind one complete Delivery feedback batch to its exact Vigers revision",
+    )
+    feedback_parser.add_argument("--case-root", required=True)
+    feedback_parser.add_argument("--feedback", required=True)
     return parser
 
 
@@ -6891,10 +7101,36 @@ def main() -> int:
                 change_scope=args.change_scope,
                 invalidate_all=args.invalidate_all,
                 reason=args.reason,
+                user_decision_evidence=args.user_decision_evidence,
             )
             print(
                 f"PASS revision={manifest['kernel']['revision']} "
                 f"stale={','.join(stale) if stale else '-'}"
+            )
+            return 0
+        if args.command == "export-delivery-handoff":
+            payload = export_delivery_handoff(
+                root,
+                manifest,
+                ledger,
+                output=Path(args.output),
+            )
+            print(
+                "PASS delivery-handoff="
+                f"{payload['case_id']}@{payload['spec_revision']} "
+                f"fingerprint={payload['fingerprint']}"
+            )
+            return 0
+        if args.command == "import-delivery-feedback":
+            binding = import_delivery_feedback(
+                root,
+                manifest,
+                ledger,
+                feedback=Path(args.feedback),
+            )
+            print(
+                f"PASS delivery-feedback={binding['batch_id']} "
+                f"sha256={binding['sha256']}"
             )
             return 0
         if args.command == "set-gate":
