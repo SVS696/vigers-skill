@@ -319,14 +319,16 @@ specification workflow и выполни его:
 - `compact` → `{baseDir}/workflows/specification-pipeline.md`;
 - `block` → `{baseDir}/workflows/block-pipeline.md`.
 
-Оба workflow задают входы, выходы, условные гейты, цикл исправлений и
-возобновление. Выполнение approved этапов ведёт выбранный tracking по
-`{baseDir}/references/automation-timing.md`. Block-mode дополнительно следует
+Оба workflow задают входы, выходы, условные гейты, цикл исправлений и tracking по
+`{baseDir}/references/automation-timing.md`; block-mode дополнительно следует
 `{baseDir}/references/case-state.md` и `{baseDir}/references/block-contract.md`.
-Перед research/review полностью прочитай
-`{baseDir}/references/convergence-contract.md`: он определяет, когда поиск можно
-переоткрыть, какие findings блокируют gate и когда нужно идти дальше.
-Для frozen version прочитай `{baseDir}/references/bounded-recovery.md`; начни только через `begin-recovery`.
+Перед research/review полностью прочитай `{baseDir}/references/convergence-contract.md`:
+он определяет переоткрытие поиска, блокирующие findings и остановку. Для frozen
+version прочитай `{baseDir}/references/bounded-recovery.md` и начни через `begin-recovery`.
+Project-local learning после final-green остаётся shadow-only по
+`{baseDir}/references/policy-learning.md`: historical-biased cases не обучают
+policy, а prospective-clean/frozen-replay требуют независимый Process Auditor
+verdict `KEEP`; learning не меняет roles, assurance или gates.
 Перед системным анализом, design, author passes и global review используй
 `{baseDir}/references/solution-boundary-contract.md`. Принятый boundary должен
 быть записан в `decisions.md` до `author_passes`; изменение decision или
@@ -391,7 +393,10 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
   elapsed вне окон добавляет только наблюдаемую работу, без фонового WIP и `deferred`. Прогноз строится после preliminary analysis по истории текущего проекта и имеет
   `purpose: human_information_only`.
 - Ролевой context содержит `planning-role-context.json`, но не automation plan,
-  ETA или runtime ledger.
+  ETA, runtime ledger, policy history или shadow recommendation.
+- Независимый process audit выполняется вне ролевого context и не разрешает
+  автоматически возобновлять остановленный пользователем case; policy promotion
+  повторно проверяет обязательную `deep`-глубину для stop и deep-сигналов.
 - При `working_projection: required` видимый target создан или связан до полного
   анализа. Cadence соответствует `milestones|per-block`; скрытый case
   не выдаётся за пользовательский черновик, а рабочий draft не называется
@@ -450,7 +455,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 |---|---|
 | `{baseDir}/references/requirements-method.md` | Канонический метод Вигерса |
 | `{baseDir}/references/planning-contract.md` | Research, plan DAG, passport, external drafts и approval contract |
-| `{baseDir}/references/automation-timing.md` | Прогноз, wall-clock ledger, команды и агрегация истории |
+| `{baseDir}/references/automation-timing.md`, `{baseDir}/references/policy-learning.md` | Human-only timing и project-local shadow policy learning |
 | `{baseDir}/references/execution-policy.md` | Assurance, convergence, additive supervision, artifact bindings и finding-yield telemetry |
 | `{baseDir}/references/convergence-contract.md` | Порог качества, переоткрытие research и остановка minor-only циклов |
 | `{baseDir}/references/bounded-recovery.md` | Явное восстановление frozen case без нового анализа и бесконечных review |
@@ -474,7 +479,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/evals/prompt-cookbook/reader-projection-barrier.json`, `{baseDir}/evals/prompt-cookbook/reader-navigation-lifecycle-barrier.json` | Регрессии prompt: служебная модель не протекает в постановку, быстрый вход и ownership не дублируют подробности |
 | `{baseDir}/evals/prompt-cookbook/user-journey-screen-context-barrier.json` | Регрессия prompt: UI-сценарий называет экран и видимые поля без повторов и догадок |
 | `{baseDir}/evals/prompt-cookbook/acceptance-verification-context-barrier.json` | Регрессия prompt: каждый AC ведёт тестировщика к точному сценарию или точке входа |
-| `{baseDir}/evals/prompt-cookbook/human-only-timing-boundary.json` | Регрессия prompt: forecast не попадает в модель и не управляет её работой |
+| `{baseDir}/evals/prompt-cookbook/human-only-timing-boundary.json`, `{baseDir}/evals/prompt-cookbook/policy-learning-shadow-only.json` | Регрессии prompt: telemetry не управляет ролью и не ослабляет gates |
 | `{baseDir}/evals/prompt-cookbook/targeted-remediation-preserves-coverage.json`, `{baseDir}/evals/prompt-cookbook/risk-first-batched-convergence.json`, `{baseDir}/evals/prompt-cookbook/execution-economy-terminal-green.json`, `{baseDir}/evals/prompt-cookbook/legacy-transition-authority.json`, `{baseDir}/evals/prompt-cookbook/bounded-recovery-frozen-case.json` | Регрессии prompt: bounded convergence, terminal green, frozen recovery и authoritative implementation path |
 | `{baseDir}/references/case-state.md` | Машина состояний, команды и возобновление |
 | `{baseDir}/references/runtime-preferences.md` | User/project toggles для timing, progress и task-manager projection |
@@ -490,6 +495,6 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/scripts/case_pipeline.py` | Детерминированный оркестратор case-state |
 | `{baseDir}/scripts/planning_case.py` | Planning state, revisions, external bindings и approved handoff |
 | `{baseDir}/scripts/automation_timing.py` | Stage start/stop, validation, summary и aggregation |
-| `{baseDir}/scripts/timing_model.py`, `{baseDir}/scripts/timing_calendar.py` | Project-local similarity model и calendar handoff projection |
+| `{baseDir}/scripts/timing_model.py`, `{baseDir}/scripts/timing_calendar.py`, `{baseDir}/scripts/policy_learning.py` | Project-local timing и shadow policy models |
 | `{baseDir}/scripts/vigers_context.py` | Маршрутизация методического контекста |
 | `{baseDir}/scripts/install.py` | Безопасное подключение скилла и агентов к рантаймам |

@@ -113,6 +113,7 @@ REQUIRED_PROMPT_EVALS = (
     "evals/prompt-cookbook/execution-economy-terminal-green.json",
     "evals/prompt-cookbook/legacy-transition-authority.json",
     "evals/prompt-cookbook/human-only-timing-boundary.json",
+    "evals/prompt-cookbook/policy-learning-shadow-only.json",
     "evals/prompt-cookbook/native-simplicity-with-control.json",
     "evals/prompt-cookbook/process-yagni-no-new-gate.json",
     "evals/prompt-cookbook/bounded-recovery-frozen-case.json",
@@ -857,6 +858,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
         "references/planning-contract.md",
         "references/runtime-preferences.md",
         "references/automation-timing.md",
+        "references/policy-learning.md",
         "references/convergence-contract.md",
         "references/bounded-recovery.md",
         "references/reader-projection-contract.md",
@@ -865,6 +867,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
         "scripts/planning_case.py",
         "scripts/case_pipeline.py",
         "scripts/timing_model.py",
+        "scripts/policy_learning.py",
         "scripts/timing_calendar.py",
         "scripts/install.py",
     )
@@ -890,6 +893,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/references/reader-projection-contract.md",
             "{baseDir}/references/runtime-preferences.md",
             "{baseDir}/references/automation-timing.md",
+            "{baseDir}/references/policy-learning.md",
             "{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json",
             "{baseDir}/evals/prompt-cookbook/early-working-projection.json",
             "{baseDir}/evals/prompt-cookbook/live-checklist-completion-barrier.json",
@@ -900,6 +904,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/evals/prompt-cookbook/user-journey-screen-context-barrier.json",
             "{baseDir}/evals/prompt-cookbook/acceptance-verification-context-barrier.json",
             "{baseDir}/evals/prompt-cookbook/human-only-timing-boundary.json",
+            "{baseDir}/evals/prompt-cookbook/policy-learning-shadow-only.json",
             "{baseDir}/evals/prompt-cookbook/targeted-remediation-preserves-coverage.json",
             "{baseDir}/evals/prompt-cookbook/risk-first-batched-convergence.json",
             "{baseDir}/evals/prompt-cookbook/execution-economy-terminal-green.json",
@@ -907,6 +912,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/scripts/spec_pipeline.py",
             "{baseDir}/scripts/case_pipeline.py",
             "{baseDir}/scripts/timing_model.py",
+            "{baseDir}/scripts/policy_learning.py",
             "{baseDir}/scripts/timing_calendar.py",
         ):
             if link not in skill_text:
