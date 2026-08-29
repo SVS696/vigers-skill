@@ -42,6 +42,7 @@ OPERATIONAL_REFERENCE_FILES = {
     "references/convergence-contract.md",
     "references/diagram-contract.md",
     "references/execution-policy.md",
+    "references/policy-learning.md",
     "references/reader-projection-contract.md",
     "references/runtime-preferences.md",
     "references/solution-boundary-contract.md",

@@ -96,7 +96,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(counts["contracts"], 5)
         self.assertEqual(counts["runtime_adapters"], 10)
         self.assertEqual(counts["workflows"], 3)
-        self.assertEqual(counts["prompt_evals"], 26)
+        self.assertEqual(counts["prompt_evals"], 27)
 
     def test_scale_and_assurance_are_selected_independently(self) -> None:
         large_local = self.decision(
