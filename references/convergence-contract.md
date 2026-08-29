@@ -102,7 +102,10 @@ Targeted research заканчивается по `stop_condition` либо по
    третий finding-by-finding цикл запрещён. Если причина архитектурная или
    сквозная, агрегируй её в одно root-cause решение, явно обнови kernel с
    `semantic-crosscutting|architecture` impact и заново пройди полный затронутый
-   контракт. Иначе верни `user-decision` или bounded targeted research.
+   контракт. Такой root-cause reset автоматически разрешён один раз. Следующий
+   reset того же блока требует case-local immutable evidence явного решения
+   пользователя через `--user-decision-evidence`; одного coordinator reason
+   недостаточно. Иначе верни `user-decision` или bounded targeted research.
 7. Новый цикл после `pass` допустим только при новом evidence, изменении
    смыслового артефакта или доказанном новом `blocker/major`. Новые minor-only
    пожелания не переоткрывают гейт.

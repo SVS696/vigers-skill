@@ -37,23 +37,17 @@ description: "Оркестрирует предварительное иссле
    видимый прогресс и machine barriers; `off|milestones` требуют явной настройки.
    ETA не передаётся ролям и не влияет на качество или scope.
    Внешняя запись и checklist требуют read-back; checklist использует отдельный `progress_target_id` и штатный migration.
-9. **Качество имеет критерий достаточности.** `blocker` и `major` закрываются
-    пакетной `--batch-complete` remediation: baseline/coverage сохраняются, re-review
-    проверяет delta, а два batches на kernel epoch — предел. Доказанные high-risk
-    surfaces получают один ранний risk-preflight; обычная задача — ни одного нового
-    прохода. `minor` и research следуют критерию достаточности из
-    `{baseDir}/references/convergence-contract.md`.
-10. **Скрытый case не заменяет рабочий документ.** Создай объявленную видимую
-    проекцию до анализа. В `milestones` обновляй её полным draft на смысловых
-    вехах, в `per-block` — после каждого reviewed блока. Это не публикация.
+9. **Качество имеет критерий достаточности.** `blocker` и `major` закрываются пакетной `--batch-complete` remediation: baseline/coverage сохраняются, re-review проверяет delta, а два batches на kernel epoch — предел. Доказанные high-risk surfaces получают один ранний risk-preflight; обычная задача — ни одного нового прохода.
+    Первый root-cause refresh может открыть новый epoch; следующий требует case-local evidence явного решения пользователя и не может бесконечно обновлять бюджет. `minor` и research следуют критерию достаточности из `{baseDir}/references/convergence-contract.md`.
+10. **Скрытый case не заменяет рабочий документ.** Создай объявленную видимую проекцию до анализа. В `milestones` обновляй её полным draft на смысловых вехах, в `per-block` — после каждого reviewed блока. Это не публикация.
+    Для `intent=review` machine contract допускает только `milestones`: готовый внешний документ не перепубликуется после каждого локального review.
 11. **Project-conformance имеет машинный барьер.** Если profile объявляет
     `document_*` contract, core проверяет draft и рабочую проекцию до `pass`;
     текстовый verdict не перекрывает ошибку раздела, оглавления или якоря.
     После исправления и read-back нужен свежий pass только после semantic delta.
     Editorial delta закрывается machine check и явным `record-change`.
-12. **Готовая постановка не равна готовой поставке.** Закрытие постановочных
-    gates означает только готовность specification artifact. Внешний terminal
-    status требует lifecycle policy и подтверждённый delivery evidence.
+12. **Готовая постановка не равна готовой поставке.** Закрытие постановочных gates означает только готовность specification artifact. Внешний terminal status требует lifecycle policy и подтверждённый delivery evidence.
+    После final-green экспортируй `export-delivery-handoff`: Delivery получает hash-bound kernel revision, draft, semantic indexes, acceptance fingerprint и implementation transition, а не пересказ чата. Spec gaps возвращаются одним complete feedback batch на эту revision.
 13. **Замороженный case восстанавливается только по явной границе.** Не запускай re-analysis
     из-за stale state: следуй `{baseDir}/references/bounded-recovery.md`; новый major требует user decision.
 14. **Граница решения защищена с двух сторон.** Частный запрос — наблюдаемый
@@ -432,7 +426,8 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 - После локальной правки `begin-remediation` сохранил immutable review/baseline;
   проверены пакет findings, объявленные semantic IDs и прямые регрессии. Risk
   surfaces закрыты ранней матрицей; третий batch запрещён без root-cause kernel
-  change. Полный review запущен только при смысловой/сквозной переписи.
+  change, а второй reset epoch подтверждён сохранённым user-decision evidence.
+  Полный review запущен только при смысловой/сквозной переписи.
 - Diagram gate имеет `required|not-required|blocked`; все required surfaces
   представлены, семантически сверены и просмотрены в фактическом render. Одна
   гигантская нечитаемая схема не считается покрытием нескольких surfaces.
