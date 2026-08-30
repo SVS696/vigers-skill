@@ -862,12 +862,22 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
         "references/convergence-contract.md",
         "references/bounded-recovery.md",
         "references/reader-projection-contract.md",
+        "references/revmux-review-backend.md",
+        "revmux/prompts/profiles/vigers-review.md",
+        "revmux/prompts/profiles/vigers-final.md",
+        "revmux/lenses/vigers-contradictions.md",
+        "revmux/lenses/vigers-scope-boundary.md",
+        "revmux/lenses/vigers-acceptance.md",
+        "revmux/lenses/vigers-architecture.md",
+        "revmux/lenses/vigers-traceability.md",
+        "revmux/lenses/vigers-reader-projection.md",
         "templates/reader-specification-ru.md",
         "scripts/mode_decision.py",
         "scripts/planning_case.py",
         "scripts/case_pipeline.py",
         "scripts/timing_model.py",
         "scripts/policy_learning.py",
+        "scripts/revmux_review.py",
         "scripts/timing_calendar.py",
         "scripts/install.py",
     )
@@ -891,6 +901,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/references/convergence-contract.md",
             "{baseDir}/references/bounded-recovery.md",
             "{baseDir}/references/reader-projection-contract.md",
+            "{baseDir}/references/revmux-review-backend.md",
             "{baseDir}/references/runtime-preferences.md",
             "{baseDir}/references/automation-timing.md",
             "{baseDir}/references/policy-learning.md",
@@ -914,6 +925,7 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
             "{baseDir}/scripts/timing_model.py",
             "{baseDir}/scripts/policy_learning.py",
             "{baseDir}/scripts/timing_calendar.py",
+            "{baseDir}/scripts/revmux_review.py",
         ):
             if link not in skill_text:
                 errors.append(f"SKILL.md missing link: {link}")

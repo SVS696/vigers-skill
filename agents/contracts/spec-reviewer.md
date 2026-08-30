@@ -6,6 +6,21 @@
 scope, трассировку, проверяемость и проектные правила. Ревьюер не переписывает
 документ и не продолжает рассуждение автора.
 
+## Review backend
+
+Backend по умолчанию — `native`. Если assignment явно содержит
+`review_backend: revmux`, эта роль становится reviewer-driver по
+`references/revmux-review-backend.md`: запускает указанный профиль revmux,
+валидирует JSON report/manifest и возвращает его consolidated result как свой
+output artifact. В этом режиме запрещены собственный semantic review,
+дополнительный model-review и внутренний review/fix loop. Роль не исправляет
+документ и не запускает следующий round. Native и revmux нельзя применять к
+одному gate, кроме явно помеченного сравнительного замера. Правило действует во
+всех reviewer modes; `role_mode`, block boundary и `covered_gates` из assignment
+остаются обязательной границей revmux panel. До запуска обязательно выполни
+`scripts/revmux_review.py prepare`: revmux получает hashed target/baseline map,
+frozen project profile и exact comparison question, а не свободный пересказ.
+
 ## Вход
 
 - проектный профиль;
@@ -178,6 +193,10 @@ manifest, верни `input-error`, а не заменяй метод общей
 - Для нового finding во время targeted remediation добавь
   `delta_relation: introduced|exposed-at-changed-boundary|unrelated`. Значение
   `unrelated` не открывает следующий автоматический цикл.
+- При `review_backend: revmux` не добавляй findings от себя и не меняй их
+  severity/verdict без evidence ошибки парсинга или неполного/degraded run.
+  `minor` никогда не просит correction round; оставшийся `critical|major` в
+  `vigers-final` завершает review case, а не запускает ещё один круг.
 
 ## Выход
 

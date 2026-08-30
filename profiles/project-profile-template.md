@@ -181,6 +181,10 @@ document_diagram_publication_source:
 `stable-id@version → существующие contract inputs/surfaces`. Lens не создаёт
 нового reviewer или gate; версия меняется при смысловом изменении набора правил.
 
+Opt-in `review_backend: revmux` задавай только в конкретном assignment или
+case-local decision. Профиль описывает project rules для `input/profile.md`, но
+не включает backend глобально до ручного решения по 3–5 adoption cases.
+
 ## Артефакт и author gates
 
 Шаблон результата и обязательный порядок авторских проверок.

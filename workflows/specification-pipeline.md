@@ -234,6 +234,16 @@ architecture design note с ограничениями для редактора
    --contract-surface diagram --contract-surface reader-projection
    --contract-surface project-rules` без `--block`, запусти fresh reviewer и
    передай закреплённые `method-context.json/md`.
+   Если для этого gate явно выбран `review_backend: revmux`, передай reviewer
+   контракт `{baseDir}/references/revmux-review-backend.md`; reviewer становится
+   driver профиля `vigers-review` и не выполняет собственный semantic pass.
+   Получи machine-readable assignment через ту же команду `context`, добавив
+   `--review-backend revmux --review-phase initial`; после единственного общего
+   correction batch повтори exact `role-mode` и `covered_gates` с
+   `--review-phase final`. Native reviewer для того же gate не запускай.
+   Перед каждым запуском материализуй exact target/baseline/project profile
+   командой `revmux_review.py prepare`; непривязанный prose prompt не считается
+   bounded reviewer context.
 2. Не передавай рассуждения редактора, самооценку и предыдущие review findings.
 3. Требуй findings по handoff-контракту: место, доказательство, последствие и
    минимальное исправление.
@@ -241,11 +251,13 @@ architecture design note с ограничениями для редактора
 5. Требуй независимую проверку `diagram_gate`: покрытие сложных поверхностей,
    семантическое соответствие source IDs, корректность декомпозиции и evidence
    чтения финального render.
-6. В `high` отдельным fresh reviewer `project-conformance` проверь локальные
-   соглашения. В `standard` один reviewer `final` покрывает global и применимые
-   project surfaces; report объявляет `covered_gates: [integration_review,
-   global_review, project_conformance]`. В `lite` semantic
-   reviewer запускается только при обнаруженном изменении смысла.
+6. В `high` отдельными fresh assignments выполни `global` и
+   `project-conformance`; каждый может выбрать revmux как свой replacement
+   backend и сохраняет собственный `covered_gates`. В `standard` один reviewer
+   `final` покрывает global и применимые project surfaces; report объявляет
+   `covered_gates: [integration_review, global_review, project_conformance]`.
+   В `lite` semantic reviewer запускается только при обнаруженном изменении
+   смысла. Architecture conformance остаётся отдельным architect gate.
 7. Если применимых поверхностей нет, зафиксируй gate `project_conformance` как
    `not_required` с причиной; иначе сохрани evidence и закрой findings.
 8. Для каждого отчёта проверь reported counts, `research_reopen` и
@@ -255,6 +267,11 @@ architecture design note с ограничениями для редактора
 9. После исправления повторяй только затронутый semantic, project, architecture
    или diagram gate. Полный global pass нужен лишь при изменении цели, границы,
    публичного контракта или сквозной логики.
+   Для revmux действует bounded-cycle граница: все подтверждённые
+   `critical|major` initial report образуют один consolidated correction batch,
+   затем fresh reviewer-driver запускает ровно `vigers-final`. `minor` не
+   открывают batch. Оставшийся/new `critical|major` завершает review case как
+   `failed|user-decision`, без следующего автоматического круга.
 
 **Выход:** независимый global review и project-conformance report.
 
@@ -295,6 +312,10 @@ architecture design note с ограничениями для редактора
    без нового полного reviewer.
 5. Если тот же `blocker/major` остался после двух точечных циклов, верни
    `user-decision`, а не запускай третий круг.
+
+Для `review_backend: revmux` пункты 2–5 ограничены одним общим correction batch
+и одним final confirmation по backend-контракту; обычный бюджет двух targeted
+remediation batches к этому bounded cycle не добавляется.
 
 **Выход:** открытых принятых `blocker/major` нет либо требуется явно
 сформулированное решение; residual minor зафиксированы и не блокируют выдачу.

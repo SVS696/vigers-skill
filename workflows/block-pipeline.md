@@ -26,6 +26,19 @@ approved planning handoff либо явно выбранный `--intent review`
 **Выход:** состояние читается без истории чата; известны следующий шаг и active
 automation stage.
 
+Сквозное правило независимого review: для любого назначенного reviewer mode
+(`block`, `integration`, `global`, `final`, `project-conformance`) явный
+`review_backend: revmux` заменяет native model engine этого gate. К исходной
+команде `context` добавь `--review-backend revmux --review-phase initial`, а
+после единственного consolidated correction batch повтори тот же `role_mode`,
+block boundary и `covered_gates` с `--review-phase final`. Reviewer остаётся
+driver/evidence owner, не делает собственный semantic pass и не запускает новый
+round. Native reviewer для того же gate запрещён. Architect, author, machine
+checks, тесты и live verification этим выбором не заменяются.
+Перед запуском driver обязан материализовать exact target/baseline/profile через
+`revmux_review.py prepare`; один лишь текстовый scope без hashed assignment не
+является допустимым входом revmux.
+
 Сквозное правило выполнения: planning stages `Pxx` и semantic blocks `Bxx` —
 разные DAG. Перед фактическим входом в approved `Pxx` запусти
 `automation_timing.py start`; после exit criteria и проверки — `stop --status
@@ -190,6 +203,8 @@ solution-architect --role-mode risk-preflight`, запусти архитект�
    machine attestation `review_requirement: not-required`, не изображая PASS.
 2. Для review получи `context --role spec-reviewer --role-mode block` с
    применимыми `--contract-surface` и запусти fresh reviewer без истории автора.
+   При revmux используй точные backend/phase flags из сквозного правила; context
+   вернёт `covered_gates: [block_review:Bxx]` и профиль текущей фазы.
 3. Для локальной required-диаграммы проверь соответствие semantic index и
    читаемость пробного render; не требуй межблочную обзорную схему раньше
    интеграции.
@@ -210,6 +225,8 @@ solution-architect --role-mode risk-preflight`, запусти архитект�
    Если исправление переписывает смысл блока, меняет необъявленные IDs, цель,
    scope, публичный контракт или сквозную логику, перезапусти remediation с
    `--full-block` и выполни полный локальный и применимые whole-case review.
+   При revmux этот пакет является единственным: после него выполняется один
+   `vigers-final`, а обычный бюджет второго remediation batch не добавляется.
 6. При minor-only выполни не более одного пакетного polish-pass для этого review
    gate либо запиши остаток как `residual`; новый полный reviewer не запускай.
 7. После двух remediation batches текущего kernel epoch третий автоматический
@@ -220,6 +237,9 @@ solution-architect --role-mode risk-preflight`, запусти архитект�
    Новый finding открывает следующий цикл только с `delta_relation:
    introduced|exposed-at-changed-boundary`; несвязанное наблюдение сохрани
    отдельно и не превращай в автоматический общий аудит.
+   Для revmux вместо этого native-бюджета действует один batch: оставшийся/new
+   `critical|major` в final переводит gate в `user-decision|failed`, не в новый
+   цикл.
 8. При `projection_sync=per-block` сразу после `reviewed` проецируй block-render.
    При `milestones` пропусти Bxx-update: следующий read-back — после интеграции.
    В per-block проецируй принятый block-render во все обязательные
@@ -301,7 +321,9 @@ solution-architect --role-mode risk-preflight`, запусти архитект�
 
 **Вход:** draft после consistency-check и все block indexes.
 
-1. В `high` запусти reviewer `integration`. В `standard` пометь gate
+1. В `high` запусти reviewer `integration`. При выбранном revmux используй
+   replacement-backend по сквозному правилу, сохранив
+   `covered_gates: [integration_review]`. В `standard` пометь gate
    `not_required`: межблочная проверка входит в единый `final` pass.
 2. Проверь противоречия между блоками, разные значения одного термина,
    переходы состояний, владельцев данных, сквозные ошибки и сохранность scope.
@@ -341,10 +363,12 @@ solution-architect --role-mode risk-preflight`, запусти архитект�
    неразличимые подписи и перегрузку через декомпозицию, а не уменьшение шрифта.
 5. Зафиксируй `author_passes` только после machine validation единого
    solution-boundary блока schema 2, включая bounded `implementation_transition`.
-6. В `high` запусти reviewer `global`. В `standard` запусти один reviewer
-   `final` с `covered_gates: [integration_review, global_review,
-   project_conformance]`, integration scope и применимыми project surfaces. Не
-   передавай прошлые reports.
+6. В `high` запусти reviewer `global` с `covered_gates: [global_review]`. В
+   `standard` запусти один reviewer `final` с `covered_gates:
+   [integration_review, global_review, project_conformance]`, integration scope
+   и применимыми project surfaces. Для любого из этих assignments выбранный
+   revmux заменяет native reviewer по сквозному правилу. Не передавай прошлые
+   reports.
 7. Сохрани итог в `reviews/global.md`; зафиксируй `global_review` только после
    закрытия открытых принятых `blocker/major`. Minor-only замечания не запускают
    второй полный global review после единственного polish-pass.
@@ -356,9 +380,11 @@ solution-architect --role-mode risk-preflight`, запусти архитект�
 **Вход:** готовый draft, проектный профиль и только применимые источники
 соглашений.
 
-1. В `high` запусти reviewer `project-conformance`. В `standard` используй тот
-   же immutable `final` report только при явном `project_conformance` в
-   `covered_gates` и полной surface matrix. Machine check обязателен всегда.
+1. В `high` запусти reviewer `project-conformance`; при revmux сохрани его узкий
+   scope и `covered_gates: [project_conformance]`, не переоткрывая общую
+   семантику. В `standard` используй тот же immutable `final` report только при
+   явном `project_conformance` в `covered_gates` и полной surface matrix.
+   Machine check обязателен всегда.
 2. Проверь API-пути/HTTP, identifiers/casing, темы/сигналы, терминологию,
    frontmatter, шаблон, ссылки, файлы, формат публикации диаграмм и иные правила
    профиля.
