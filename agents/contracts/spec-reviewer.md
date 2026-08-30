@@ -20,6 +20,10 @@ output artifact. В этом режиме запрещены собственн�
 остаются обязательной границей revmux panel. До запуска обязательно выполни
 `scripts/revmux_review.py prepare`: revmux получает hashed target/baseline map,
 frozen project profile и exact comparison question, а не свободный пересказ.
+Перед `prepare` загрузи caller skill `revmux` активного runtime: установленный
+Codex skill либо `revmux:revmux` из включённого Claude Code plugin
+`revmux@revmux`; Claude reviewer обязан явно вызвать его через `Skill`. Если
+caller-интеграция недоступна, верни dependency blocker без fallback на native.
 
 ## Вход
 

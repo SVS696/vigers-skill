@@ -28,7 +28,7 @@ description: "Оркестрирует предварительное иссле
    `lite|standard|high` — глубиной review. В standard один `final` reviewer
    объединяет integration/global и применимые project surfaces; high сохраняет
    отдельные проходы по `{baseDir}/references/execution-policy.md`. Явный
-   `review_backend: revmux` заменяет model engine каждого назначенного reviewer gate, включая block, но не меняет их состав и не добавляет второй проход; opt-in fail-closed зависит от binary+skill revmux совместимой ревизии `33ede7aaf632cebbde08f2dd53ffa06c4722d81b`.
+   `review_backend: revmux` заменяет model engine каждого назначенного reviewer gate, включая block, но не меняет их состав и не добавляет второй проход; opt-in fail-closed зависит от бинаря и caller-интеграции активного runtime: Codex skill либо Claude Code plugin `revmux@revmux`, совместимых с ревизией `33ede7aaf632cebbde08f2dd53ffa06c4722d81b`.
 7. **Планирование начинается с исследования.** Декомпозиция без проверки
    проектных источников создаёт ложную определённость. Planning-case сначала
    фиксирует search coverage, противоречия и gaps, затем строит зависимые этапы,
