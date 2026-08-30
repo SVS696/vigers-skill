@@ -6151,8 +6151,19 @@ def context_bundle(
     role: str,
     role_mode: str | None = None,
     contract_surfaces: list[str] | None = None,
+    review_backend: str = "native",
+    review_phase: str | None = None,
 ) -> dict[str, Any]:
     """Build a bounded, role-specific list of case inputs."""
+    if review_backend not in {"native", "revmux"}:
+        raise CaseError(f"Unknown review backend: {review_backend}")
+    if review_backend == "revmux":
+        if role != "spec-reviewer":
+            raise CaseError("revmux backend is available only to spec-reviewer")
+        if review_phase not in {"initial", "final"}:
+            raise CaseError("revmux backend requires review_phase=initial|final")
+    elif review_phase is not None:
+        raise CaseError("review_phase is valid only with review_backend=revmux")
     selected_surfaces = set(contract_surfaces or [])
     unknown_surfaces = sorted(selected_surfaces - CONTRACT_SURFACES)
     if unknown_surfaces:
@@ -6172,6 +6183,8 @@ def context_bundle(
     ]
     if recovery is not None:
         contract_inputs.append("references/bounded-recovery.md")
+    if review_backend == "revmux":
+        contract_inputs.append("references/revmux-review-backend.md")
     surface_paths = {
         "solution-boundary": "references/solution-boundary-contract.md",
         "diagram": "references/diagram-contract.md",
@@ -6186,6 +6199,8 @@ def context_bundle(
     def covered_gates_for(effective_mode: str) -> list[str]:
         if role != "spec-reviewer":
             return []
+        if effective_mode == "block" and block_id is not None:
+            return [f"block_review:{block_id}"]
         if effective_mode == "final":
             return ["integration_review", "global_review", "project_conformance"]
         return {
@@ -6372,6 +6387,17 @@ def context_bundle(
             "review_strategy": (
                 "bounded-recovery-final" if recovery_final else REVIEW_STRATEGIES[assurance]
             ),
+            "review_backend": review_backend,
+            "review_phase": review_phase,
+            "revmux_profile": (
+                "vigers-review"
+                if review_backend == "revmux" and review_phase == "initial"
+                else (
+                    "vigers-final"
+                    if review_backend == "revmux" and review_phase == "final"
+                    else None
+                )
+            ),
             "subject_sha256": (
                 risk_preflight_subject_hash(manifest, ledger)
                 if risk_scope
@@ -6507,6 +6533,17 @@ def context_bundle(
         "assurance_level": assurance,
         "review_strategy": (
             "bounded-recovery" if recovery is not None else REVIEW_STRATEGIES[assurance]
+        ),
+        "review_backend": review_backend,
+        "review_phase": review_phase,
+        "revmux_profile": (
+            "vigers-review"
+            if review_backend == "revmux" and review_phase == "initial"
+            else (
+                "vigers-final"
+                if review_backend == "revmux" and review_phase == "final"
+                else None
+            )
         ),
         "review_scope": (
             "bounded-recovery"
@@ -6855,6 +6892,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     context_parser.add_argument("--role-mode")
     context_parser.add_argument(
+        "--review-backend",
+        choices=("native", "revmux"),
+        default="native",
+    )
+    context_parser.add_argument("--review-phase", choices=("initial", "final"))
+    context_parser.add_argument(
         "--contract-surface",
         action="append",
         choices=sorted(CONTRACT_SURFACES),
@@ -7197,6 +7240,8 @@ def main() -> int:
                         role=args.role,
                         role_mode=args.role_mode,
                         contract_surfaces=args.contract_surface,
+                        review_backend=args.review_backend,
+                        review_phase=args.review_phase,
                     ),
                     ensure_ascii=False,
                     indent=2,

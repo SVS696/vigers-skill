@@ -182,6 +182,15 @@ assignment разворачивается в прежний полный наб�
 локальные/прошлые review reports. Architecture conformance остаётся отдельной
 ролью. Machine reader/document check всегда выполняется до модельного review.
 
+Явный `review_backend=revmux` доступен для каждого существующего режима
+`spec-reviewer`: `block`, `integration`, `global`, `final` и
+`project-conformance`. Assurance по-прежнему определяет, какие gates нужны:
+`standard` использует один combined `final`, `high` — отдельные reviewer
+assignments. Backend меняет только model engine конкретного assignment;
+native-review для того же gate не запускается. Architect design/conformance,
+author passes, deterministic checks, тесты и живая приёмка этой настройкой не
+заменяются.
+
 ## Наблюдаемость
 
 Новый case содержит `agent-ledger.json`. После модельного прохода координатор

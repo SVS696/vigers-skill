@@ -1494,6 +1494,111 @@ class CasePipelineTests(unittest.TestCase):
             self.assertIn("references/reader-projection-contract.md", bundle["contract_inputs"])
             self.assertNotIn("references/diagram-contract.md", bundle["contract_inputs"])
 
+            revmux_bundle = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="final",
+                contract_surfaces=["reader-projection", "project-rules"],
+                review_backend="revmux",
+                review_phase="initial",
+            )
+            self.assertEqual(revmux_bundle["review_backend"], "revmux")
+            self.assertEqual(revmux_bundle["revmux_profile"], "vigers-review")
+            self.assertIn(
+                "references/revmux-review-backend.md",
+                revmux_bundle["contract_inputs"],
+            )
+            revmux_final = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="final",
+                review_backend="revmux",
+                review_phase="final",
+            )
+            self.assertEqual(revmux_final["revmux_profile"], "vigers-final")
+
+    def test_revmux_backend_covers_block_and_layered_high_reviewer_modes(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "case"
+            self.write_method_context(root)
+            self.write_mode_decision(
+                root,
+                selected_mode="block",
+                assurance="high",
+                tracking="fine",
+                projection_sync="per-block",
+            )
+            case_pipeline.init_case(
+                root,
+                case_id="high-revmux-context",
+                mode="block",
+                intent="create",
+                profile_id="generic",
+                route_id="core",
+                project_root=None,
+                allow_unplanned=True,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.add_block(
+                loaded_root,
+                manifest,
+                ledger,
+                block_id="B01",
+                title="Block",
+                kind="scenarios",
+                depends_on=[],
+            )
+            _, manifest, ledger = case_pipeline.load_case(root)
+
+            block_bundle = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                block_id="B01",
+                role="spec-reviewer",
+                role_mode="block",
+                review_backend="revmux",
+                review_phase="initial",
+            )
+            self.assertEqual(block_bundle["revmux_profile"], "vigers-review")
+            self.assertEqual(block_bundle["covered_gates"], ["block_review:B01"])
+
+            expected_gates = {
+                "integration": ["integration_review"],
+                "global": ["global_review"],
+                "project-conformance": ["project_conformance"],
+            }
+            for role_mode, covered_gates in expected_gates.items():
+                with self.subTest(role_mode=role_mode):
+                    bundle = case_pipeline.context_bundle(
+                        manifest,
+                        ledger,
+                        block_id=None,
+                        role="spec-reviewer",
+                        role_mode=role_mode,
+                        review_backend="revmux",
+                        review_phase="final",
+                    )
+                    self.assertEqual(bundle["revmux_profile"], "vigers-final")
+                    self.assertEqual(bundle["covered_gates"], covered_gates)
+
+            with self.assertRaisesRegex(
+                case_pipeline.CaseError,
+                "High assurance uses separate",
+            ):
+                case_pipeline.context_bundle(
+                    manifest,
+                    ledger,
+                    block_id=None,
+                    role="spec-reviewer",
+                    role_mode="final",
+                    review_backend="revmux",
+                    review_phase="initial",
+                )
+
     def test_architect_context_is_materialized_from_declared_surfaces(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = self.init(Path(temp), mode="compact")

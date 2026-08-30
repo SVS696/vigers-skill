@@ -171,6 +171,20 @@ python3 ~/.codex/skills/vigers/scripts/install.py --check
 Installer подключает skill и пять именованных агентов к Codex и Claude,
 выполняет preflight и не перетирает существующие targets.
 
+### Опциональная зависимость revmux
+
+Native review работает без внешней зависимости. Явный
+`review_backend: revmux` требует бинарь и Codex skill
+[umputun/revmux](https://github.com/umputun/revmux) из совместимой ревизии
+`33ede7aaf632cebbde08f2dd53ffa06c4722d81b`. Это compatibility pin текущей
+интеграции, а не временный тип case. `scripts/revmux_review.py prepare`
+fail-closed проверяет `revmux --version` и сохраняет версию в exact review
+context; отсутствующая или иная сборка не подменяется native review молча.
+
+Бинарь и skill устанавливаются отдельно по upstream-инструкции. Один локальный
+checkout без доступного в `PATH` бинаря и discovery skill не считается
+установленной зависимостью.
+
 ## Проектный профиль
 
 ```bash

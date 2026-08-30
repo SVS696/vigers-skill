@@ -27,7 +27,8 @@ description: "Оркестрирует предварительное иссле
 6. **Масштаб не равен риску.** `compact|block` управляет контекстом, а
    `lite|standard|high` — глубиной review. В standard один `final` reviewer
    объединяет integration/global и применимые project surfaces; high сохраняет
-   отдельные проходы по `{baseDir}/references/execution-policy.md`.
+   отдельные проходы по `{baseDir}/references/execution-policy.md`. Явный
+   `review_backend: revmux` заменяет model engine каждого назначенного reviewer gate, включая block, но не меняет их состав и не добавляет второй проход; opt-in fail-closed зависит от binary+skill revmux совместимой ревизии `33ede7aaf632cebbde08f2dd53ffa06c4722d81b`.
 7. **Планирование начинается с исследования.** Декомпозиция без проверки
    проектных источников создаёт ложную определённость. Planning-case сначала
    фиксирует search coverage, противоречия и gaps, затем строит зависимые этапы,
@@ -80,7 +81,6 @@ description: "Оркестрирует предварительное иссле
     Общая бизнес-цель остаётся обязательной; объявленный profile публичный
     `GOAL-*` не является служебным ID и сохраняется как вершина трассировки.
 19. **Читатель сразу видит смысл и владельцев работы.** Reader-facing документ начинается с `Проблема → Цель → Суть решения`, затем кратко разделяет изменения по component owners. Быстрые блоки оформляй Markdown-списками: один верхний пункт — одно действие или тезис, вложенные пункты — назначение точных owner-specific ссылок; не собирай карту в абзац через запятые и не используй общий список `Подробнее`. Не склеивай диапазоны семантических кодов как `SCN-001–SCN-007`: для сплошной последовательности укажи `от SCN-001 — «Название» до SCN-007 — «Название»` с точными ссылками на обе границы, а разрозненные пункты перечисли отдельно. Смешанную implementer-specific часть подробных разделов группируй ATX-заголовками `Backend (BE)`, `Frontend (FE)` и при необходимости `Совместно: BE + FE`, не заменяя структурную границу жирной строкой и не дублируя общий контракт. Публичная история хранит только смысловые версии требований; внутренний lifecycle не публикуется. Новые интерфейсы используют `INTF`, legacy `IF` остаётся читаемым. Каждую новую или изменяемую ручку оформляй отдельным блоком `METHOD /path → описание → запрос → ответ → значимые ошибки`: JSON показывай многострочным fenced-блоком, а таблицы оставляй только для полезного сравнения одинаковых коротких признаков, не подменяя ими контракт операции. Если публичный источник существует локально, в рабочей постановке ссылайся на локальный канонический документ; публикационный адаптер преобразует ссылку в его публичный URL, а прямой URL в рабочем документе допустим только без локальной версии.
-
 ## Когда применять
 
 - Из идеи, переписки, тикета или черновика нужна проверяемая постановка.
@@ -461,7 +461,7 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/references/bounded-recovery.md` | Явное восстановление frozen case без нового анализа и бесконечных review |
 | `{baseDir}/references/solution-boundary-contract.md` | Горизонты решения, границы scope и двусторонняя защита от hardcode/overengineering |
 | `{baseDir}/references/diagram-contract.md` | Diagram gate, выбор представления, декомпозиция и render QA |
-| `{baseDir}/references/reader-projection-contract.md` | Граница внутренней модели и итогового текста, UI-пути, AC/DoD, прямые ссылки и ресурсная дисциплина |
+| `{baseDir}/references/reader-projection-contract.md`, `{baseDir}/references/revmux-review-backend.md` | Читательская проекция и opt-in backend независимого review |
 | `{baseDir}/references/handoff-contract.md` | Контракт case package и результатов ролей |
 | `{baseDir}/references/prompt-contract.md` | Сборка ограниченного prompt для независимой роли |
 | `{baseDir}/evals/prompt-cookbook/convergence-closed-coverage.json` | Регрессия prompt: закрытый coverage не переоткрывается без существенной evidence-дыры |
@@ -496,5 +496,5 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 | `{baseDir}/scripts/planning_case.py` | Planning state, revisions, external bindings и approved handoff |
 | `{baseDir}/scripts/automation_timing.py` | Stage start/stop, validation, summary и aggregation |
 | `{baseDir}/scripts/timing_model.py`, `{baseDir}/scripts/timing_calendar.py`, `{baseDir}/scripts/policy_learning.py` | Project-local timing и shadow policy models |
-| `{baseDir}/scripts/vigers_context.py` | Маршрутизация методического контекста |
+| `{baseDir}/scripts/vigers_context.py`, `{baseDir}/scripts/revmux_review.py` | Маршрутизация и materialization контекста, round evidence и adoption metrics revmux |
 | `{baseDir}/scripts/install.py` | Безопасное подключение скилла и агентов к рантаймам |

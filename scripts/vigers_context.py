@@ -44,6 +44,7 @@ OPERATIONAL_REFERENCE_FILES = {
     "references/execution-policy.md",
     "references/policy-learning.md",
     "references/reader-projection-contract.md",
+    "references/revmux-review-backend.md",
     "references/runtime-preferences.md",
     "references/solution-boundary-contract.md",
 }
