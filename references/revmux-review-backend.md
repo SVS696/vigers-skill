@@ -10,13 +10,24 @@
 ## Opt-in dependency
 
 Native backend не зависит от revmux. Выбранный `review_backend: revmux`
-fail-closed требует бинарь `revmux` в `PATH` и установленный Codex skill revmux
-из той же совместимой ревизии. Текущий compatibility pin:
+fail-closed требует бинарь `revmux` в `PATH` и caller-интеграцию активного
+reviewer runtime из той же совместимой ревизии:
+
+- Codex reviewer загружает установленный skill `revmux` из
+  `plugins/codex/skills/revmux`;
+- Claude Code reviewer предзагружает skill `revmux:revmux` из включённого
+  plugin `revmux@revmux` версии `0.4.3` через agent frontmatter и явно вызывает
+  его через `Skill` tool.
+
+Skill-local профили запускают Claude subprocesses, поэтому независимо от caller
+им нужен доступный и аутентифицированный `claude` CLI. Текущий compatibility pin:
 `33ede7aaf632cebbde08f2dd53ffa06c4722d81b`; ожидаемый `revmux --version`
 содержит `33ede7a`. `revmux_review.py prepare` проверяет бинарь и записывает его
-resolved path, version и pin в immutable context. Отсутствующая либо иная
+resolved path, version и pin в immutable context; reviewer adapter отдельно
+проверяет доступность caller skill/plugin. Отсутствующий компонент либо иная
 ревизия не вызывает тихий fallback на native: assignment останавливается до
-явного исправления dependency или смены backend.
+явного исправления dependency или смены backend. Один checkout исходников без
+этих подключений не считается установленной зависимостью.
 
 ## Контракт reviewer-driver
 
@@ -24,7 +35,8 @@ resolved path, version и pin в immutable context. Отсутствующая �
 
 1. проверяет доступность `revmux`, фиксирует `revmux --version`, exact subject
    SHA-256, `role_mode`, `covered_gates`, профиль и paths входов;
-2. готовит task/round по skill `revmux`, не меняя frozen subject;
+2. загружает caller skill `revmux` своего runtime и по нему готовит task/round,
+   не меняя frozen subject;
 3. запускает ровно один профиль `vigers-review` для initial либо ровно один
    `vigers-final` для подтверждения с `--config-dir <vigers-root>/revmux`;
 4. читает JSON report и manifest, проверяет полноту sources и отсутствие

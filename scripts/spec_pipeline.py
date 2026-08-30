@@ -771,6 +771,8 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
                 for marker in (
                     "review_scope=bounded-recovery|bounded-recovery-final",
                     "отсутствие method context является обязательной изоляцией",
+                    "установленный Codex skill `revmux`",
+                    "dependency blocker",
                 ):
                     if marker not in instructions:
                         errors.append(
@@ -800,6 +802,10 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
                     "review_scope=bounded-recovery|bounded-recovery-final",
                     "отсутствие method context",
                     "является обязательной изоляцией",
+                    "tools: Read, Grep, Glob, Bash, Skill",
+                    "skills:\n  - revmux:revmux",
+                    "через `Skill`",
+                    "dependency blocker",
                 ):
                     if marker not in claude_text:
                         errors.append(
