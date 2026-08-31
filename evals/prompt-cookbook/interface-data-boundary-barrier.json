@@ -1,0 +1,35 @@
+{
+  "schema": 1,
+  "id": "interface-data-boundary-barrier",
+  "purpose": "Проверить, что wire-схемы не превращаются в параллельную модель DATA или TypeScript-подобный псевдокод, а backend-контракт и frontend-вызовы разделены по ответственности.",
+  "prompt": "<assignment>\nrole: spec-reviewer\nmode: final\nprofile_id: project-alpha\ndraft_findings:\n  - 'В разделе Данные определён DATA-B02-001 — DTO проекций справочников: DirectoryRs, UserSelectorItem и RoleDirectoryItem.'\n  - 'Те же поля повторены в INTF-B02-001 для GET /api/user/options и GET /api/role/directory.'\n  - 'В API-разделе схема записана как DirectoryRs<T> = { items: T[] } и userNm: string вместо фактического JSON ответа.'\n  - 'Изменений доменных сущностей, хранения, связей и схемы БД нет.'\n  - 'Под H3 Backend (BE) — контракты API у каждой ручки вместе с request/response помещены экран, frontend-триггер и обновляемое клиентское состояние.'\ncandidate_next_step: переименовать раздел Данные в Контракты данных и оставить обе копии, а смешанный API-блок считать общим для Backend и Frontend\n</assignment>\n\n<source_documents>\n<document id=\"SRC-001\" origin=\"project-profile\">\nDATA описывает доменную или хранимую модель независимо от транспорта. Request/response DTO, envelope, error body, параметры и event/message payload принадлежат соответствующему INTF. Если меняется только API-проекция, раздел Данные не нужен. Общий wire-тип определяется один раз в интерфейсном разделе и связывается с операциями. REST/JSON показывается фактическими многострочными request/response; TypeScript-подобные псевдотипы не заменяют wire JSON. Источник или назначение полей разрешено пояснить отдельной таблицей маппинга. Backend-блок содержит серверный контракт; отдельный Frontend-блок сопоставляет каждой операции экран или headless-инициатор, конкретный триггер и применение ответа. Совместный блок допустим только для реальной общей обязанности, а не по факту обмена через API.\n</document>\n</source_documents>\n\n<final_instruction>\nВерни findings и минимальный план правки. Не редактируй файлы и не публикуй документ.\n</final_instruction>",
+  "expected": {
+    "required_actions": [
+      "удалить параллельное DATA-определение API DTO",
+      "определить DirectoryRs и проекции один раз внутри соответствующего INTF",
+      "связать использующие общий тип операции без повторения одной схемы",
+      "удалить неприменимый раздел Данные при отсутствии изменений доменной или хранимой модели",
+      "для каждой frontend-операции добавить конкретный триггер вызова и обновляемые после ответа данные или состояния",
+      "заменить псевдотипы REST-контракта фактическими многострочными JSON request/response; маппинг источника и назначения полей при необходимости вынести в отдельную таблицу",
+      "вынести frontend-инициаторы, триггеры и применение ответа из backend-контракта в отдельный Frontend H3"
+    ],
+    "forbidden_actions": [
+      "переименовывать API DTO в контракты данных и сохранять их в DATA",
+      "дублировать одну wire-схему в DATA и INTF ради разных владельцев",
+      "считать одного названия экрана достаточным описанием frontend-вызова",
+      "изобретать триггер или экран без подтверждённого источника",
+      "подменять фактический REST JSON псевдотипами T[], string|null или integer",
+      "считать смешанный API-блок корректным только потому, что API связывает Backend и Frontend"
+    ],
+    "required_output_signals": [
+      "DATA/INTF boundary: blocked",
+      "wire contract belongs to INTF",
+      "frontend trigger required",
+      "no domain data section needed"
+    ],
+    "allowed_research_exception": {
+      "allowed": false,
+      "reason": "Дефект классификации доказан самим draft и project profile; неизвестный конкретный триггер должен остаться gap, а не поводом сохранять ошибочную структуру."
+    }
+  }
+}

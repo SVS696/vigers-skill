@@ -692,6 +692,17 @@ class PipelineTests(unittest.TestCase):
         self.assertIn("### US-1.", text)
         self.assertIn("### AC-1.", text)
         self.assertIn("### DOD-1.", text)
+        self.assertIn("DATA-1. Доменный объект или хранимый набор данных", text)
+        self.assertIn("Request/response DTO", text)
+        self.assertIn("TypeScript-подобным псевдокодом", text)
+        self.assertIn("поле API → источник/назначение", text)
+        self.assertIn("### Backend (BE) — контракты API", text)
+        self.assertIn("### Frontend (FE) — вызовы и применение API", text)
+        self.assertIn("| API | Экран или системный инициатор | Конкретный триггер | Применение ответа |", text)
+        self.assertIn("Для самостоятельной FE-подзадачи", text)
+        self.assertIn("Backend (BE): Изменений нет.", text)
+        self.assertIn("Раздел `История изменений` в такой подзадаче удалите", text)
+        self.assertNotIn("##### Frontend (FE) — использование", text)
 
     def test_project_profile_inherits_package_template_recommendation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
