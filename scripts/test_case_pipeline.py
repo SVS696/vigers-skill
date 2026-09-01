@@ -666,6 +666,66 @@ class CasePipelineTests(unittest.TestCase):
             note=None,
         )
 
+    def begin_integration_convergence_remediation(
+        self,
+        root: Path,
+        *,
+        remediation_contract: str = case_pipeline.REMEDIATION_CONTRACT_V2,
+    ) -> dict[str, object]:
+        """Open one real integration finding and its bounded block remediation."""
+        self.prepare_whole_case_review(root)
+        replace_todo(root / "reviews" / "integration.md", "# Integration\n\nF-INT-001 major")
+        loaded_root, manifest, ledger = case_pipeline.load_case(root)
+        context = case_pipeline.context_bundle(
+            manifest,
+            ledger,
+            root=root,
+            block_id=None,
+            role="spec-reviewer",
+            role_mode="integration",
+        )
+        run_id = self.record_agent_run(
+            root,
+            role="spec-reviewer",
+            role_mode="integration",
+            subject_sha256=context["subject_sha256"],
+            reported_major=1,
+        )
+        loaded_root, manifest, ledger = case_pipeline.load_case(root)
+        case_pipeline.record_convergence_review(
+            loaded_root,
+            manifest,
+            ledger,
+            run_id=run_id,
+            gate_decision="revise",
+            open_blocker=0,
+            open_major=1,
+            open_minor=0,
+            evidence="reviews/integration.md",
+            findings=[{"id": "F-INT-001", "severity": "major"}],
+            impact="integration",
+            affected_blocks=["B01"],
+            semantic_ids=["SCN-B01-001"],
+        )
+        if remediation_contract != case_pipeline.REMEDIATION_CONTRACT_V2:
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            block = case_pipeline.blocks_by_id(ledger)["B01"]
+            block["remediation_contract"] = remediation_contract
+            block.pop("remediation_epoch", None)
+            case_pipeline.save_case(loaded_root, manifest, ledger)
+        loaded_root, manifest, ledger = case_pipeline.load_case(root)
+        return case_pipeline.begin_block_remediation(
+            loaded_root,
+            manifest,
+            ledger,
+            block_id="B01",
+            findings=[{"id": "F-INT-001", "severity": "major"}],
+            semantic_ids=["SCN-B01-001"],
+            evidence="reviews/integration.md",
+            reason="Open the targeted batch before the root cause is proven",
+            batch_complete=True,
+        )
+
     def transition(self, root: Path, block_id: str, status: str, note: str | None = None) -> None:
         loaded_root, manifest, ledger = case_pipeline.load_case(root)
         if status == "reviewed" and case_pipeline.active_bounded_recovery(manifest) is None:
@@ -3028,68 +3088,26 @@ class CasePipelineTests(unittest.TestCase):
                     reason="Do not carry an active remediation into a new episode",
                     user_decision_evidence="decisions/local-reset.md",
                 )
+            with self.assertRaisesRegex(
+                case_pipeline.CaseError,
+                "requires an active block remediation",
+            ):
+                case_pipeline.refresh_kernel(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    [],
+                    change_scope="semantic-crosscutting",
+                    invalidate_all=True,
+                    reason="Do not bypass the unopened correction batch",
+                    user_decision_evidence="decisions/local-reset.md",
+                )
 
     def test_targeted_convergence_remediation_refreshes_kernel_with_user_decision(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = self.init(Path(temp))
             self.add(root, "B01")
-            self.prepare_whole_case_review(root)
-            replace_todo(root / "reviews" / "integration.md", "# Integration\n\nF-INT-001 major")
-            loaded_root, manifest, ledger = case_pipeline.load_case(root)
-            context = case_pipeline.context_bundle(
-                manifest,
-                ledger,
-                root=root,
-                block_id=None,
-                role="spec-reviewer",
-                role_mode="integration",
-            )
-            run_id = case_pipeline.record_agent_run(
-                loaded_root,
-                manifest,
-                ledger,
-                role="spec-reviewer",
-                role_mode="integration",
-                model="test-model",
-                subject_sha256=context["subject_sha256"],
-                input_bytes=None,
-                input_tokens=None,
-                output_tokens=None,
-                duration_seconds=1,
-                retries=0,
-                reported_blocker=0,
-                reported_major=1,
-                reported_minor=0,
-                cache_status="miss",
-            )
-            loaded_root, manifest, ledger = case_pipeline.load_case(root)
-            case_pipeline.record_convergence_review(
-                loaded_root,
-                manifest,
-                ledger,
-                run_id=run_id,
-                gate_decision="revise",
-                open_blocker=0,
-                open_major=1,
-                open_minor=0,
-                evidence="reviews/integration.md",
-                findings=[{"id": "F-INT-001", "severity": "major"}],
-                impact="integration",
-                affected_blocks=["B01"],
-                semantic_ids=["SCN-B01-001"],
-            )
-            loaded_root, manifest, ledger = case_pipeline.load_case(root)
-            remediation = case_pipeline.begin_block_remediation(
-                loaded_root,
-                manifest,
-                ledger,
-                block_id="B01",
-                findings=[{"id": "F-INT-001", "severity": "major"}],
-                semantic_ids=["SCN-B01-001"],
-                evidence="reviews/integration.md",
-                reason="Open the targeted batch before the root cause is proven",
-                batch_complete=True,
-            )
+            remediation = self.begin_integration_convergence_remediation(root)
             decision = root / "decisions" / "kernel-reset.md"
             decision.parent.mkdir(exist_ok=True)
             decision.write_text(
@@ -3128,6 +3146,44 @@ class CasePipelineTests(unittest.TestCase):
                 item for item in block["remediations"] if item["id"] == remediation["id"]
             )
             self.assertEqual(superseded["status"], "retry_required")
+
+    def test_targeted_convergence_kernel_reset_closes_legacy_active_remediation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            remediation = self.begin_integration_convergence_remediation(
+                root,
+                remediation_contract=case_pipeline.REMEDIATION_CONTRACT_V1,
+            )
+            decision = root / "decisions" / "legacy-kernel-reset.md"
+            decision.parent.mkdir(exist_ok=True)
+            decision.write_text(
+                "# User decision\n\nStart one new root-cause episode.\n",
+                encoding="utf-8",
+            )
+            replace_todo(root / "kernel.md", "# Kernel\n\nApproved legacy root-cause correction")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            previous_episode = manifest["convergence"]["episode"]
+            case_pipeline.refresh_kernel(
+                loaded_root,
+                manifest,
+                ledger,
+                [],
+                change_scope="architecture",
+                invalidate_all=True,
+                reason="Close the legacy batch before the approved new episode",
+                user_decision_evidence="decisions/legacy-kernel-reset.md",
+            )
+
+            _, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(manifest["convergence"]["episode"], previous_episode + 1)
+            block = case_pipeline.blocks_by_id(ledger)["B01"]
+            self.assertIsNone(block["active_remediation"])
+            superseded = next(
+                item for item in block["remediations"] if item["id"] == remediation["id"]
+            )
+            self.assertEqual(superseded["status"], "retry_required")
+            self.assertIn("completed_at", superseded)
 
     def test_rejected_convergence_disposition_does_not_orphan_evidence_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp:

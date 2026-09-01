@@ -3923,6 +3923,21 @@ def refresh_kernel(
         raise CaseError(f"Unknown affected blocks: {', '.join(unknown)}")
     affected = downstream_closure(ledger, seeds)
 
+    active_remediations: dict[str, dict[str, Any]] = {}
+    for block_id in sorted(affected):
+        active = active_block_remediation(blocks[block_id])
+        if active is not None:
+            active_remediations[block_id] = active
+    if (
+        convergence.get("phase") == "remediation"
+        and resume_convergence_after_validation
+        and not active_remediations
+    ):
+        raise CaseError(
+            "Ending targeted convergence remediation requires an active "
+            "block remediation whose correction exposed the root cause"
+        )
+
     awaiting_local_reviews = [
         block_id
         for block_id in sorted(affected)
@@ -3945,53 +3960,49 @@ def refresh_kernel(
     if change_scope in {"semantic-crosscutting", "architecture"}:
         for block_id in sorted(affected):
             block = blocks[block_id]
-            if block.get("remediation_contract") != REMEDIATION_CONTRACT_V2:
-                continue
-            epoch = block.get("remediation_epoch", 1)
-            used = sum(
-                1
-                for remediation in block.get("remediations", [])
-                if isinstance(remediation, dict) and remediation.get("epoch", 1) == epoch
-            )
-            if used == 0:
-                continue
-            previous_resets = sum(
-                1
-                for item in manifest.get("events", [])
-                if isinstance(item, dict)
-                and item.get("kind") == "remediation_root_cause_reset"
-                and item.get("block_id") == block_id
-            )
-            if previous_resets >= 1:
-                if not isinstance(user_decision_evidence, str) or not user_decision_evidence.strip():
-                    raise CaseError(
-                        f"{block_id}: another remediation epoch reset requires explicit "
-                        "user-decision evidence; repeated kernel refresh cannot renew the "
-                        "correction budget automatically"
-                    )
-                decision_path = user_decision_evidence_file(
-                    root, user_decision_evidence.strip()
+            if block.get("remediation_contract") == REMEDIATION_CONTRACT_V2:
+                epoch = block.get("remediation_epoch", 1)
+                used = sum(
+                    1
+                    for remediation in block.get("remediations", [])
+                    if isinstance(remediation, dict)
+                    and remediation.get("epoch", 1) == epoch
                 )
-                reset_decisions[block_id] = {
-                    "ref": user_decision_evidence.strip(),
-                    "sha256": sha256(decision_path),
-                }
-            else:
-                reset_decisions[block_id] = None
-            active_id = block.get("active_remediation")
-            if isinstance(active_id, str):
-                for remediation in block.get("remediations", []):
-                    if (
-                        isinstance(remediation, dict)
-                        and remediation.get("id") == active_id
-                        and remediation.get("status") == "in_progress"
-                    ):
-                        remediation["status"] = "retry_required"
-                        remediation["completed_at"] = now_utc()
-                        break
+                if used > 0:
+                    previous_resets = sum(
+                        1
+                        for item in manifest.get("events", [])
+                        if isinstance(item, dict)
+                        and item.get("kind") == "remediation_root_cause_reset"
+                        and item.get("block_id") == block_id
+                    )
+                    if previous_resets >= 1:
+                        if (
+                            not isinstance(user_decision_evidence, str)
+                            or not user_decision_evidence.strip()
+                        ):
+                            raise CaseError(
+                                f"{block_id}: another remediation epoch reset requires "
+                                "explicit user-decision evidence; repeated kernel refresh "
+                                "cannot renew the correction budget automatically"
+                            )
+                        decision_path = user_decision_evidence_file(
+                            root, user_decision_evidence.strip()
+                        )
+                        reset_decisions[block_id] = {
+                            "ref": user_decision_evidence.strip(),
+                            "sha256": sha256(decision_path),
+                        }
+                    else:
+                        reset_decisions[block_id] = None
+                    block["remediation_epoch"] = epoch + 1
+                    root_cause_resets.append(block_id)
+
+            active = active_remediations.get(block_id)
+            if active is not None:
+                active["status"] = "retry_required"
+                active["completed_at"] = now_utc()
                 block["active_remediation"] = None
-            block["remediation_epoch"] = epoch + 1
-            root_cause_resets.append(block_id)
 
     if resume_convergence_after_validation:
         if convergence.get("phase") not in {"user-decision", "terminal"}:

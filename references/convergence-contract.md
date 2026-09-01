@@ -105,15 +105,16 @@ findings должно уменьшаться. Новый finding допусти�
 `introduced|exposed-at-changed-boundary` и severity `critical|major`; он
 останавливает automatic convergence в `user-decision`. Второй automatic
 correction batch на том же уровне запрещён. Обычная targeted remediation не
-имеет права выполнять `refresh-kernel` автоматически. Если в ходе correction
-доказано изменение kernel/scope/архитектуры, `refresh-kernel` принимает
+имеет права выполнять `refresh-kernel` автоматически. Если после открытия
+единственного correction batch доказано изменение kernel/scope/архитектуры,
+`refresh-kernel` принимает
 immutable evidence явного решения пользователя, атомарно завершает targeted
 remediation и начинает новый episode. Evidence хранится только в case-local
 `decisions/`, `sources/` или `reviews/history/`; mutable kernel/draft/block не
 могут подменить пользовательское решение. Атомарный переход из remediation
-разрешён только для `semantic-crosscutting|architecture`, чтобы активная
-block-remediation была завершена и её budget не перетёк в новый episode. Без
-такого evidence переход остаётся запрещённым.
+разрешён только для `semantic-crosscutting|architecture` и требует активной
+block-remediation; переход переводит её в `retry_required`, а её budget не
+переносится в новый episode. Без такого evidence переход остаётся запрещённым.
 
 ## Цикл исправлений
 
