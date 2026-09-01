@@ -222,14 +222,17 @@ solution-architect --role-mode risk-preflight`, запусти архитект�
    `analyzed`, затем вызови reviewer с `review_scope: targeted-remediation`.
    Reviewer получает immutable baseline/finding/coverage, проверяет finding и
    прямые регрессии и не открывает неизменённые поверхности заново.
-   Если исправление переписывает смысл блока, меняет необъявленные IDs, цель,
-   scope, публичный контракт или сквозную логику, перезапусти remediation с
-   `--full-block` и выполни полный локальный и применимые whole-case review.
+   Если исправление переписывает смысл блока или меняет необъявленные IDs,
+   используй `--full-block`; context выдаст `full-block-remediation`, а reviewer
+   проверит accepted batch, весь изменённый block delta и прямые регрессии без
+   нового поиска по неизменённой поверхности. Цель, scope, публичный контракт,
+   архитектура или сквозная логика дополнительно требуют явного impact для
+   применимых whole-case gates.
    При revmux этот пакет является единственным: после него выполняется один
    `vigers-final`, а обычный бюджет второго remediation batch не добавляется.
 6. При minor-only выполни не более одного пакетного polish-pass для этого review
    gate либо запиши остаток как `residual`; новый полный reviewer не запускай.
-7. После двух remediation batches текущего kernel epoch третий автоматический
+7. После одного remediation batch текущего kernel epoch второй автоматический
    цикл запрещён даже для нового finding ID. Агрегируй повторяющийся класс
    проблемы в root-cause kernel change с явным impact либо верни
    `user-decision`. Иначе переведи блок в `reviewed`, когда открытых принятых
@@ -330,19 +333,24 @@ solution-architect --role-mode risk-preflight`, запусти архитект�
 3. Проверь, что diagram surfaces не конфликтуют между блоками и что выбранная
    декомпозиция сохраняет сквозную логику без гигантской схемы.
 4. Не повторяй полное локальное ревью каждого блока без доказанного конфликта.
-5. Сохрани отчёт в `reviews/integration.md`. Исправь открытые принятые
-   `blocker/major`, повтори check и только затронутый review. Minor обработай
-   одним polish-pass либо оставь residual.
+5. Сохрани отчёт в `reviews/integration.md`, запиши reviewer через
+   `record-agent-run`, затем обязательно выполни `record-convergence-review`.
+   Для `revise` перечисли exact findings и impact. Исправь один принятый batch,
+   повтори checks и вызови `complete-convergence-remediation`; следующий
+   `context` будет targeted recheck, а не новым integration-аудитом.
 6. Зафиксируй gate `integration_review`, когда открытых принятых
    `blocker/major` нет; residual minor допустимы.
 7. После точечного исправления повторяй только затронутый semantic/project/
-   diagram gate. Полный integration/global review нужен лишь при изменении цели,
-   границы, публичного контракта или сквозной логики.
+   diagram gate. Locked block surfaces не исследуются заново. Полный rewind
+   допускается лишь при доказанном `kernel` impact; он требует user decision и
+   нового convergence episode.
 8. Если correction осталась targeted, после свежих integration/author/machine
    checks и projection read-back вызови `record-remediation`. Команда создаёт
-   audit receipts и переносит прежнее whole-case review coverage на новый
-   subject. При full-block/crosscutting delta перенос запрещён и нужен свежий
-   полный gate.
+   audit receipts и переносит допустимое прежнее whole-case review coverage на
+   новый subject. Пока convergence remediation открыта, gates на cursor и после
+   него намеренно не rebased: их нужно заново заработать через
+   `complete-convergence-remediation` и recheck. При full-block/crosscutting
+   delta перенос также запрещён и нужен свежий полный gate.
 
 **Выход:** документ сшит семантически, а не только редакционно.
 
@@ -369,9 +377,12 @@ solution-architect --role-mode risk-preflight`, запусти архитект�
    и применимыми project surfaces. Для любого из этих assignments выбранный
    revmux заменяет native reviewer по сквозному правилу. Не передавай прошлые
    reports.
-7. Сохрани итог в `reviews/global.md`; зафиксируй `global_review` только после
-   закрытия открытых принятых `blocker/major`. Minor-only замечания не запускают
-   второй полный global review после единственного polish-pass.
+7. Сохрани итог в `reviews/global.md`, свяжи run и coordinator disposition с
+   case convergence. Global finding по умолчанию возвращает только в global
+   targeted remediation. Возврат к integration требует явного `impact=integration`;
+   локальный finding использует affected block/semantic IDs и не переоткрывает
+   остальные блоки. Зафиксируй `global_review` после targeted recheck без
+   открытых `blocker/major`. Minor-only замечания не запускают новый review.
 
 **Выход:** глобальная логика, полнота, тестируемость и правила проекта проверены.
 
@@ -391,9 +402,10 @@ solution-architect --role-mode risk-preflight`, запусти архитект�
 3. Не требуй нового стиля от неизменяемого legacy-контракта, если проект велит
    сохранять совместимость.
 4. Верни матрицу `surface → source → pass/finding/not-applicable`.
-5. После исправлений повтори consistency-check и только затронутые проверки;
-   затем зафиксируй gate `project_conformance`. При отсутствии открытых
-   `blocker/major` residual minor не переоткрывают conformance.
+5. После finding запиши `impact=project`, исправь exact project surface,
+   повтори consistency/read-back и `complete-convergence-remediation`. Recheck
+   не переоткрывает global semantics. Затем зафиксируй gate
+   `project_conformance`; residual minor не переоткрывают conformance.
 
 **Выход:** локальные соглашения проверены независимо от общей логики.
 

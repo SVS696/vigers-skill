@@ -186,7 +186,47 @@ REMEDIATION_SCOPES = {"targeted", "full-block"}
 REMEDIATION_SEVERITIES = {"blocker", "major"}
 REMEDIATION_CONTRACT_V1 = "targeted-v1"
 REMEDIATION_CONTRACT_V2 = "batched-v2"
-MAX_REMEDIATION_BATCHES = 2
+MAX_REMEDIATION_BATCHES = 1
+LEGACY_MAX_REMEDIATION_BATCHES = 2
+CASE_CONVERGENCE_SCHEMA = 1
+CASE_CONVERGENCE_CONTRACT = "progressive-scope-lock-v1"
+MAX_STAGE_CORRECTION_BATCHES = 1
+CONVERGENCE_IMPACTS = {"block-local", "integration", "global", "project", "kernel"}
+CONVERGENCE_FINDING_ORIGINS = {
+    "introduced",
+    "exposed-at-changed-boundary",
+}
+WHOLE_CASE_REVIEW_MODES = {
+    "integration",
+    "global",
+    "final",
+    "project-conformance",
+}
+CONVERGENCE_REVIEW_GATES = {
+    "integration_review",
+    "global_review",
+    "project_conformance",
+}
+CONVERGENCE_PHASES = {
+    "blocks",
+    "integration",
+    "global",
+    "final",
+    "project",
+    "awaiting-disposition",
+    "remediation",
+    "terminal",
+    "user-decision",
+}
+BLOCK_REVIEW_CONVERGENCE_PHASES = {
+    "unreviewed",
+    "awaiting-disposition",
+    "remediation",
+    "changed-boundary",
+    "minor-polish",
+    "stable",
+    "user-decision",
+}
 AGENT_RUN_STATUSES = {"completed", "degraded", "failed", "timed_out"}
 AGENT_SUPERVISOR_CONTRACT = "one-retry-v1"
 RECOVERY_STATUSES = {"active", "complete", "cancelled"}
@@ -1574,6 +1614,299 @@ def required_gates(manifest: dict[str, Any]) -> set[str]:
     return required
 
 
+def convergence_review_plan(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return the finite whole-case reviewer sequence for the bound assurance."""
+    assurance = assurance_level(manifest)
+    if assurance == "lite":
+        return []
+    if assurance == "standard":
+        return [
+            {
+                "role_mode": "final",
+                "covered_gates": list(RECOVERY_COMBINED_GATES),
+            }
+        ]
+    mapping = (
+        ("integration", "integration_review"),
+        ("global", "global_review"),
+        ("project-conformance", "project_conformance"),
+    )
+    return [
+        {"role_mode": role_mode, "covered_gates": [gate_name]}
+        for role_mode, gate_name in mapping
+        if manifest.get("gates", {}).get(gate_name, {}).get("status")
+        != "not_required"
+    ]
+
+
+def convergence_phase_for_mode(role_mode: str) -> str:
+    """Map reviewer role mode to a stable case-level phase name."""
+    return {
+        "integration": "integration",
+        "global": "global",
+        "final": "final",
+        "project-conformance": "project",
+    }[role_mode]
+
+
+def initial_convergence_state(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Create the executable case-level convergence state."""
+    plan = convergence_review_plan(manifest)
+    return {
+        "schema": CASE_CONVERGENCE_SCHEMA,
+        "contract": CASE_CONVERGENCE_CONTRACT,
+        "episode": 1,
+        "phase": "blocks" if plan else "terminal",
+        "plan": plan,
+        "cursor": 0,
+        "correction_batches": 0,
+        "max_correction_batches_per_stage": MAX_STAGE_CORRECTION_BATCHES,
+        "stage_corrections": {
+            str(item["role_mode"]): 0
+            for item in plan
+        },
+        "active_run_id": None,
+        "active_role_mode": None,
+        "active_subject_sha256": None,
+        "pending_review": None,
+        "attempts": [],
+        "decisions": [],
+        "migrated_from_legacy": False,
+    }
+
+
+def convergence_item_complete(
+    manifest: dict[str, Any],
+    item: dict[str, Any],
+) -> bool:
+    """Return whether every gate covered by one reviewer item is closed."""
+    return all(
+        manifest.get("gates", {}).get(gate_name, {}).get("status")
+        in {"pass", "not_required"}
+        for gate_name in item.get("covered_gates", [])
+    )
+
+
+def legacy_convergence_state(
+    root: Path,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    """Conservatively derive a safe state for cases created before this contract."""
+    state = initial_convergence_state(manifest)
+    state["migrated_from_legacy"] = True
+    plan = state["plan"]
+    cursor = 0
+    while cursor < len(plan) and convergence_item_complete(manifest, plan[cursor]):
+        cursor += 1
+    state["cursor"] = cursor
+    if cursor >= len(plan):
+        state["phase"] = "terminal"
+        return state
+
+    prior_upper_work = bool(manifest.get("gate_history")) or any(
+        manifest.get("gates", {}).get(gate_name, {}).get("status") == "pass"
+        for gate_name in REVISIONED_REVIEW_GATES
+    )
+    relative = manifest.get("artifacts", {}).get("agent_ledger")
+    if isinstance(relative, str):
+        try:
+            payload = read_json(case_file(root, relative))
+        except CaseError:
+            payload = {}
+        runs = payload.get("runs", []) if isinstance(payload, dict) else []
+        prior_upper_work = prior_upper_work or any(
+            isinstance(run, dict)
+            and run.get("role") == "spec-reviewer"
+            and run.get("role_mode") in WHOLE_CASE_REVIEW_MODES
+            for run in runs
+        )
+    if prior_upper_work:
+        state["phase"] = "user-decision"
+        state["decisions"].append(
+            {
+                "at": now_utc(),
+                "kind": "legacy-upper-review-history",
+                "reason": (
+                    "Legacy case already contains whole-case review work; automatic "
+                    "budget renewal is forbidden"
+                ),
+                "evidence": None,
+                "evidence_sha256": None,
+            }
+        )
+    return state
+
+
+def ensure_convergence_state(
+    root: Path,
+    manifest: dict[str, Any],
+) -> dict[str, Any]:
+    """Return current convergence state, deriving a conservative legacy migration."""
+    state = manifest.get("convergence")
+    if state is None:
+        state = legacy_convergence_state(root, manifest)
+        manifest["convergence"] = state
+    if not isinstance(state, dict):
+        raise CaseError("manifest convergence must be an object")
+    return state
+
+
+def convergence_state_errors(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    final: bool,
+) -> list[str]:
+    """Validate the executable case-level convergence state and immutable receipts."""
+    try:
+        state = ensure_convergence_state(root, manifest)
+    except CaseError as exc:
+        return [str(exc)]
+    errors: list[str] = []
+    if state.get("schema") != CASE_CONVERGENCE_SCHEMA:
+        errors.append("convergence schema is invalid")
+    if state.get("contract") != CASE_CONVERGENCE_CONTRACT:
+        errors.append("convergence contract is invalid")
+    if state.get("phase") not in CONVERGENCE_PHASES:
+        errors.append("convergence phase is invalid")
+    if state.get("max_correction_batches_per_stage") != MAX_STAGE_CORRECTION_BATCHES:
+        errors.append("convergence stage correction budget differs from bound policy")
+    batches = state.get("correction_batches")
+    if not isinstance(batches, int) or isinstance(batches, bool) or batches < 0:
+        errors.append("convergence correction batch count is invalid")
+    stage_corrections = state.get("stage_corrections")
+    if not isinstance(stage_corrections, dict) or any(
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or not (0 <= value <= MAX_STAGE_CORRECTION_BATCHES)
+        for value in stage_corrections.values()
+    ):
+        errors.append("convergence stage correction counts are invalid")
+    plan = state.get("plan")
+    if not isinstance(plan, list) or any(not isinstance(item, dict) for item in plan):
+        errors.append("convergence plan is invalid")
+        plan = []
+    cursor = state.get("cursor")
+    if not isinstance(cursor, int) or isinstance(cursor, bool) or not (
+        0 <= cursor <= len(plan)
+    ):
+        errors.append("convergence cursor is invalid")
+    attempts = state.get("attempts")
+    if not isinstance(attempts, list):
+        errors.append("convergence attempts must be an array")
+        attempts = []
+    for index, attempt in enumerate(attempts, start=1):
+        if not isinstance(attempt, dict):
+            errors.append(f"convergence attempt {index} must be an object")
+            continue
+        evidence = attempt.get("evidence")
+        expected = attempt.get("evidence_sha256")
+        if not isinstance(evidence, str) or not isinstance(expected, str):
+            errors.append(f"convergence attempt {index} has incomplete evidence binding")
+            continue
+        try:
+            path = case_file(root, evidence)
+            if not path.is_file() or sha256(path) != expected:
+                errors.append(f"convergence attempt {index} evidence changed after binding")
+        except CaseError as exc:
+            errors.append(f"convergence attempt {index}: {exc}")
+    decisions = state.get("decisions")
+    if not isinstance(decisions, list):
+        errors.append("convergence decisions must be an array")
+    else:
+        for index, decision in enumerate(decisions, start=1):
+            if not isinstance(decision, dict):
+                errors.append(f"convergence decision {index} must be an object")
+                continue
+            evidence = decision.get("evidence")
+            expected = decision.get("evidence_sha256")
+            if evidence is None and expected is None:
+                continue
+            if not isinstance(evidence, str) or not isinstance(expected, str):
+                errors.append(f"convergence decision {index} has incomplete evidence binding")
+                continue
+            try:
+                path = case_file(root, evidence)
+                if not path.is_file() or sha256(path) != expected:
+                    errors.append(f"convergence decision {index} evidence changed after binding")
+            except CaseError as exc:
+                errors.append(f"convergence decision {index}: {exc}")
+    if state.get("phase") == "awaiting-disposition" and not isinstance(
+        state.get("active_run_id"), str
+    ):
+        errors.append("awaiting-disposition convergence has no active run")
+    if state.get("phase") != "awaiting-disposition" and state.get("active_run_id") is not None:
+        errors.append("convergence active run exists outside awaiting-disposition")
+    pending_review = state.get("pending_review")
+    if pending_review is not None:
+        if not isinstance(pending_review, dict):
+            errors.append("convergence pending review must be an object or null")
+        else:
+            target_cursor = pending_review.get("target_cursor")
+            trigger_cursor = pending_review.get("trigger_cursor")
+            recheck_modes = pending_review.get("recheck_role_modes")
+            completed_modes = pending_review.get("completed_recheck_role_modes")
+            if not (
+                isinstance(target_cursor, int)
+                and not isinstance(target_cursor, bool)
+                and isinstance(trigger_cursor, int)
+                and not isinstance(trigger_cursor, bool)
+                and 0 <= target_cursor <= trigger_cursor < len(plan)
+            ):
+                errors.append("convergence pending review has invalid cursor bounds")
+            else:
+                expected_modes = [
+                    str(plan[index].get("role_mode"))
+                    for index in range(target_cursor, trigger_cursor + 1)
+                ]
+                if recheck_modes != expected_modes:
+                    errors.append("convergence pending recheck chain is invalid")
+                if pending_review.get("target_role_mode") != expected_modes[0]:
+                    errors.append("convergence pending target role does not match its cursor")
+                if pending_review.get("trigger_role_mode") != expected_modes[-1]:
+                    errors.append("convergence pending trigger role does not match its cursor")
+                cursor_value = (
+                    cursor
+                    if isinstance(cursor, int) and not isinstance(cursor, bool)
+                    else target_cursor
+                )
+                completed_count = max(
+                    0,
+                    min(cursor_value, trigger_cursor) - target_cursor,
+                )
+                if completed_modes != expected_modes[:completed_count]:
+                    errors.append("convergence completed recheck chain is invalid")
+            for label, ref_key, sha_key in (
+                ("finding", "evidence", "evidence_sha256"),
+                (
+                    "remediation",
+                    "remediation_evidence",
+                    "remediation_evidence_sha256",
+                ),
+            ):
+                relative = pending_review.get(ref_key)
+                expected = pending_review.get(sha_key)
+                if relative is None and expected is None and label == "remediation":
+                    continue
+                if not isinstance(relative, str) or not isinstance(expected, str):
+                    errors.append(
+                        f"convergence pending {label} evidence binding is incomplete"
+                    )
+                    continue
+                try:
+                    path = case_file(root, relative)
+                    if not path.is_file() or sha256(path) != expected:
+                        errors.append(
+                            f"convergence pending {label} evidence changed after binding"
+                        )
+                except CaseError as exc:
+                    errors.append(f"convergence pending {label} evidence: {exc}")
+    if final and state.get("phase") != "terminal":
+        errors.append(f"Case convergence is {state.get('phase')}, not terminal")
+    return errors
+
+
 def init_case(
     root: Path,
     *,
@@ -1823,6 +2156,7 @@ def init_case(
     )
     atomic_json(root / WORKING_PROJECTION_JSON, projection_state)
 
+    gates = initial_gates(mode, selected_assurance)
     manifest = {
         "schema": SCHEMA_VERSION,
         "case_id": case_id,
@@ -1870,7 +2204,7 @@ def init_case(
             "architecture_conformance": "reviews/architecture.md",
             "consistency_report": "consistency.json",
         },
-        "gates": initial_gates(mode, selected_assurance),
+        "gates": gates,
         "gate_history": {},
         "events": [
             event(
@@ -1889,6 +2223,7 @@ def init_case(
             )
         ],
     }
+    manifest["convergence"] = initial_convergence_state(manifest)
     ledger = {"schema": SCHEMA_VERSION, "blocks": []}
     automation_ledger = initialize_automation_timing(
         case_id=case_id,
@@ -2788,6 +3123,45 @@ def record_agent_run(
     ledger_errors = validate_agent_ledger(payload, case_id=str(manifest.get("case_id")))
     if ledger_errors:
         raise CaseError("agent-ledger.json is invalid: " + "; ".join(ledger_errors))
+    convergence_assignment_data: dict[str, Any] | None = None
+    block_assignment_data: dict[str, Any] | None = None
+    block_assignment_target: dict[str, Any] | None = None
+    if (
+        role.strip() == "spec-reviewer"
+        and role_mode.strip() in WHOLE_CASE_REVIEW_MODES
+        and active_bounded_recovery(manifest) is None
+    ):
+        convergence_assignment_data = convergence_assignment(
+            root,
+            manifest,
+            ledger,
+            role_mode=role_mode.strip(),
+        )
+        if normalized_subject != convergence_assignment_data["subject_sha256"]:
+            raise CaseError(
+                "Whole-case reviewer subject differs from the current convergence assignment"
+            )
+    if (
+        role.strip() == "spec-reviewer"
+        and role_mode.strip() == "block"
+        and active_bounded_recovery(manifest) is None
+    ):
+        matches = [
+            block
+            for block in ledger.get("blocks", [])
+            if isinstance(block, dict)
+            and block_review_subject_hash(root, manifest, block) == normalized_subject
+        ]
+        if len(matches) != 1:
+            raise CaseError(
+                "Block reviewer subject does not resolve to exactly one current block"
+            )
+        block_assignment_target = matches[0]
+        block_assignment_data = block_review_assignment(
+            root,
+            manifest,
+            block_assignment_target,
+        )
     assignment = (role.strip(), role_mode.strip(), normalized_subject)
     attempts = 0
     terminal = False
@@ -2848,8 +3222,39 @@ def record_agent_run(
         artifacts["output"] = agent_artifact_binding(root, output_artifact)
     if artifacts:
         run["artifacts"] = artifacts
+    if convergence_assignment_data is not None:
+        run["convergence"] = {
+            "contract": CASE_CONVERGENCE_CONTRACT,
+            "episode": convergence_assignment_data["episode"],
+            "attempt_phase": convergence_assignment_data["attempt_phase"],
+            "covered_gates": convergence_assignment_data["covered_gates"],
+        }
+    if block_assignment_data is not None and block_assignment_target is not None:
+        run["block_convergence"] = {
+            "contract": "progressive-block-lock-v1",
+            "block_id": block_assignment_target["id"],
+            "attempt_phase": block_assignment_data["attempt_phase"],
+            "review_scope": block_assignment_data["review_scope"],
+        }
     payload["runs"].append(run)
     atomic_json(path, payload)
+    if convergence_assignment_data is not None and status in {"completed", "degraded"}:
+        state = ensure_convergence_state(root, manifest)
+        state["phase"] = "awaiting-disposition"
+        state["active_run_id"] = run["run_id"]
+        state["active_role_mode"] = run["role_mode"]
+        state["active_subject_sha256"] = normalized_subject
+    if (
+        block_assignment_data is not None
+        and block_assignment_target is not None
+        and status in {"completed", "degraded"}
+    ):
+        state = ensure_block_review_convergence(block_assignment_target)
+        state["phase"] = "awaiting-disposition"
+        state["active_run_id"] = run["run_id"]
+        state["active_attempt_phase"] = block_assignment_data["attempt_phase"]
+        state["active_review_scope"] = block_assignment_data["review_scope"]
+        state["active_subject_sha256"] = normalized_subject
     manifest["events"].append(
         event(
             "agent_run_recorded",
@@ -3067,6 +3472,50 @@ def blocks_by_id(ledger: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return result
 
 
+def initial_block_review_convergence() -> dict[str, Any]:
+    """Create one progressive local-review lock for a semantic block."""
+    return {
+        "schema": 1,
+        "contract": "progressive-block-lock-v1",
+        "phase": "unreviewed",
+        "active_run_id": None,
+        "active_attempt_phase": None,
+        "active_review_scope": None,
+        "active_subject_sha256": None,
+        "correction_batches": 0,
+        "max_correction_batches": 1,
+        "minor_polish_batches": 0,
+        "max_minor_polish_batches": 1,
+        "pending_minor_evidence": None,
+        "pending_minor_evidence_sha256": None,
+        "legacy_compatibility": False,
+    }
+
+
+def ensure_block_review_convergence(block: dict[str, Any]) -> dict[str, Any]:
+    """Derive a conservative local-review lock for legacy blocks."""
+    state = block.get("review_convergence")
+    if state is None:
+        state = initial_block_review_convergence()
+        state["legacy_compatibility"] = True
+        history = block.get("review_history", [])
+        if isinstance(history, list) and history:
+            if active_block_remediation(block) is not None:
+                state["phase"] = "remediation"
+                state["correction_batches"] = 1
+            elif block.get("status") in {"reviewed", "integrated"}:
+                state["phase"] = "stable"
+            else:
+                state["phase"] = "changed-boundary"
+        block["review_convergence"] = state
+    if not isinstance(state, dict):
+        raise CaseError(f"{block.get('id')}: review_convergence must be an object")
+    defaults = initial_block_review_convergence()
+    for key, value in defaults.items():
+        state.setdefault(key, value)
+    return state
+
+
 def ensure_acyclic(ledger: dict[str, Any]) -> None:
     """Reject missing dependencies and dependency cycles."""
     blocks = blocks_by_id(ledger)
@@ -3155,6 +3604,7 @@ def add_block(
         "remediation_epoch": 1,
         "remediations": [],
         "active_remediation": None,
+        "review_convergence": initial_block_review_convergence(),
         "status_before_stale": None,
         "note": None,
         "updated_at": now_utc(),
@@ -3368,6 +3818,51 @@ def refresh_kernel(
     if current_hash == manifest["kernel"]["sha256"]:
         return []
 
+    convergence = ensure_convergence_state(root, manifest)
+    current_episode = convergence.get("episode")
+    current_attempts = [
+        attempt
+        for attempt in convergence.get("attempts", [])
+        if isinstance(attempt, dict) and attempt.get("episode") == current_episode
+    ]
+    resume_convergence_after_validation = False
+    if convergence.get("phase") == "awaiting-disposition":
+        raise CaseError(
+            "Dispose the active whole-case review before refreshing the kernel"
+        )
+    if convergence.get("phase") == "remediation":
+        raise CaseError(
+            "Targeted convergence remediation cannot refresh the kernel. A proven "
+            "kernel/scope/architecture change requires user-decision and a new episode"
+        )
+    elif (
+        current_attempts
+        or convergence.get("phase") == "user-decision"
+        or (
+            convergence.get("phase") == "terminal"
+            and (
+                bool(convergence.get("attempts"))
+                or convergence.get("migrated_from_legacy") is True
+            )
+        )
+    ):
+        if not isinstance(user_decision_evidence, str) or not user_decision_evidence.strip():
+            raise CaseError(
+                "Kernel refresh after whole-case review requires explicit user-decision "
+                "evidence and a new convergence episode"
+            )
+        decision_path = case_file(root, user_decision_evidence.strip())
+        if not artifact_ready(decision_path):
+            raise CaseError(
+                "User-decision evidence is missing or incomplete: "
+                f"{user_decision_evidence}"
+            )
+        if not isinstance(reason, str) or not reason.strip():
+            raise CaseError(
+                "Kernel refresh starting a new convergence episode requires --reason"
+            )
+        resume_convergence_after_validation = True
+
     blocks = blocks_by_id(ledger)
     legacy_refresh = change_scope is None
     if change_scope is not None and change_scope not in CHANGE_SCOPES:
@@ -3395,6 +3890,26 @@ def refresh_kernel(
     if unknown:
         raise CaseError(f"Unknown affected blocks: {', '.join(unknown)}")
     affected = downstream_closure(ledger, seeds)
+
+    awaiting_local_reviews = [
+        block_id
+        for block_id in sorted(affected)
+        if ensure_block_review_convergence(blocks[block_id]).get("phase")
+        == "awaiting-disposition"
+    ]
+    if awaiting_local_reviews:
+        if not isinstance(user_decision_evidence, str) or not user_decision_evidence.strip():
+            raise CaseError(
+                "Kernel refresh cannot discard active block review disposition for: "
+                + ", ".join(awaiting_local_reviews)
+                + "; explicit user-decision evidence is required"
+            )
+        decision_path = case_file(root, user_decision_evidence.strip())
+        if not artifact_ready(decision_path):
+            raise CaseError(
+                "User-decision evidence is missing or incomplete: "
+                f"{user_decision_evidence}"
+            )
 
     root_cause_resets: list[str] = []
     reset_decisions: dict[str, dict[str, str] | None] = {}
@@ -3437,8 +3952,37 @@ def refresh_kernel(
                 }
             else:
                 reset_decisions[block_id] = None
+            active_id = block.get("active_remediation")
+            if isinstance(active_id, str):
+                for remediation in block.get("remediations", []):
+                    if (
+                        isinstance(remediation, dict)
+                        and remediation.get("id") == active_id
+                        and remediation.get("status") == "in_progress"
+                    ):
+                        remediation["status"] = "retry_required"
+                        remediation["completed_at"] = now_utc()
+                        break
+                block["active_remediation"] = None
             block["remediation_epoch"] = epoch + 1
             root_cause_resets.append(block_id)
+
+    if resume_convergence_after_validation:
+        if convergence.get("phase") not in {"user-decision", "terminal"}:
+            convergence["phase"] = "user-decision"
+            convergence["active_run_id"] = None
+            convergence["active_role_mode"] = None
+            convergence["active_subject_sha256"] = None
+            convergence["pending_review"] = None
+        resume_convergence(
+            root,
+            manifest,
+            ledger,
+            evidence=str(user_decision_evidence),
+            reason=str(reason),
+            save=False,
+        )
+        convergence = ensure_convergence_state(root, manifest)
 
     previous_assurance = assurance_level(manifest)
     escalated_assurance = previous_assurance
@@ -3468,12 +4012,31 @@ def refresh_kernel(
                 reason=reason.strip() if isinstance(reason, str) and reason.strip() else None,
             )
         )
+        convergence["plan"] = convergence_review_plan(manifest)
+        convergence["stage_corrections"] = {
+            str(item["role_mode"]): 0
+            for item in convergence["plan"]
+        }
+        convergence["cursor"] = 0
+        if convergence.get("phase") != "remediation":
+            convergence["phase"] = "blocks" if convergence["plan"] else "terminal"
 
     manifest["kernel"]["revision"] += 1
     manifest["kernel"]["sha256"] = current_hash
     stale: list[str] = []
     for block_id in sorted(affected):
         block = blocks[block_id]
+        local_convergence = ensure_block_review_convergence(block)
+        if block.get("review_history"):
+            local_convergence["phase"] = "changed-boundary"
+        else:
+            local_convergence["phase"] = "unreviewed"
+        local_convergence["active_run_id"] = None
+        local_convergence["active_attempt_phase"] = None
+        local_convergence["active_review_scope"] = None
+        local_convergence["active_subject_sha256"] = None
+        local_convergence["pending_minor_evidence"] = None
+        local_convergence["pending_minor_evidence_sha256"] = None
         risk_preflight = block.get("risk_preflight")
         if isinstance(risk_preflight, dict) and risk_preflight.get("status") == "pass":
             risk_preflight["status"] = "stale"
@@ -3619,7 +4182,13 @@ def export_delivery_handoff(
     output: Path,
 ) -> dict[str, Any]:
     """Export only a final-green Vigers revision for implementation."""
-    errors = validate_case(root, manifest, ledger, final=True)
+    errors = validate_case(
+        root,
+        manifest,
+        ledger,
+        final=True,
+        final_timing=False,
+    )
     if errors:
         raise CaseError(
             "Delivery handoff requires final-green Vigers state: " + "; ".join(errors)
@@ -4109,8 +4678,12 @@ def risk_review_errors(
                 errors.append("review_agent_run does not match the current block review subject")
         except CaseError as exc:
             errors.append(str(exc))
+    local_convergence = ensure_block_review_convergence(block)
+    active_scope = local_convergence.get("active_review_scope")
     remediation = active_block_remediation(block)
-    if remediation is not None and remediation.get("scope") == "targeted":
+    if (isinstance(active_scope, str) and active_scope != "full-block") or (
+        remediation is not None and active_scope is None
+    ):
         return errors
     scope_match = re.search(r"(?m)^\s*review_scope\s*:\s*(\S+)\s*$", text)
     if not scope_match or scope_match.group(1) != "full-block":
@@ -4144,8 +4717,12 @@ def risk_review_open_findings(
     report_path: Path,
 ) -> list[str]:
     """Return finding ids from a full risk sweep that still require disposition."""
+    local_convergence = ensure_block_review_convergence(block)
+    active_scope = local_convergence.get("active_review_scope")
     remediation = active_block_remediation(block)
-    if remediation is not None and remediation.get("scope") == "targeted":
+    if (isinstance(active_scope, str) and active_scope != "full-block") or (
+        remediation is not None and active_scope is None
+    ):
         return []
     outcomes = re.findall(
         r"(?m)^\s*risk_surface\s*:\s*[a-z][a-z0-9-]{1,63}\s*=\s*(\S+)\s*$",
@@ -4179,6 +4756,86 @@ def block_review_subject_hash(
         digest.update(relative.encode("utf-8"))
         digest.update(path.read_bytes() if path.is_file() else b"<missing>")
     return digest.hexdigest()
+
+
+def block_review_assignment(
+    root: Path,
+    manifest: dict[str, Any],
+    block: dict[str, Any],
+) -> dict[str, Any]:
+    """Return the only legal next local-review assignment for one block."""
+    state = ensure_block_review_convergence(block)
+    phase = state.get("phase")
+    block_id = str(block.get("id"))
+    if phase == "awaiting-disposition":
+        raise CaseError(f"{block_id}: dispose the active block review before another run")
+    if phase == "user-decision":
+        raise CaseError(
+            f"{block_id}: local review convergence is stopped for user decision"
+        )
+    if phase == "stable":
+        raise CaseError(
+            f"{block_id}: block review coverage is stable; continue to integration"
+        )
+    if block.get("status") != "analyzed":
+        raise CaseError(f"{block_id}: block review requires analyzed status")
+
+    remediation = active_block_remediation(block)
+    bound_evidence: list[str] = []
+    new_findings_policy = "initial-complete-batch"
+    if remediation is not None:
+        review_scope = (
+            "targeted-remediation"
+            if remediation.get("scope") == "targeted"
+            else "full-block-remediation"
+        )
+        attempt_phase = "final"
+        new_findings_policy = "introduced-or-exposed-only"
+    elif phase == "minor-polish":
+        review_scope = "minor-polish"
+        attempt_phase = "final"
+        evidence = state.get("pending_minor_evidence")
+        if not isinstance(evidence, str):
+            raise CaseError(f"{block_id}: minor polish has no immutable finding evidence")
+        bound_evidence.append(evidence)
+        new_findings_policy = "introduced-or-exposed-only"
+    elif phase == "changed-boundary":
+        review_scope = "changed-boundary"
+        attempt_phase = "final"
+        history = block.get("review_history", [])
+        latest = history[-1] if isinstance(history, list) and history else None
+        evidence = latest.get("evidence") if isinstance(latest, dict) else None
+        if not isinstance(evidence, str):
+            raise CaseError(
+                f"{block_id}: changed-boundary review has no prior coverage evidence"
+            )
+        bound_evidence.append(evidence)
+        new_findings_policy = "introduced-or-exposed-at-changed-boundary"
+    elif phase == "unreviewed":
+        if block.get("review_history"):
+            raise CaseError(
+                f"{block_id}: existing review coverage cannot reopen as full-block"
+            )
+        review_scope = "full-block"
+        attempt_phase = "initial"
+    elif phase == "remediation":
+        raise CaseError(f"{block_id}: local remediation has no active correction record")
+    else:
+        raise CaseError(f"{block_id}: invalid local review convergence phase {phase!r}")
+
+    return {
+        "contract": "progressive-block-lock-v1",
+        "phase": phase,
+        "attempt_phase": attempt_phase,
+        "review_scope": review_scope,
+        "subject_sha256": block_review_subject_hash(root, manifest, block),
+        "bound_evidence": bound_evidence,
+        "new_findings_policy": new_findings_policy,
+        "correction_batches": state.get("correction_batches"),
+        "max_correction_batches": state.get("max_correction_batches"),
+        "minor_polish_batches": state.get("minor_polish_batches"),
+        "max_minor_polish_batches": state.get("max_minor_polish_batches"),
+    }
 
 
 def record_block_review_revision(
@@ -4245,6 +4902,23 @@ def parse_remediation_findings(values: list[str]) -> list[dict[str, str]]:
     return findings
 
 
+def parse_convergence_finding_origins(values: list[str]) -> dict[str, str]:
+    """Parse FINDING_ID=introduced|exposed-at-changed-boundary recheck origins."""
+    origins: dict[str, str] = {}
+    for value in values:
+        finding_id, separator, origin = value.rpartition("=")
+        if not separator or not FINDING_ID_RE.fullmatch(finding_id):
+            raise CaseError(
+                "Each --finding-origin must use FINDING_ID=origin with a stable id"
+            )
+        if origin not in CONVERGENCE_FINDING_ORIGINS:
+            raise CaseError(f"Invalid convergence finding origin for {finding_id}: {origin}")
+        if finding_id in origins:
+            raise CaseError(f"Duplicate convergence finding origin: {finding_id}")
+        origins[finding_id] = origin
+    return origins
+
+
 def begin_block_remediation(
     root: Path,
     manifest: dict[str, Any],
@@ -4262,6 +4936,26 @@ def begin_block_remediation(
     if active_bounded_recovery(manifest) is not None:
         raise CaseError(
             "Semantic remediation requires stopping bounded recovery and recording a new decision"
+        )
+    convergence = ensure_convergence_state(root, manifest)
+    if convergence.get("phase") == "user-decision":
+        raise CaseError(
+            "Case convergence is stopped for user decision; automatic remediation is forbidden"
+        )
+    if convergence.get("phase") == "awaiting-disposition":
+        raise CaseError(
+            "Dispose the active whole-case review before starting remediation"
+        )
+    current_attempts = [
+        attempt
+        for attempt in convergence.get("attempts", [])
+        if isinstance(attempt, dict)
+        and attempt.get("episode") == convergence.get("episode")
+    ]
+    if current_attempts and convergence.get("phase") != "remediation":
+        raise CaseError(
+            "Whole-case remediation requires a recorded revise disposition in the "
+            "current convergence episode"
         )
     ensure_kernel_synced(root, manifest)
     blocks = blocks_by_id(ledger)
@@ -4304,6 +4998,32 @@ def begin_block_remediation(
     if scope == "targeted" and not unique_semantic_ids:
         raise CaseError("Targeted remediation requires at least one --semantic-id")
 
+    if convergence.get("phase") == "remediation":
+        pending_review = convergence.get("pending_review")
+        if not isinstance(pending_review, dict):
+            raise CaseError("Convergence remediation has no exact pending review scope")
+        declared_blocks = set(pending_review.get("affected_blocks", []))
+        if declared_blocks and block_id not in declared_blocks:
+            raise CaseError(
+                f"{block_id}: outside convergence affected block scope"
+            )
+        declared_findings = {
+            str(item.get("id"))
+            for item in pending_review.get("findings", [])
+            if isinstance(item, dict)
+        }
+        if declared_findings and not finding_ids.issubset(declared_findings):
+            raise CaseError(
+                "Block remediation contains findings outside the convergence batch"
+            )
+        declared_semantic_ids = set(pending_review.get("semantic_ids", []))
+        if declared_semantic_ids and not set(unique_semantic_ids).issubset(
+            declared_semantic_ids
+        ):
+            raise CaseError(
+                "Block remediation expands beyond convergence semantic IDs"
+            )
+
     evidence_path = case_file(root, evidence)
     if not artifact_ready(evidence_path):
         raise CaseError(f"Remediation evidence is missing or incomplete: {evidence}")
@@ -4328,6 +5048,61 @@ def begin_block_remediation(
                 f"{block_id}: initial risk review is incomplete: "
                 + "; ".join(initial_review_errors)
             )
+    local_convergence = ensure_block_review_convergence(block)
+    if local_convergence.get("phase") == "user-decision":
+        raise CaseError(
+            f"{block_id}: local review convergence is stopped for user decision"
+        )
+    active_local_run = local_convergence.get("active_run_id")
+    if isinstance(active_local_run, str):
+        run = agent_run_by_id(root, manifest, active_local_run)
+        if run.get("status") != "completed":
+            local_convergence["phase"] = "user-decision"
+            manifest["events"].append(
+                event(
+                    "block_review_user_decision",
+                    block_id=block_id,
+                    run_id=active_local_run,
+                    reason="degraded local review cannot open automatic remediation",
+                )
+            )
+            save_case(root, manifest, ledger)
+            raise CaseError(
+                f"{block_id}: degraded local review requires user decision"
+            )
+        reported = run.get("findings", {})
+        accepted_by_severity = {
+            severity: sum(
+                1 for item in normalized_findings if item["severity"] == severity
+            )
+            for severity in REMEDIATION_SEVERITIES
+        }
+        for severity, accepted in accepted_by_severity.items():
+            available = reported.get(severity, 0) if isinstance(reported, dict) else 0
+            if not isinstance(available, int) or accepted > available:
+                raise CaseError(
+                    f"{block_id}: accepted {severity} findings exceed active review counts"
+                )
+        if local_convergence.get("active_attempt_phase") == "final":
+            local_convergence["phase"] = "user-decision"
+            manifest["events"].append(
+                event(
+                    "block_review_user_decision",
+                    block_id=block_id,
+                    run_id=active_local_run,
+                    review_scope=local_convergence.get("active_review_scope"),
+                    finding_ids=sorted(finding_ids),
+                    reason=(
+                        "blocker or major remained after the one bounded local correction"
+                    ),
+                )
+            )
+            save_case(root, manifest, ledger)
+            raise CaseError(
+                f"{block_id}: targeted recheck cannot open another automatic correction; "
+                "record user decision"
+            )
+        local_convergence["correction_batches"] = 1
     projection_errors = working_projection_errors(
         root,
         manifest,
@@ -4377,10 +5152,10 @@ def begin_block_remediation(
         and previous.get("epoch", 1) == remediation_epoch
     )
     cycle = same_finding_cycles + 1
-    if remediation_contract != REMEDIATION_CONTRACT_V2 and cycle > 2:
+    if remediation_contract != REMEDIATION_CONTRACT_V2 and cycle > 1:
         raise CaseError(
-            "The same blocker/major already used two targeted correction cycles; "
-            "record user-decision instead of starting a third"
+            "The blocker/major already used one targeted correction cycle; "
+            "record user-decision instead of starting another"
         )
 
     revision = len(remediations) + 1
@@ -4429,6 +5204,11 @@ def begin_block_remediation(
     }
     remediations.append(remediation)
     block["active_remediation"] = remediation_id
+    local_convergence["phase"] = "remediation"
+    local_convergence["active_run_id"] = None
+    local_convergence["active_attempt_phase"] = None
+    local_convergence["active_review_scope"] = None
+    local_convergence["active_subject_sha256"] = None
     block["status"] = "in_progress"
     block["review_sha256"] = None
     block["note"] = f"{scope} remediation {remediation_id}: {reason.strip()}"
@@ -4558,6 +5338,66 @@ def completed_agent_run_errors(
     return [f"agent run {run_id} is not recorded"]
 
 
+def minor_polish_review_errors(
+    root: Path,
+    manifest: dict[str, Any],
+    report_path: Path,
+) -> list[str]:
+    """Validate a passed minor-only review before a non-remediation polish pass."""
+    text = report_path.read_text(encoding="utf-8")
+    errors: list[str] = []
+    counts: dict[str, int] = {}
+    for field in ("open_blocker", "open_major", "open_minor"):
+        raw = report_scalar(text, field)
+        try:
+            counts[field] = int(raw) if raw is not None else -1
+        except ValueError:
+            counts[field] = -1
+    if counts.get("open_blocker") != 0 or counts.get("open_major") != 0:
+        errors.append("minor polish requires zero open blocker and major findings")
+    if counts.get("open_minor", 0) <= 0:
+        errors.append("minor polish requires at least one open minor finding")
+    if report_scalar(text, "gate_recommendation") != "pass":
+        errors.append("minor polish requires gate_recommendation: pass")
+    if report_scalar(text, "decision") != "pass":
+        errors.append("minor polish requires decision: pass")
+
+    run_id = report_scalar(text, "review_agent_run")
+    subject = report_scalar(text, "review_subject_sha256")
+    if run_id is None or not AGENT_RUN_ID_RE.fullmatch(run_id):
+        errors.append("minor polish review requires a valid review_agent_run")
+        return errors
+    if subject is None or not SHA256_RE.fullmatch(subject):
+        errors.append("minor polish review requires review_subject_sha256")
+        return errors
+    try:
+        run = agent_run_by_id(root, manifest, run_id)
+    except CaseError as exc:
+        errors.append(str(exc))
+        return errors
+    findings = run.get("findings")
+    if (
+        run.get("role") != "spec-reviewer"
+        or run.get("role_mode") != "block"
+        or run.get("subject_sha256") != subject
+        or run.get("status") != "completed"
+    ):
+        errors.append("minor polish review run does not match the declared block subject")
+    if not isinstance(findings, dict):
+        errors.append("minor polish review run has no finding counts")
+    else:
+        if findings.get("blocker") != 0 or findings.get("major") != 0:
+            errors.append("minor polish review run contains blocker or major findings")
+        reported_minor = findings.get("minor")
+        if (
+            not isinstance(reported_minor, int)
+            or isinstance(reported_minor, bool)
+            or reported_minor < counts.get("open_minor", 0)
+        ):
+            errors.append("minor polish open count exceeds the review run minor findings")
+    return errors
+
+
 def recovery_block_subject_hash(
     manifest: dict[str, Any],
     block: dict[str, Any],
@@ -4636,7 +5476,7 @@ def remediation_review_errors(
     expected_scope = (
         "targeted-remediation"
         if remediation.get("scope") == "targeted"
-        else "full-block"
+        else "full-block-remediation"
     )
     text = report_path.read_text(encoding="utf-8")
     scope_match = re.search(r"(?m)^\s*review_scope\s*:\s*(\S+)\s*$", text)
@@ -4672,6 +5512,55 @@ def block_review_state_errors(root: Path, block: dict[str, Any]) -> list[str]:
     """Validate immutable local review history and remediation bindings."""
     block_id = str(block.get("id", "<unknown>"))
     errors: list[str] = []
+    try:
+        local_convergence = ensure_block_review_convergence(block)
+    except CaseError as exc:
+        return [str(exc)]
+    if local_convergence.get("contract") != "progressive-block-lock-v1":
+        errors.append(f"{block_id}: invalid block review convergence contract")
+    if not isinstance(local_convergence.get("legacy_compatibility"), bool):
+        errors.append(f"{block_id}: invalid block review legacy compatibility marker")
+    if local_convergence.get("phase") not in BLOCK_REVIEW_CONVERGENCE_PHASES:
+        errors.append(f"{block_id}: invalid block review convergence phase")
+    for field, expected in (
+        ("max_correction_batches", 1),
+        ("max_minor_polish_batches", 1),
+    ):
+        if local_convergence.get(field) != expected:
+            errors.append(f"{block_id}: invalid {field}")
+    for field in ("correction_batches", "minor_polish_batches"):
+        value = local_convergence.get(field)
+        if not isinstance(value, int) or isinstance(value, bool) or value not in {0, 1}:
+            errors.append(f"{block_id}: invalid {field}")
+    active_run_id = local_convergence.get("active_run_id")
+    if local_convergence.get("phase") == "awaiting-disposition":
+        if not isinstance(active_run_id, str) or not AGENT_RUN_ID_RE.fullmatch(active_run_id):
+            errors.append(f"{block_id}: awaiting block review has no active run")
+        if local_convergence.get("active_attempt_phase") not in {"initial", "final"}:
+            errors.append(f"{block_id}: awaiting block review has invalid attempt phase")
+        if local_convergence.get("active_review_scope") not in {
+            "full-block",
+            "targeted-remediation",
+            "full-block-remediation",
+            "minor-polish",
+            "changed-boundary",
+        }:
+            errors.append(f"{block_id}: awaiting block review has invalid review scope")
+        if not SHA256_RE.fullmatch(
+            str(local_convergence.get("active_subject_sha256", ""))
+        ):
+            errors.append(f"{block_id}: awaiting block review has invalid subject hash")
+    elif active_run_id is not None:
+        errors.append(f"{block_id}: inactive block review retains an active run")
+    if local_convergence.get("phase") == "minor-polish":
+        evidence = local_convergence.get("pending_minor_evidence")
+        evidence_hash = local_convergence.get("pending_minor_evidence_sha256")
+        if not isinstance(evidence, str):
+            errors.append(f"{block_id}: minor polish has no evidence")
+        else:
+            path = case_file(root, evidence)
+            if not path.is_file() or sha256(path) != evidence_hash:
+                errors.append(f"{block_id}: minor polish evidence is missing or changed")
     remediation_contract = block.get("remediation_contract", REMEDIATION_CONTRACT_V1)
     if remediation_contract not in {REMEDIATION_CONTRACT_V1, REMEDIATION_CONTRACT_V2}:
         errors.append(f"{block_id}: invalid remediation_contract")
@@ -4682,6 +5571,10 @@ def block_review_state_errors(root: Path, block: dict[str, Any]) -> list[str]:
     history = block.get("review_history", [])
     if not isinstance(history, list):
         return [f"{block_id}: review_history must be an array"]
+    if local_convergence.get("phase") == "unreviewed" and history:
+        errors.append(f"{block_id}: reviewed coverage cannot be unreviewed")
+    if local_convergence.get("phase") == "changed-boundary" and not history:
+        errors.append(f"{block_id}: changed-boundary has no prior review coverage")
     for index, record in enumerate(history, start=1):
         label = f"{block_id}: review history r{index:03d}"
         if not isinstance(record, dict) or record.get("revision") != index:
@@ -4721,7 +5614,7 @@ def block_review_state_errors(root: Path, block: dict[str, Any]) -> list[str]:
             if (
                 not isinstance(batch_index, int)
                 or isinstance(batch_index, bool)
-                or batch_index not in range(1, MAX_REMEDIATION_BATCHES + 1)
+                or batch_index not in range(1, LEGACY_MAX_REMEDIATION_BATCHES + 1)
             ):
                 errors.append(f"{label} has invalid batch_index")
         if remediation.get("status") not in {
@@ -4786,7 +5679,17 @@ def transition_block(
     if new_status not in BLOCK_STATUSES:
         raise CaseError(f"Invalid block status: {new_status}")
     block = blocks[block_id]
+    local_convergence = ensure_block_review_convergence(block)
     old_status = block["status"]
+    minor_polish = False
+    if old_status == "analyzed" and new_status == "in_progress":
+        review_path = case_file(root, block["review"])
+        if artifact_ready(review_path):
+            minor_polish = not minor_polish_review_errors(
+                root,
+                manifest,
+                review_path,
+            )
     recovery = active_bounded_recovery(manifest)
     if recovery is not None:
         _, recovery_plan = load_bounded_recovery(
@@ -4808,6 +5711,8 @@ def transition_block(
         new_status == "in_progress"
         and block.get("remediation_contract")
         in {REMEDIATION_CONTRACT_V1, REMEDIATION_CONTRACT_V2}
+        and active_block_remediation(block) is None
+        and not minor_polish
         and (
             old_status in {"reviewed", "integrated"}
             or (
@@ -4820,7 +5725,6 @@ def transition_block(
             f"{block_id}: use begin-remediation so prior review coverage and the "
             "accepted finding are preserved"
         )
-
     if new_status == "in_progress" and block.get("risk_surfaces"):
         risk_preflight = block.get("risk_preflight")
         if not isinstance(risk_preflight, dict) or risk_preflight.get("status") != "pass":
@@ -4853,6 +5757,45 @@ def transition_block(
                 + "; ".join(projection_errors)
             )
 
+    if minor_polish:
+        if local_convergence.get("active_attempt_phase") == "final":
+            raise CaseError(
+                f"{block_id}: one minor polish pass is already exhausted; "
+                "accept residual minor findings and continue"
+            )
+        if (
+            local_convergence.get("minor_polish_batches", 0)
+            >= local_convergence.get("max_minor_polish_batches", 1)
+        ):
+            raise CaseError(
+                f"{block_id}: one minor polish pass is already exhausted"
+            )
+        minor_revision = record_block_review_revision(
+            root,
+            manifest,
+            block,
+            outcome="minor-only",
+        )
+        local_convergence["phase"] = "minor-polish"
+        local_convergence["minor_polish_batches"] = 1
+        local_convergence["pending_minor_evidence"] = minor_revision["evidence"]
+        local_convergence["pending_minor_evidence_sha256"] = minor_revision[
+            "evidence_sha256"
+        ]
+        local_convergence["active_run_id"] = None
+        local_convergence["active_attempt_phase"] = None
+        local_convergence["active_review_scope"] = None
+        local_convergence["active_subject_sha256"] = None
+        manifest["events"].append(
+            event(
+                "block_minor_polish_started",
+                block_id=block_id,
+                review=block["review"],
+                review_sha256=sha256(case_file(root, block["review"])),
+                note=note,
+            )
+        )
+
     if new_status == "ready":
         incomplete = [
             dependency
@@ -4862,6 +5805,22 @@ def transition_block(
         if incomplete:
             raise CaseError(f"{block_id}: dependencies are not reviewed: {', '.join(incomplete)}")
     if new_status == "analyzed":
+        active = active_block_remediation(block)
+        if (
+            active is not None
+            and active.get("epoch", 1) < block.get("remediation_epoch", 1)
+        ):
+            active["status"] = "retry_required"
+            active["completed_at"] = now_utc()
+            block["active_remediation"] = None
+            manifest["events"].append(
+                event(
+                    "block_remediation_superseded_after_root_cause_reset",
+                    block_id=block_id,
+                    remediation_id=active.get("id"),
+                    remediation_epoch=block.get("remediation_epoch"),
+                )
+            )
         artifact = case_file(root, block["artifact"])
         if not artifact_ready(artifact):
             raise CaseError(f"{block_id}: analysis artifact is missing or still a placeholder")
@@ -4887,6 +5846,34 @@ def transition_block(
             raise CaseError(f"{block_id}: analysis changed after analyzed state")
         if sha256(case_file(root, block["semantic_index"])) != block["index_sha256"]:
             raise CaseError(f"{block_id}: semantic index changed after analyzed state")
+        active_local_run = local_convergence.get("active_run_id")
+        if isinstance(active_local_run, str):
+            run = agent_run_by_id(root, manifest, active_local_run)
+            if run.get("subject_sha256") != block_review_subject_hash(
+                root, manifest, block
+            ):
+                raise CaseError(
+                    f"{block_id}: active review run is bound to another subject"
+                )
+            if run.get("status") != "completed":
+                raise CaseError(
+                    f"{block_id}: degraded local review cannot close the block"
+                )
+            findings = run.get("findings", {})
+            if (
+                not isinstance(findings, dict)
+                or findings.get("blocker", 0)
+                or findings.get("major", 0)
+            ):
+                raise CaseError(
+                    f"{block_id}: active review has blocker or major findings; "
+                    "dispose them before pass"
+                )
+        elif recovery is None and not local_convergence.get("legacy_compatibility"):
+            raise CaseError(
+                f"{block_id}: progressive block review requires a completed "
+                "machine-bound reviewer run"
+            )
         remediation_errors = remediation_review_errors(root, block, review_path)
         remediation_errors.extend(risk_review_errors(root, manifest, block, review_path))
         if recovery is not None:
@@ -4933,6 +5920,13 @@ def transition_block(
                     review_revision=review_revision["revision"],
                 )
             )
+        local_convergence["phase"] = "stable"
+        local_convergence["active_run_id"] = None
+        local_convergence["active_attempt_phase"] = None
+        local_convergence["active_review_scope"] = None
+        local_convergence["active_subject_sha256"] = None
+        local_convergence["pending_minor_evidence"] = None
+        local_convergence["pending_minor_evidence_sha256"] = None
     if new_status == "integrated":
         if not artifact_ready(case_file(root, manifest["artifacts"]["draft"])):
             raise CaseError("Integrated draft is missing or still a placeholder")
@@ -5046,6 +6040,688 @@ def gate_subject_hash(
                     path = case_file(root, role_context)
                     digest.update(path.read_bytes() if path.is_file() else b"<missing>")
     return digest.hexdigest()
+
+
+def convergence_review_subject_hash(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    role_mode: str,
+) -> str:
+    """Hash exactly the whole-case surfaces covered by one reviewer assignment."""
+    matching = [
+        item
+        for item in convergence_review_plan(manifest)
+        if item.get("role_mode") == role_mode
+    ]
+    if len(matching) != 1:
+        raise CaseError(f"No convergence review item for role mode {role_mode}")
+    digest = hashlib.sha256()
+    digest.update(CASE_CONVERGENCE_CONTRACT.encode("utf-8"))
+    digest.update(b"\0")
+    digest.update(role_mode.encode("utf-8"))
+    digest.update(b"\0")
+    for gate_name in matching[0]["covered_gates"]:
+        digest.update(gate_name.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(gate_subject_hash(root, manifest, ledger, gate_name).encode("ascii"))
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def gate_is_fresh(
+    root: Path | None,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    gate_name: str,
+) -> bool:
+    """Return whether a prerequisite gate is closed on its current subject."""
+    gate = manifest.get("gates", {}).get(gate_name, {})
+    if gate.get("status") == "not_required":
+        return True
+    if gate.get("status") != "pass":
+        return False
+    if root is None:
+        return True
+    try:
+        return gate.get("subject_sha256") == gate_subject_hash(
+            root, manifest, ledger, gate_name
+        )
+    except (CaseError, OSError):
+        return False
+
+
+def convergence_prerequisite_gates(role_mode: str) -> list[str]:
+    """Return gates that must be fresh before one expensive whole-case review."""
+    common = ["evidence", "semantic_integration", "consistency"]
+    if role_mode == "integration":
+        return common
+    if role_mode == "global":
+        return [*common, "author_passes", "integration_review"]
+    if role_mode == "project-conformance":
+        return [*common, "author_passes", "global_review"]
+    if role_mode == "final":
+        return [*common, "author_passes"]
+    raise CaseError(f"Unsupported convergence reviewer mode: {role_mode}")
+
+
+def convergence_stage_attempt_phase(
+    state: dict[str, Any],
+    role_mode: str,
+) -> str:
+    """Return initial or final while preserving a bounded affected-stage chain."""
+    pending = state.get("pending_review")
+    if isinstance(pending, dict) and role_mode in pending.get(
+        "recheck_role_modes",
+        [],
+    ):
+        return "final"
+    stage_corrections = state.get("stage_corrections", {})
+    return "final" if stage_corrections.get(role_mode, 0) else "initial"
+
+
+def convergence_impact_cursor(
+    plan: list[dict[str, Any]],
+    current_cursor: int,
+    impact: str,
+) -> int:
+    """Resolve the earliest actually invalidated progressive review stage."""
+    desired_mode = {
+        "integration": "integration",
+        "global": "global",
+        "project": "project-conformance",
+    }.get(impact)
+    if desired_mode is None:
+        return current_cursor
+    for index, item in enumerate(plan):
+        if item.get("role_mode") == desired_mode:
+            return min(index, current_cursor)
+    return current_cursor
+
+
+def convergence_assignment(
+    root: Path | None,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    role_mode: str,
+) -> dict[str, Any]:
+    """Validate and describe the one currently legal whole-case review assignment."""
+    if root is None:
+        state = manifest.get("convergence")
+        if not isinstance(state, dict):
+            raise CaseError("Whole-case reviewer context requires a case root")
+    else:
+        state = ensure_convergence_state(root, manifest)
+    if state.get("phase") == "user-decision":
+        raise CaseError(
+            "Case convergence requires an explicit user decision; automatic review is stopped"
+        )
+    if state.get("phase") == "awaiting-disposition":
+        raise CaseError(
+            f"Convergence run {state.get('active_run_id')} awaits coordinator disposition"
+        )
+    if state.get("phase") == "remediation":
+        raise CaseError(
+            "Complete the exact convergence remediation before requesting a recheck"
+        )
+    plan = state.get("plan", [])
+    cursor = state.get("cursor", 0)
+    if not isinstance(cursor, int) or cursor >= len(plan):
+        raise CaseError("Case convergence is terminal; another whole-case review is forbidden")
+    item = plan[cursor]
+    expected_mode = item.get("role_mode")
+    if role_mode != expected_mode:
+        raise CaseError(
+            f"Case convergence expects reviewer mode {expected_mode}, not {role_mode}"
+        )
+    if manifest.get("mode") == "block":
+        blocks = [block for block in ledger.get("blocks", []) if isinstance(block, dict)]
+        if not blocks:
+            raise CaseError("Whole-case review requires at least one semantic block")
+        unstable = [
+            str(block.get("id"))
+            for block in blocks
+            if block.get("status") != "integrated"
+            or active_block_remediation(block) is not None
+        ]
+        if unstable:
+            raise CaseError(
+                "Whole-case review requires all blocks integrated with no active remediation: "
+                + ", ".join(unstable)
+            )
+    prerequisites = convergence_prerequisite_gates(role_mode)
+    stale = [
+        gate_name
+        for gate_name in prerequisites
+        if not gate_is_fresh(root, manifest, ledger, gate_name)
+    ]
+    if stale:
+        raise CaseError(
+            "Whole-case review prerequisites are not freshly closed: "
+            + ", ".join(stale)
+        )
+    attempt_phase = convergence_stage_attempt_phase(state, role_mode)
+    pending_review = state.get("pending_review")
+    return {
+        "schema": CASE_CONVERGENCE_SCHEMA,
+        "contract": CASE_CONVERGENCE_CONTRACT,
+        "episode": state.get("episode"),
+        "phase": convergence_phase_for_mode(role_mode),
+        "attempt_phase": attempt_phase,
+        "review_scope": (
+            "targeted-remediation" if attempt_phase == "final" else "full-stage"
+        ),
+        "new_findings_policy": (
+            "introduced-or-exposed-at-changed-boundary-only"
+            if attempt_phase == "final"
+            else "stage-surface-only"
+        ),
+        "correction_batches": state.get("correction_batches"),
+        "max_correction_batches_per_stage": state.get(
+            "max_correction_batches_per_stage"
+        ),
+        "pending_review": pending_review if attempt_phase == "final" else None,
+        "role_mode": role_mode,
+        "covered_gates": list(item.get("covered_gates", [])),
+        "subject_sha256": (
+            convergence_review_subject_hash(root, manifest, ledger, role_mode)
+            if root is not None
+            else None
+        ),
+    }
+
+
+def bind_convergence_evidence(
+    root: Path,
+    source_relative: str,
+    *,
+    prefix: str,
+    revision: int,
+) -> dict[str, str]:
+    """Snapshot one convergence receipt under immutable case-local history."""
+    source = case_file(root, source_relative)
+    if not artifact_ready(source):
+        raise CaseError(
+            f"Convergence evidence is missing or incomplete: {source_relative}"
+        )
+    suffix = source.suffix or ".md"
+    relative = f"convergence/history/{prefix}-r{revision:03d}{suffix}"
+    target = case_file(root, relative)
+    if target.exists():
+        raise CaseError(f"Convergence evidence snapshot already exists: {relative}")
+    immutable_copy(source, target)
+    return {"ref": relative, "sha256": sha256(target)}
+
+
+def record_convergence_review(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    run_id: str,
+    gate_decision: str,
+    open_blocker: int,
+    open_major: int,
+    open_minor: int,
+    evidence: str,
+    findings: list[dict[str, str]] | None = None,
+    finding_origins: dict[str, str] | None = None,
+    impact: str | None = None,
+    affected_blocks: list[str] | None = None,
+    semantic_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Apply coordinator disposition and advance the finite convergence machine."""
+    if gate_decision not in {"pass", "revise", "user-decision"}:
+        raise CaseError("Convergence gate decision must be pass, revise, or user-decision")
+    counts = {
+        "open_blocker": open_blocker,
+        "open_major": open_major,
+        "open_minor": open_minor,
+    }
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value < 0
+        for value in counts.values()
+    ):
+        raise CaseError("Convergence open finding counts must be non-negative integers")
+    if gate_decision == "pass" and (open_blocker or open_major):
+        raise CaseError("A passing convergence decision cannot keep blocker or major open")
+    if gate_decision == "revise" and not (open_blocker or open_major):
+        raise CaseError("A revise convergence decision requires an open blocker or major")
+    normalized_findings = findings or []
+    finding_ids: set[str] = set()
+    finding_counts = {"blocker": 0, "major": 0}
+    for finding in normalized_findings:
+        finding_id = finding.get("id") if isinstance(finding, dict) else None
+        severity = finding.get("severity") if isinstance(finding, dict) else None
+        if not isinstance(finding_id, str) or not FINDING_ID_RE.fullmatch(finding_id):
+            raise CaseError(f"Invalid convergence finding id: {finding_id!r}")
+        if severity not in REMEDIATION_SEVERITIES:
+            raise CaseError(f"Invalid convergence finding severity: {severity!r}")
+        if finding_id in finding_ids:
+            raise CaseError(f"Duplicate convergence finding: {finding_id}")
+        finding_ids.add(finding_id)
+        finding_counts[str(severity)] += 1
+    if gate_decision == "revise":
+        if finding_counts != {"blocker": open_blocker, "major": open_major}:
+            raise CaseError(
+                "Convergence revise requires exact finding IDs matching open counts"
+            )
+        if impact not in CONVERGENCE_IMPACTS:
+            raise CaseError("Convergence revise requires a declared correction impact")
+    elif normalized_findings or impact is not None:
+        raise CaseError("Only a revise disposition may declare findings or correction impact")
+    normalized_origins = finding_origins or {}
+    if set(normalized_origins) - finding_ids:
+        raise CaseError("Convergence finding origins name undeclared findings")
+    if any(origin not in CONVERGENCE_FINDING_ORIGINS for origin in normalized_origins.values()):
+        raise CaseError("Convergence finding origin is invalid")
+    normalized_blocks = list(dict.fromkeys(affected_blocks or []))
+    known_blocks = set(blocks_by_id(ledger))
+    unknown_blocks = sorted(set(normalized_blocks) - known_blocks)
+    if unknown_blocks:
+        raise CaseError("Unknown convergence affected blocks: " + ", ".join(unknown_blocks))
+    normalized_semantic_ids = list(dict.fromkeys(semantic_ids or []))
+    if any(not SEMANTIC_ID_RE.fullmatch(value) for value in normalized_semantic_ids):
+        raise CaseError("Convergence semantic ids must be valid semantic IDs")
+    if gate_decision == "revise" and impact == "block-local" and not normalized_blocks:
+        raise CaseError("block-local convergence impact requires affected blocks")
+    state = ensure_convergence_state(root, manifest)
+    if state.get("phase") != "awaiting-disposition" or state.get("active_run_id") != run_id:
+        raise CaseError(f"Convergence run is not awaiting disposition: {run_id}")
+    payload = read_json(case_file(root, manifest["artifacts"]["agent_ledger"]))
+    matches = [
+        run
+        for run in payload.get("runs", [])
+        if isinstance(run, dict) and run.get("run_id") == run_id
+    ]
+    if len(matches) != 1:
+        raise CaseError(f"Agent run not found for convergence disposition: {run_id}")
+    run = matches[0]
+    reported = run.get("findings", {})
+    if open_blocker > reported.get("blocker", 0) or open_major > reported.get("major", 0):
+        raise CaseError("Open blocker/major counts cannot exceed reviewer-reported counts")
+    if run.get("status") == "degraded" and gate_decision != "user-decision":
+        raise CaseError("A degraded whole-case review requires user-decision")
+    attempts = state.setdefault("attempts", [])
+    revision = len(attempts) + 1
+    plan = state.get("plan", [])
+    cursor = state.get("cursor", 0)
+    if not isinstance(cursor, int) or cursor >= len(plan):
+        raise CaseError("Convergence cursor has no active reviewer item")
+    item = plan[cursor]
+    role_mode = str(item.get("role_mode"))
+    if run.get("role") != "spec-reviewer" or run.get("role_mode") != role_mode:
+        raise CaseError("Convergence disposition targets a different reviewer assignment")
+    subject_by_gate = {
+        gate_name: gate_subject_hash(root, manifest, ledger, gate_name)
+        for gate_name in item.get("covered_gates", [])
+    }
+    attempt_phase = convergence_stage_attempt_phase(state, role_mode)
+    pending_before = state.get("pending_review")
+    prior_finding_ids = {
+        str(finding.get("id"))
+        for finding in (
+            pending_before.get("findings", [])
+            if isinstance(pending_before, dict)
+            else []
+        )
+        if isinstance(finding, dict)
+    }
+    if attempt_phase == "final" and gate_decision == "revise":
+        newly_reported = finding_ids - prior_finding_ids
+        missing_origins = sorted(newly_reported - set(normalized_origins))
+        if missing_origins:
+            raise CaseError(
+                "Targeted recheck new findings require introduced/exposed origin: "
+                + ", ".join(missing_origins)
+            )
+    allowed_impacts = {
+        "integration": {"block-local", "integration", "kernel"},
+        "global": {"block-local", "integration", "global", "kernel"},
+        "project-conformance": set(CONVERGENCE_IMPACTS),
+        "final": set(CONVERGENCE_IMPACTS),
+    }[role_mode]
+    if gate_decision == "revise" and impact not in allowed_impacts:
+        raise CaseError(f"Impact {impact} is outside reviewer stage {role_mode}")
+    current_subject = convergence_review_subject_hash(
+        root,
+        manifest,
+        ledger,
+        role_mode,
+    )
+    if (
+        current_subject != run.get("subject_sha256")
+        or current_subject != state.get("active_subject_sha256")
+    ):
+        raise CaseError(
+            "Convergence subject changed after the completed reviewer assignment"
+        )
+    binding = bind_convergence_evidence(
+        root,
+        evidence,
+        prefix=f"episode-{state.get('episode', 1):03d}-review",
+        revision=revision,
+    )
+    attempt = {
+        "revision": revision,
+        "at": now_utc(),
+        "episode": state.get("episode"),
+        "attempt_phase": attempt_phase,
+        "run_id": run_id,
+        "role_mode": role_mode,
+        "covered_gates": list(item.get("covered_gates", [])),
+        "subject_sha256": run.get("subject_sha256"),
+        "subject_by_gate": subject_by_gate,
+        "reported": dict(reported),
+        **counts,
+        "gate_decision": gate_decision,
+        "findings": normalized_findings,
+        "finding_origins": normalized_origins,
+        "impact": impact,
+        "affected_blocks": normalized_blocks,
+        "semantic_ids": normalized_semantic_ids,
+        "evidence": binding["ref"],
+        "evidence_sha256": binding["sha256"],
+    }
+    attempts.append(attempt)
+    state["active_run_id"] = None
+    state["active_role_mode"] = None
+    state["active_subject_sha256"] = None
+
+    effective_decision = gate_decision
+    target_cursor: int | None = None
+    target_role_mode: str | None = None
+    trigger_stage_batches = 0
+    stage_budget_exhausted = False
+    stage_corrections = state.setdefault("stage_corrections", {})
+    if (
+        gate_decision == "revise"
+        and attempt_phase == "initial"
+        and impact != "kernel"
+    ):
+        target_cursor = convergence_impact_cursor(plan, cursor, str(impact))
+        target_role_mode = str(plan[target_cursor]["role_mode"])
+        trigger_stage_batches = stage_corrections.get(role_mode, 0)
+        stage_budget_exhausted = trigger_stage_batches >= state.get(
+            "max_correction_batches_per_stage",
+            MAX_STAGE_CORRECTION_BATCHES,
+        )
+    if gate_decision == "pass":
+        pending = state.get("pending_review")
+        recheck_role_modes = (
+            pending.get("recheck_role_modes", [])
+            if isinstance(pending, dict)
+            else []
+        )
+        trigger_cursor = (
+            pending.get("trigger_cursor")
+            if isinstance(pending, dict)
+            else None
+        )
+        if (
+            attempt_phase == "final"
+            and isinstance(trigger_cursor, int)
+            and role_mode in recheck_role_modes
+            and cursor < trigger_cursor
+        ):
+            completed = pending.setdefault("completed_recheck_role_modes", [])
+            if role_mode not in completed:
+                completed.append(role_mode)
+            state["cursor"] = cursor + 1
+            state["phase"] = convergence_phase_for_mode(
+                str(plan[state["cursor"]]["role_mode"])
+            )
+        else:
+            if isinstance(pending, dict) and role_mode in recheck_role_modes:
+                completed = pending.setdefault("completed_recheck_role_modes", [])
+                if role_mode not in completed:
+                    completed.append(role_mode)
+            state["cursor"] = cursor + 1
+            state["pending_review"] = None
+        if state["cursor"] >= len(plan):
+            state["phase"] = "terminal"
+        elif state.get("phase") != convergence_phase_for_mode(
+            str(plan[state["cursor"]]["role_mode"])
+        ):
+            state["phase"] = convergence_phase_for_mode(
+                str(plan[state["cursor"]]["role_mode"])
+            )
+    elif (
+        target_cursor is not None
+        and target_role_mode is not None
+        and not stage_budget_exhausted
+    ):
+        baseline_target_subject = convergence_review_subject_hash(
+            root,
+            manifest,
+            ledger,
+            target_role_mode,
+        )
+        state["correction_batches"] = state.get("correction_batches", 0) + 1
+        stage_corrections[role_mode] = trigger_stage_batches + 1
+        state["cursor"] = target_cursor
+        state["phase"] = "remediation"
+        state["pending_review"] = {
+            "trigger_role_mode": role_mode,
+            "target_role_mode": target_role_mode,
+            "trigger_cursor": cursor,
+            "target_cursor": target_cursor,
+            "recheck_role_modes": [
+                str(plan[index]["role_mode"])
+                for index in range(target_cursor, cursor + 1)
+            ],
+            "completed_recheck_role_modes": [],
+            "trigger_run_id": run_id,
+            "baseline_target_subject_sha256": baseline_target_subject,
+            "evidence": binding["ref"],
+            "evidence_sha256": binding["sha256"],
+            "findings": normalized_findings,
+            "impact": impact,
+            "affected_blocks": normalized_blocks,
+            "semantic_ids": normalized_semantic_ids,
+            "remediation_evidence": None,
+            "remediation_evidence_sha256": None,
+            **counts,
+        }
+    else:
+        effective_decision = "user-decision"
+        state["phase"] = "user-decision"
+        state["pending_review"] = None
+        state.setdefault("decisions", []).append(
+            {
+                "at": now_utc(),
+                "kind": (
+                    "stage-correction-budget-exhausted"
+                    if stage_budget_exhausted
+                    else (
+                        "kernel-or-recheck-needs-decision"
+                        if gate_decision == "revise"
+                        else "coordinator-user-decision"
+                    )
+                ),
+                "reason": (
+                    f"Stage {role_mode} already used its automatic correction batch"
+                    if stage_budget_exhausted
+                    else (
+                        "A kernel change or another stage correction cannot reopen the same "
+                        "scope automatically"
+                        if gate_decision == "revise"
+                        else "Coordinator disposition requires an owner decision"
+                    )
+                ),
+                "evidence": binding["ref"],
+                "evidence_sha256": binding["sha256"],
+            }
+        )
+    attempt["effective_decision"] = effective_decision
+    manifest["events"].append(
+        event(
+            "convergence_review_disposed",
+            run_id=run_id,
+            role_mode=role_mode,
+            gate_decision=gate_decision,
+            effective_decision=effective_decision,
+            correction_batches=state.get("correction_batches"),
+            phase=state.get("phase"),
+        )
+    )
+    save_case(root, manifest, ledger)
+    return attempt
+
+
+def complete_convergence_remediation(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    evidence: str,
+) -> dict[str, Any]:
+    """Bind a concrete delta before allowing the exact targeted stage recheck."""
+    state = ensure_convergence_state(root, manifest)
+    if state.get("phase") != "remediation":
+        raise CaseError("No convergence remediation awaits completion")
+    pending = state.get("pending_review")
+    if not isinstance(pending, dict):
+        raise CaseError("Convergence remediation has no bound finding batch")
+    active_blocks = [
+        str(block.get("id"))
+        for block in ledger.get("blocks", [])
+        if isinstance(block, dict) and active_block_remediation(block) is not None
+    ]
+    if active_blocks:
+        raise CaseError(
+            "Convergence remediation still has active block corrections: "
+            + ", ".join(active_blocks)
+        )
+    target_role_mode = pending.get("target_role_mode")
+    if target_role_mode not in WHOLE_CASE_REVIEW_MODES:
+        raise CaseError("Convergence remediation target reviewer mode is invalid")
+    current_subject = convergence_review_subject_hash(
+        root,
+        manifest,
+        ledger,
+        str(target_role_mode),
+    )
+    if current_subject == pending.get("baseline_target_subject_sha256"):
+        raise CaseError(
+            "Convergence remediation did not change the targeted review subject"
+        )
+    if pending.get("impact") == "block-local":
+        declared_blocks = set(pending.get("affected_blocks", []))
+        covered_findings: set[str] = set()
+        incomplete_blocks: list[str] = []
+        blocks = blocks_by_id(ledger)
+        for block_id in sorted(declared_blocks):
+            block = blocks[block_id]
+            verified = [
+                item
+                for item in block.get("remediations", [])
+                if isinstance(item, dict) and item.get("status") == "verified"
+            ]
+            if not verified:
+                incomplete_blocks.append(block_id)
+                continue
+            covered_findings.update(
+                str(finding_id)
+                for item in verified
+                for finding_id in item.get("finding_ids", [])
+            )
+        if incomplete_blocks:
+            raise CaseError(
+                "Affected blocks have no verified targeted remediation: "
+                + ", ".join(incomplete_blocks)
+            )
+        required_findings = {
+            str(item.get("id"))
+            for item in pending.get("findings", [])
+            if isinstance(item, dict)
+        }
+        if not required_findings.issubset(covered_findings):
+            raise CaseError(
+                "Verified block remediations do not cover the convergence finding batch"
+            )
+    binding = bind_convergence_evidence(
+        root,
+        evidence,
+        prefix=f"episode-{state.get('episode', 1):03d}-remediation",
+        revision=int(state.get("correction_batches", 0)),
+    )
+    pending["remediation_evidence"] = binding["ref"]
+    pending["remediation_evidence_sha256"] = binding["sha256"]
+    pending["remediated_subject_sha256"] = current_subject
+    pending["completed_at"] = now_utc()
+    state["phase"] = convergence_phase_for_mode(str(target_role_mode))
+    manifest["events"].append(
+        event(
+            "convergence_remediation_completed",
+            target_role_mode=target_role_mode,
+            impact=pending.get("impact"),
+            evidence=binding["ref"],
+            subject_sha256=current_subject,
+        )
+    )
+    save_case(root, manifest, ledger)
+    return pending
+
+
+def resume_convergence(
+    root: Path,
+    manifest: dict[str, Any],
+    ledger: dict[str, Any],
+    *,
+    evidence: str,
+    reason: str,
+    save: bool = True,
+) -> dict[str, Any]:
+    """Start a new bounded episode only from immutable explicit user evidence."""
+    if not reason.strip():
+        raise CaseError("Resuming convergence requires a reason")
+    state = ensure_convergence_state(root, manifest)
+    if state.get("phase") not in {"user-decision", "terminal"}:
+        raise CaseError(
+            "Convergence can be resumed only from user-decision or terminal state"
+        )
+    next_episode = int(state.get("episode", 1)) + 1
+    binding = bind_convergence_evidence(
+        root,
+        evidence,
+        prefix="user-decision",
+        revision=next_episode,
+    )
+    state.setdefault("decisions", []).append(
+        {
+            "at": now_utc(),
+            "kind": "episode-resumed",
+            "reason": reason.strip(),
+            "evidence": binding["ref"],
+            "evidence_sha256": binding["sha256"],
+        }
+    )
+    state["episode"] = next_episode
+    state["plan"] = convergence_review_plan(manifest)
+    state["cursor"] = 0
+    state["correction_batches"] = 0
+    state["stage_corrections"] = {
+        str(item["role_mode"]): 0
+        for item in state["plan"]
+    }
+    state["active_run_id"] = None
+    state["active_role_mode"] = None
+    state["active_subject_sha256"] = None
+    state["pending_review"] = None
+    state["phase"] = "blocks" if state["plan"] else "terminal"
+    manifest["events"].append(
+        event(
+            "convergence_episode_resumed",
+            episode=next_episode,
+            evidence=binding["ref"],
+            reason=reason.strip(),
+        )
+    )
+    if save:
+        save_case(root, manifest, ledger)
+    return state
 
 
 def snapshot_review_evidence(root: Path, gate_name: str, source: Path) -> str:
@@ -5351,6 +7027,18 @@ def record_semantic_remediation(
         "project_conformance",
         "architecture_conformance",
     )
+    convergence = ensure_convergence_state(root, manifest)
+    protected_recheck_gates: set[str] = set()
+    if convergence.get("phase") == "remediation":
+        plan = convergence.get("plan", [])
+        cursor = convergence.get("cursor", 0)
+        if isinstance(cursor, int):
+            protected_recheck_gates = {
+                str(gate_name)
+                for item in plan[cursor:]
+                if isinstance(item, dict)
+                for gate_name in item.get("covered_gates", [])
+            }
     rebased: list[str] = []
     review_revision = next(
         (
@@ -5366,6 +7054,8 @@ def record_semantic_remediation(
     receipts_dir = root / "reviews" / "history"
     receipts_dir.mkdir(parents=True, exist_ok=True)
     for gate_name in eligible_gates:
+        if gate_name in protected_recheck_gates:
+            continue
         prior = prior_passed_gate_state(manifest, gate_name)
         if prior is None:
             continue
@@ -5517,8 +7207,44 @@ def set_gate(
             )
         if name in required_gates(manifest):
             raise CaseError(f"Gate {name} is required by the execution policy")
+        if name in CONVERGENCE_REVIEW_GATES and recovery_plan is None:
+            convergence = ensure_convergence_state(root, manifest)
+            current_attempts = [
+                attempt
+                for attempt in convergence.get("attempts", [])
+                if isinstance(attempt, dict)
+                and attempt.get("episode") == convergence.get("episode")
+            ]
+            if current_attempts:
+                raise CaseError(
+                    "Whole-case review requiredness cannot change after convergence "
+                    "started without an explicit new episode"
+                )
     if status == "pass" and not evidence:
         raise CaseError("A passed gate requires --evidence")
+    if status == "pass" and name in {
+        "integration_review",
+        "global_review",
+        "project_conformance",
+    } and recovery_plan is None:
+        convergence = ensure_convergence_state(root, manifest)
+        current_subject = gate_subject_hash(root, manifest, ledger, name)
+        matching_attempt = next(
+            (
+                attempt
+                for attempt in reversed(convergence.get("attempts", []))
+                if isinstance(attempt, dict)
+                and attempt.get("episode") == convergence.get("episode")
+                and attempt.get("effective_decision") == "pass"
+                and name in attempt.get("covered_gates", [])
+                and attempt.get("subject_by_gate", {}).get(name) == current_subject
+            ),
+            None,
+        )
+        if matching_attempt is None:
+            raise CaseError(
+                f"Gate {name} requires a fresh passing case-convergence disposition"
+            )
     if status == "pass" and name == "author_passes":
         projection_errors = working_projection_errors(
             root,
@@ -5655,6 +7381,15 @@ def set_gate(
         ),
         "note": note,
     }
+    if status == "not_required" and name in CONVERGENCE_REVIEW_GATES and recovery_plan is None:
+        convergence = ensure_convergence_state(root, manifest)
+        convergence["plan"] = convergence_review_plan(manifest)
+        convergence["stage_corrections"] = {
+            str(item["role_mode"]): 0
+            for item in convergence["plan"]
+        }
+        convergence["cursor"] = 0
+        convergence["phase"] = "blocks" if convergence["plan"] else "terminal"
     manifest["events"].append(
         event("gate_updated", gate=name, status=status, evidence=evidence, note=note)
     )
@@ -5667,12 +7402,22 @@ def validate_case(
     ledger: dict[str, Any],
     *,
     final: bool,
+    final_timing: bool | None = None,
     ignore_consistency_gate: bool = False,
     accepted_role_manifests: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Return structural, freshness, traceability, and optional final errors."""
     errors: list[str] = []
     errors.extend(bounded_recovery_errors(root, manifest, ledger, final=final))
+    if bounded_recovery_binding(manifest) is None:
+        errors.extend(
+            convergence_state_errors(
+                root,
+                manifest,
+                ledger,
+                final=final,
+            )
+        )
     feedback_bindings = manifest.get("delivery_feedback", [])
     if not isinstance(feedback_bindings, list):
         errors.append("delivery_feedback must be an array")
@@ -5880,7 +7625,7 @@ def validate_case(
                 timing_payload = read_json(case_file(root, timing_relative))
                 timing_errors = validate_automation_timing(
                     timing_payload,
-                    final=final,
+                    final=final if final_timing is None else final_timing,
                     expected_case_id=manifest.get("case_id"),
                     expected_plan=runtime_automation_plan(
                         (planning_payload or {}).get("automation_plan"),
@@ -6104,12 +7849,14 @@ def run_check(
             manifest,
             ledger,
             final=True,
+            final_timing=False,
             ignore_consistency_gate=True,
         )
         errors.extend(
             item
             for item in trace_errors
             if not item.startswith("Gate ")
+            and not item.startswith("Case convergence is ")
             and item != "bounded recovery must be completed before final validation"
         )
     report = {
@@ -6147,6 +7894,7 @@ def context_bundle(
     manifest: dict[str, Any],
     ledger: dict[str, Any],
     *,
+    root: Path | None = None,
     block_id: str | None,
     role: str,
     role_mode: str | None = None,
@@ -6155,6 +7903,7 @@ def context_bundle(
     review_phase: str | None = None,
 ) -> dict[str, Any]:
     """Build a bounded, role-specific list of case inputs."""
+    root = root.expanduser().resolve() if root is not None else None
     if review_backend not in {"native", "revmux"}:
         raise CaseError(f"Unknown review backend: {review_backend}")
     if review_backend == "revmux":
@@ -6222,6 +7971,7 @@ def context_bundle(
     if manifest.get("method_context") is not None:
         method_inputs = [METHOD_CONTEXT_JSON, METHOD_CONTEXT_MARKDOWN]
     if block_id is None:
+        convergence_context: dict[str, Any] | None = None
         if recovery is not None:
             if role in {"system-analyst", "spec-editor"}:
                 raise CaseError("Content roles are forbidden during bounded recovery")
@@ -6275,6 +8025,20 @@ def context_bundle(
                 and not (recovery is not None and recovery.get("combine_final_review"))
             ):
                 raise CaseError("High assurance uses separate integration/global/project reviews")
+            if recovery is None and effective_role_mode in WHOLE_CASE_REVIEW_MODES:
+                convergence_context = convergence_assignment(
+                    root,
+                    manifest,
+                    ledger,
+                    role_mode=effective_role_mode,
+                )
+                if review_backend == "revmux" and review_phase != convergence_context[
+                    "attempt_phase"
+                ]:
+                    raise CaseError(
+                        "revmux review phase must match case convergence: "
+                        f"{convergence_context['attempt_phase']}"
+                    )
             indexes = [
                 str(block.get("semantic_index"))
                 for block in ledger.get("blocks", [])
@@ -6293,6 +8057,28 @@ def context_bundle(
                 "author reasoning",
                 "previous findings",
             ]
+            if (
+                convergence_context is not None
+                and convergence_context.get("attempt_phase") == "final"
+            ):
+                pending_review = convergence_context.get("pending_review")
+                pending_evidence = (
+                    pending_review.get("evidence")
+                    if isinstance(pending_review, dict)
+                    else None
+                )
+                if not isinstance(pending_evidence, str):
+                    raise CaseError(
+                        "Targeted convergence recheck has no bound finding evidence"
+                    )
+                inputs.append(pending_evidence)
+                excluded = [
+                    "reviews/*.md except exact pending convergence evidence",
+                    "unbound reviews/history/*",
+                    "author reasoning",
+                    "unbound previous findings",
+                    "unchanged stage surfaces",
+                ]
         elif role == "solution-architect":
             effective_role_mode = role_mode or "design"
             if effective_role_mode not in {"risk-preflight", "design", "conformance"}:
@@ -6404,11 +8190,20 @@ def context_bundle(
                 else (
                     recovery_final_subject_hash(manifest, ledger, recovery)
                     if recovery_final
-                    else None
+                    else (
+                        convergence_context.get("subject_sha256")
+                        if convergence_context is not None
+                        else None
+                    )
                 )
             ),
             "risk_scope": risk_scope,
-            "covered_gates": covered_gates_for(effective_role_mode),
+            "covered_gates": (
+                convergence_context["covered_gates"]
+                if convergence_context is not None
+                else covered_gates_for(effective_role_mode)
+            ),
+            "convergence": convergence_context,
             "contract_surfaces": sorted(selected_surfaces),
             "contract_inputs": list(dict.fromkeys(contract_inputs)),
             "case_inputs": list(dict.fromkeys(inputs)),
@@ -6445,6 +8240,7 @@ def context_bundle(
         for dependency in dependencies
         for value in (dependency["artifact"], dependency["semantic_index"])
     ]
+    local_review_assignment: dict[str, Any] | None = None
     if role == "system-analyst":
         effective_role_mode = role_mode or "block"
         inputs = common + method_inputs + dependency_files
@@ -6457,6 +8253,18 @@ def context_bundle(
         effective_role_mode = role_mode or "block"
         if effective_role_mode != "block":
             raise CaseError("A reviewer with --block must use role mode block")
+        if recovery is None:
+            if root is None:
+                raise CaseError("Block reviewer context requires the case root")
+            local_review_assignment = block_review_assignment(root, manifest, block)
+            if (
+                review_backend == "revmux"
+                and review_phase != local_review_assignment["attempt_phase"]
+            ):
+                raise CaseError(
+                    "revmux review phase must match block convergence: "
+                    f"{local_review_assignment['attempt_phase']}"
+                )
         remediation = active_block_remediation(block)
         remediation_inputs: list[str] = []
         if remediation is not None:
@@ -6475,6 +8283,8 @@ def context_bundle(
             + [block["artifact"], block["semantic_index"]]
             + remediation_inputs
         )
+        if local_review_assignment is not None:
+            inputs.extend(local_review_assignment["bound_evidence"])
         excluded = [block["review"], "reviews/global.md", "author reasoning"]
         if remediation is None:
             excluded.extend(["reviews/history/*", "previous findings"])
@@ -6549,13 +8359,22 @@ def context_bundle(
             "bounded-recovery"
             if recovery is not None
             else (
-                "targeted-remediation"
-                if remediation is not None and remediation.get("scope") == "targeted"
-                else "full-block"
+                local_review_assignment["review_scope"]
+                if local_review_assignment is not None
+                else None
             )
         ),
-        "subject_sha256": recovery_subject,
+        "subject_sha256": (
+            recovery_subject
+            if recovery_subject is not None
+            else (
+                local_review_assignment["subject_sha256"]
+                if local_review_assignment is not None
+                else None
+            )
+        ),
         "remediation": remediation,
+        "block_convergence": local_review_assignment,
         "covered_gates": covered_gates_for(effective_role_mode),
         "contract_surfaces": sorted(selected_surfaces),
         "contract_inputs": list(dict.fromkeys(contract_inputs)),
@@ -6573,7 +8392,15 @@ def context_bundle(
                 "new_findings_policy": "user-decision",
             }
             if recovery is not None
-            else {}
+            else (
+                {
+                    "new_findings_policy": local_review_assignment[
+                        "new_findings_policy"
+                    ]
+                }
+                if local_review_assignment is not None
+                else {}
+            )
         ),
     }
 
@@ -6596,6 +8423,27 @@ def render_status(root: Path, manifest: dict[str, Any], ledger: dict[str, Any]) 
         f"- kernel revision: `{manifest['kernel']['revision']}`",
         f"- updated: `{manifest['updated_at']}`",
     ]
+    try:
+        convergence = ensure_convergence_state(root, manifest)
+        lines.extend(
+            [
+                f"- convergence phase: `{convergence.get('phase', 'invalid')}`",
+                f"- convergence episode: `{convergence.get('episode', 'invalid')}`",
+                "- case correction batches: "
+                f"`{convergence.get('correction_batches', 'invalid')}` total, "
+                f"`{convergence.get('max_correction_batches_per_stage', 'invalid')}` "
+                "per stage",
+                f"- convergence attempts: `{len(convergence.get('attempts', []))}`",
+            ]
+        )
+        pending = convergence.get("pending_review")
+        if isinstance(pending, dict):
+            lines.append(
+                "- convergence remediation trigger: "
+                f"`{pending.get('trigger_role_mode', 'invalid')}`"
+            )
+    except CaseError:
+        lines.append("- convergence phase: `invalid`")
     recovery = bounded_recovery_binding(manifest)
     if recovery is not None:
         lines.extend(
@@ -6625,8 +8473,8 @@ def render_status(root: Path, manifest: dict[str, Any], ledger: dict[str, Any]) 
             "",
             "## Blocks",
             "",
-            "| ID | Kind | Status | Risk preflight | Depends on | Title |",
-            "|---|---|---|---|---|---|",
+            "| ID | Kind | Status | Review convergence | Risk preflight | Depends on | Title |",
+            "|---|---|---|---|---|---|---|",
         ]
     )
     if ledger["blocks"]:
@@ -6640,10 +8488,11 @@ def render_status(root: Path, manifest: dict[str, Any], ledger: dict[str, Any]) 
             )
             lines.append(
                 f"| {block['id']} | {block['kind']} | {block['status']} | "
+                f"{ensure_block_review_convergence(block).get('phase', 'invalid')} | "
                 f"{risk_status} | {dependencies} | {block['title']} |"
             )
     else:
-        lines.append("| — | — | — | — | — | compact mode or blocks not planned |")
+        lines.append("| — | — | — | — | — | — | compact mode or blocks not planned |")
 
     lines.extend(["", "## Gates", ""])
     for name in GATE_NAMES:
@@ -6956,6 +8805,55 @@ def build_parser() -> argparse.ArgumentParser:
     agent_verification_parser.add_argument("--verified", type=int, required=True)
     agent_verification_parser.add_argument("--evidence-ref", required=True)
 
+    convergence_review_parser = subparsers.add_parser(
+        "record-convergence-review",
+        help="Dispose one whole-case review and advance the finite convergence machine",
+    )
+    convergence_review_parser.add_argument("--case-root", required=True)
+    convergence_review_parser.add_argument("--run-id", required=True)
+    convergence_review_parser.add_argument(
+        "--gate-decision",
+        choices=("pass", "revise", "user-decision"),
+        required=True,
+    )
+    convergence_review_parser.add_argument("--open-blocker", type=int, required=True)
+    convergence_review_parser.add_argument("--open-major", type=int, required=True)
+    convergence_review_parser.add_argument("--open-minor", type=int, required=True)
+    convergence_review_parser.add_argument("--evidence", required=True)
+    convergence_review_parser.add_argument(
+        "--finding",
+        action="append",
+        default=[],
+        metavar="FINDING_ID=blocker|major",
+    )
+    convergence_review_parser.add_argument(
+        "--finding-origin",
+        action="append",
+        default=[],
+        metavar="FINDING_ID=introduced|exposed-at-changed-boundary",
+    )
+    convergence_review_parser.add_argument(
+        "--impact",
+        choices=sorted(CONVERGENCE_IMPACTS),
+    )
+    convergence_review_parser.add_argument("--affected-block", action="append", default=[])
+    convergence_review_parser.add_argument("--semantic-id", action="append", default=[])
+
+    convergence_remediation_parser = subparsers.add_parser(
+        "complete-convergence-remediation",
+        help="Bind the exact corrected delta before a targeted whole-case recheck",
+    )
+    convergence_remediation_parser.add_argument("--case-root", required=True)
+    convergence_remediation_parser.add_argument("--evidence", required=True)
+
+    convergence_resume_parser = subparsers.add_parser(
+        "resume-convergence",
+        help="Start a new convergence episode from explicit user-decision evidence",
+    )
+    convergence_resume_parser.add_argument("--case-root", required=True)
+    convergence_resume_parser.add_argument("--evidence", required=True)
+    convergence_resume_parser.add_argument("--reason", required=True)
+
     check_parser = subparsers.add_parser("check", help="Run checks and update consistency gate")
     check_parser.add_argument("--case-root", required=True)
     check_parser.add_argument("--final-trace", action="store_true")
@@ -7236,6 +9134,7 @@ def main() -> int:
                     context_bundle(
                         manifest,
                         ledger,
+                        root=root,
                         block_id=args.block,
                         role=args.role,
                         role_mode=args.role_mode,
@@ -7290,6 +9189,53 @@ def main() -> int:
                 evidence_ref=args.evidence_ref,
             )
             print(f"PASS agent-verification={args.run_id}")
+            return 0
+        if args.command == "record-convergence-review":
+            attempt = record_convergence_review(
+                root,
+                manifest,
+                ledger,
+                run_id=args.run_id,
+                gate_decision=args.gate_decision,
+                open_blocker=args.open_blocker,
+                open_major=args.open_major,
+                open_minor=args.open_minor,
+                evidence=args.evidence,
+                findings=parse_remediation_findings(args.finding),
+                finding_origins=parse_convergence_finding_origins(args.finding_origin),
+                impact=args.impact,
+                affected_blocks=args.affected_block,
+                semantic_ids=args.semantic_id,
+            )
+            print(
+                "PASS convergence-review="
+                f"{args.run_id} decision={attempt['effective_decision']} "
+                f"phase={manifest['convergence']['phase']}"
+            )
+            return 0
+        if args.command == "complete-convergence-remediation":
+            pending = complete_convergence_remediation(
+                root,
+                manifest,
+                ledger,
+                evidence=args.evidence,
+            )
+            print(
+                "PASS convergence-remediation="
+                f"{pending['target_role_mode']} impact={pending['impact']}"
+            )
+            return 0
+        if args.command == "resume-convergence":
+            state = resume_convergence(
+                root,
+                manifest,
+                ledger,
+                evidence=args.evidence,
+                reason=args.reason,
+            )
+            print(
+                f"PASS convergence-episode={state['episode']} phase={state['phase']}"
+            )
             return 0
         if args.command == "check":
             errors = run_check(root, manifest, ledger, final_trace=args.final_trace)

@@ -113,6 +113,26 @@ risk-блоки; актуальные bindings остальных блоков �
 
 ## Change impact
 
+Case-level convergence хранит monotonic frontier
+`block → integration → global → project → terminal`. `context` выдаёт только
+текущий stage; `record-agent-run` закрепляет его exact subject, а
+`record-convergence-review` применяет coordinator disposition. При `revise`
+обязательны stable finding IDs и `impact`. Машина возвращается не к началу case,
+а к самой ранней доказанно затронутой стадии, затем идёт до trigger как
+непрерывная targeted recheck-chain. Ни один stage этой цепочки не становится
+новым `initial/full-stage`; незатронутые blocks остаются locked. Перед recheck команда
+`complete-convergence-remediation` должна связать изменившийся subject с exact
+finding evidence. Recheck имеет scope `targeted-remediation` и policy
+`introduced-or-exposed-at-changed-boundary-only`; unchanged surfaces закрыты,
+а множество открытых findings должно уменьшаться. Доказанный новый
+critical/major останавливает автоматический цикл в `user-decision`.
+
+На один stage разрешён один automatic correction batch. Findings разных стадий
+не смешиваются в общий цикл. `kernel` impact и повторный `revise` одного stage
+ведут в `user-decision`; targeted remediation не может вызвать
+`refresh-kernel`. Поэтому новый SHA не сбрасывает review frontier и не обновляет
+budget сам по себе.
+
 Любой `refresh-kernel` нового case требует `--change-scope`:
 
 - `editorial` и `projection-only` не инвалидируют semantic blocks;
@@ -138,13 +158,15 @@ projection cadence задним числом не ужесточаются.
 предыдущий review, baseline block/index и точные semantic IDs. Повторный reviewer
 получает этот bounded delta contract и проверяет finding, изменённые IDs и прямые
 регрессии; покрытие неизменённых поверхностей переносится из immutable review.
-Новый finding может открыть следующий автоматический цикл только при доказанной
-связи с delta. Наблюдение в неизменённой области фиксируется отдельно и требует
-coordinator/user decision, а не запускает бесконечный общий review.
+Новый finding в final/recheck не открывает следующий автоматический цикл.
+Связь `introduced|exposed-at-changed-boundary` делает finding валидным, но
+переводит локальный gate в `user-decision`; наблюдение в неизменённой области
+фиксируется отдельно и тоже не запускает общий review.
 
 Новый блок использует `remediation_contract: batched-v2`: все accepted
 `blocker/major` одного gate передаются одним вызовом `begin-remediation`, а на
-один kernel epoch разрешено максимум два batches даже с разными finding IDs.
+один kernel epoch разрешён ровно один automatic batch со всеми принятыми
+findings текущего gate.
 Для `batched-v2` явный `--batch-complete` является обязательной coordinator
 attestation после disposition всех findings этого gate.
 После лимита машина требует root-cause kernel change или user decision.
@@ -155,8 +177,10 @@ Crosscutting/architecture refresh открывает новый epoch явно �
 
 Если исправление меняет смысл блока целиком, набор semantic IDs нельзя честно
 ограничить либо затронуты цель, scope, публичный контракт, архитектура или
-сквозная логика, используй `--full-block`. Предыдущее покрытие тогда не
-переносится: повторяются полный block review и применимые whole-case gates.
+сквозная логика, используй `--full-block`. Reviewer получает
+`full-block-remediation`: прежний PASS не переносится, но recheck остаётся
+привязанным к finding evidence, полному изменённому delta и прямым регрессиям.
+Применимые whole-case gates открываются только по доказанному impact.
 После targeted pass, свежих integration/author/machine checks и read-back команда
 `record-remediation` может перенести прежние whole-case review gates на новый
 subject через отдельный audit receipt. Full-block и crosscutting delta этим

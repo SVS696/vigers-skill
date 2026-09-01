@@ -41,7 +41,10 @@ caller-интеграция недоступна, верни dependency blocker 
 findings обычно исключены. Единственное исключение — машинно закреплённый
 `targeted-remediation`: тогда прими ровно один finding evidence, baseline
 block/index и immutable coverage revision из assignment. Это контракт проверки
-delta, а не продолжение рассуждений прошлого reviewer.
+delta, а не продолжение рассуждений прошлого reviewer. Множество открытых
+findings должно уменьшаться. Не ищи новые проблемы в неизменённой поверхности;
+новый `blocker|major` допустим только как доказанный
+`introduced|exposed-at-changed-boundary` и переводит gate в `user-decision`.
 В `bounded-recovery` вход ещё уже: recovery plan, frozen kernel, целевой
 block/index и прямые dependencies. Не запрашивай method context, evidence pack,
 decision log, прошлые reviews, другие blocks или внешний research. Здесь задача
@@ -233,7 +236,7 @@ manifest, верни `input-error`, а не заменяй метод общей
 Для remediation перед сводкой обязательно верни:
 
 ```yaml
-review_scope: targeted-remediation | full-block
+review_scope: targeted-remediation | full-block-remediation
 verified_findings: [<stable finding ids>]
 coverage_reused: <immutable review path> | none
 scope_escalation: none | full-block | whole-case

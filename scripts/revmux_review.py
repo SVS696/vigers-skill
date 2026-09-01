@@ -380,9 +380,18 @@ def validate_round(
         raise EvidenceError("review evidence requires both synthesis and verify stages")
 
     round_dir = manifest_path.resolve().parent
-    stage_prompts = list((round_dir / "prompts" / "stages").glob("*.md"))
-    if len(stage_prompts) < 2:
-        raise EvidenceError("round archive is missing synthesis/verify prompt evidence")
+    stage_prompt_dir = round_dir / "prompts" / "stages"
+    synthesis_prompt = stage_prompt_dir / "synthesis.md"
+    verify_prompts = list(stage_prompt_dir.glob("verify-*.md"))
+    if not synthesis_prompt.is_file():
+        raise EvidenceError("round archive is missing synthesis prompt evidence")
+    verify_stage = next(item for item in stages if item.get("name") == "verify")
+    if not verify_prompts:
+        if findings(report):
+            raise EvidenceError("round archive is missing verify prompt evidence")
+        if any(verify_stage.get(field) for field in ("executor", "model", "effort")):
+            raise EvidenceError("verify stage reports a runner without prompt evidence")
+    stage_prompts = [synthesis_prompt, *verify_prompts]
     retry_calls = list((round_dir / "agents").glob("*.retry.*"))
     revmux_model_calls = len(agents) + len(stage_prompts) + len(retry_calls)
     model_calls = revmux_model_calls + 1  # the fresh reviewer-driver assignment

@@ -126,10 +126,11 @@ polish-pass на текущий gate. Повторное review после ис�
 из `{baseDir}/references/convergence-contract.md`.
 
 Карточка блока может содержать `risk_surfaces`. Тогда до authoring требуется
-case-level risk preflight, а initial/full-block review возвращает completed
+case-level risk preflight, а initial `full-block` review возвращает completed
 `review_agent_run`, `finding_batch_complete: true` и ровно одну строку
 `risk_surface: <id>=pass|not-applicable|<finding-id>` для каждой поверхности.
-Targeted remediation эту матрицу не пересматривает.
+Любой final/recheck (`targeted-remediation`, `full-block-remediation`,
+`minor-polish`, `changed-boundary`) эту матрицу не пересматривает.
 
 Каждый завершённый локальный review сохраняется отдельной immutable revision.
 При accepted `blocker|major` координатор открывает `begin-remediation` с finding
@@ -138,11 +139,20 @@ baseline block/index, finding evidence и ровно одну закреплён
 предыдущего покрытия. Для `targeted-remediation` отчёт возвращает
 `review_scope`, точный `verified_findings` и `coverage_reused`; изменение
 необъявленного semantic ID блокируется машиной. Для смысловой переписи блока
-используется `full-block`, где `coverage_reused: none` и выполняется полный
-локальный review. Для `batched-v2` все accepted blocker/major одного gate входят
-в один `--batch-complete`; на kernel epoch разрешено максимум два batches. Дальше требуется
-root-cause kernel change либо `user-decision`, а не новый finding-by-finding
-проход.
+CLI использует `--full-block`, но reviewer получает scope
+`full-block-remediation`: проверяет accepted batch, весь изменённый block delta
+и прямые регрессии, не начинает новый поиск по неизменённой поверхности.
+`coverage_reused: none` означает запрет переноса PASS, а не разрешение забыть
+finding evidence и начать аудит с нуля. Для `batched-v2` все accepted
+blocker/major одного gate входят в один `--batch-complete`; на kernel epoch
+разрешён один автоматический batch. Оставшийся blocker/major после recheck
+переводит локальную машину в `user-decision`.
+
+Локальная машина идёт только `unreviewed → awaiting-disposition → remediation
+→ awaiting-disposition → stable`. Minor-only даёт одну ветку `minor-polish`, а
+доказанный kernel delta — `changed-boundary`; обе возвращаются final/recheck и
+не открывают `full-block`. Стабильный `reviewed|integrated` блок не выдаёт новый
+reviewer context: следующий допустимый уровень — integration.
 
 ## Границы контекста
 

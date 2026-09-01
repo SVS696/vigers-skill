@@ -942,7 +942,14 @@ def validate(project_roots: list[Path] | None = None) -> dict[str, int]:
     for package_file in ROOT.rglob("*"):
         if not package_file.is_file() or package_file.suffix not in public_suffixes:
             continue
-        if ".omc" in package_file.parts or "__pycache__" in package_file.parts:
+        if (
+            ".omc" in package_file.parts
+            or "__pycache__" in package_file.parts
+            or (
+                ".revmux" in package_file.parts
+                and "tasks" in package_file.parts
+            )
+        ):
             continue
         text = package_file.read_text(encoding="utf-8")
         relative = package_file.relative_to(ROOT)

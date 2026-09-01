@@ -38,8 +38,7 @@ description: "Оркестрирует предварительное иссле
    видимый прогресс и machine barriers; `off|milestones` требуют явной настройки.
    ETA не передаётся ролям и не влияет на качество или scope.
    Внешняя запись и checklist требуют read-back; checklist использует отдельный `progress_target_id` и штатный migration.
-9. **Качество имеет критерий достаточности.** `blocker` и `major` закрываются пакетной `--batch-complete` remediation: baseline/coverage сохраняются, re-review проверяет delta, а два batches на kernel epoch — предел. Доказанные high-risk surfaces получают один ранний risk-preflight; обычная задача — ни одного нового прохода.
-    Первый root-cause refresh может открыть новый epoch; следующий требует case-local evidence явного решения пользователя и не может бесконечно обновлять бюджет. `minor` и research следуют критерию достаточности из `{baseDir}/references/convergence-contract.md`.
+9. **Качество имеет критерий достаточности и progressive scope lock.** Review идёт `block → integration → global → project → terminal`; каждый stage ищет только дефекты новой поверхности. Первый block review — единственный `full-block`; после него разрешены только `targeted-remediation|full-block-remediation|minor-polish|changed-boundary`, а stable block сразу передаёт frontier в integration. `blocker` и `major` закрываются exact batch: baseline/coverage сохраняются, recheck проверяет finding, delta и прямые регрессии, а один automatic correction batch на stage — предел. Множество открытых findings обязано убывать; новый finding на recheck допустим только как доказанный `introduced|exposed-at-changed-boundary` critical/major и не открывает новый автоматический batch. `record-convergence-review` фиксирует impact и минимальную цепочку affected stages: после локального исправления только затронутый блок, его швы и delta верхних уровней получают targeted recheck, а неизменённые блоки остаются locked. `complete-convergence-remediation` обязателен до whole-case recheck. Targeted remediation не может обновить kernel. Kernel/scope/architecture impact требует immutable user decision и нового episode только после начавшегося whole-case review; локальный kernel delta получает `changed-boundary`, а не новый full review. Доказанные high-risk surfaces получают один ранний risk-preflight; обычная задача — ни одного нового прохода. `minor` и research следуют критерию достаточности из `{baseDir}/references/convergence-contract.md`.
 10. **Скрытый case не заменяет рабочий документ.** Создай объявленную видимую проекцию до анализа. В `milestones` обновляй её полным draft на смысловых вехах, в `per-block` — после каждого reviewed блока. Это не публикация.
     Для `intent=review` machine contract допускает только `milestones`: готовый внешний документ не перепубликуется после каждого локального review.
 11. **Project-conformance имеет машинный барьер.** Если profile объявляет
@@ -430,9 +429,10 @@ python3 -m unittest discover -s {baseDir}/scripts -p 'test_*.py'
 - AC исполнимы фактическим приёмщиком: UI-критерий ведёт к точному сценарию с экраном/маршрутом либо содержит их сам, а non-UI — к системной точке входа; DoD фиксирует готовность к приёмке, developer self-check исключён без нормативного основания.
 - После локальной правки `begin-remediation` сохранил immutable review/baseline;
   проверены пакет findings, объявленные semantic IDs и прямые регрессии. Risk
-  surfaces закрыты ранней матрицей; третий batch запрещён без root-cause kernel
+  surfaces закрыты ранней матрицей; второй batch запрещён без root-cause kernel
   change, а второй reset epoch подтверждён сохранённым user-decision evidence.
-  Полный review запущен только при смысловой/сквозной переписи.
+  Даже при смысловой переписи local recheck остаётся bounded scope
+  `full-block-remediation`; whole-case gates открыты только по impact.
 - Diagram gate имеет `required|not-required|blocked`; все required surfaces
   представлены, семантически сверены и просмотрены в фактическом render. Одна
   гигантская нечитаемая схема не считается покрытием нескольких surfaces.

@@ -38,6 +38,7 @@
 │   ├── global.md
 │   ├── project.md
 │   └── architecture.md
+├── convergence/history/      # immutable findings, remediation и user decisions
 └── draft.md                   # интегрированный документ
 ```
 
@@ -104,6 +105,45 @@ cases без decision или method context читаются как `legacy-unre
 `--allow-unrecorded-method` и `--allow-unplanned`; новый workflow эти escape
 hatches не использует.
 
+## Case-level convergence
+
+`manifest.convergence` — исполнимая progressive state machine:
+
+```text
+blocks → integration → global → project → terminal
+                     ↘ exact remediation → targeted recheck
+kernel/scope change  → user-decision → explicit new episode
+```
+
+`cursor` указывает самый ранний незакрытый whole-case stage. Passing
+disposition двигает его только вперёд. `revise` обязан объявить finding IDs,
+impact и exact selectors; машина возвращает cursor к `integration|global|project`
+только при таком impact. `block-local` не сбрасывает whole-case frontier:
+affected blocks проходят bounded remediation и локальный final, после чего
+повторно сшиваются, а неизменённые blocks и surfaces остаются locked. Gate от
+target до trigger не rebased: машина проходит их как одну непрерывную цепочку
+`targeted-remediation`, сохраняя исходный finding batch. Trigger не возвращается
+в `initial/full-stage`. `complete-convergence-remediation` доказывает фактическое
+изменение target subject до этой цепочки. На каждом следующем recheck проверяются
+только finding, delta и прямые зависимости; множество открытых findings должно
+уменьшаться. Новый finding допустим только как доказанный
+`introduced|exposed-at-changed-boundary` critical/major. Любой остаточный
+`revise` и `kernel` impact становятся `user-decision`, а не новым автоматическим
+циклом.
+
+Каждый блок отдельно хранит `review_convergence`:
+
+```text
+unreviewed → awaiting-disposition → remediation → awaiting-disposition → stable
+                                      ↘ recheck major → user-decision
+initial minor → minor-polish → final → stable
+kernel delta on covered block → changed-boundary → final → stable
+```
+
+`context` выдаёт `full-block` только из `unreviewed`. Для всех остальных веток
+он выдаёт final scope и exact prior evidence. `stable` не имеет reviewer
+перехода: дальнейшая проверка начинается на integration frontier.
+
 ## Состояния блока
 
 ```text
@@ -132,9 +172,9 @@ Review report — evidence гейта, а не повод автоматичес
 - для minor-only уже использован не более чем один polish-pass текущего гейта.
 
 Повторяй только затронутый review gate и детерминированные проверки. `pass` не
-переоткрывается из-за residual minor. Новый `batched-v2` блок допускает максимум
-два remediation batches на kernel epoch независимо от finding IDs; третий
-finding-by-finding цикл запрещён. Root-cause escalation требует явного
+переоткрывается из-за residual minor. Новый `batched-v2` блок допускает один
+automatic remediation batch на kernel epoch; второй finding-by-finding цикл
+запрещён. Root-cause escalation требует явного
 crosscutting/architecture kernel change; второй reset того же блока требует
 case-local `--user-decision-evidence`. Полные правила заданы в
 `{baseDir}/references/convergence-contract.md`.
@@ -249,6 +289,22 @@ python3 {baseDir}/scripts/case_pipeline.py record-agent-verification \
   --case-root "<path>" --run-id AR-0001 --accepted 1 --rejected 0 \
   --duplicate 0 --verified 1 --evidence-ref "<verification-ref>"
 
+# Coordinator disposition одного whole-case stage:
+python3 {baseDir}/scripts/case_pipeline.py record-convergence-review \
+  --case-root "<path>" --run-id AR-0001 --gate-decision revise \
+  --open-blocker 0 --open-major 1 --open-minor 0 \
+  --finding "REV-014=major" --impact global \
+  --evidence "reviews/global.md"
+
+# После exact correction, свежих machine checks и read-back:
+python3 {baseDir}/scripts/case_pipeline.py complete-convergence-remediation \
+  --case-root "<path>" --evidence "consistency.json"
+
+# Только для нового kernel/scope episode по явному решению владельца:
+python3 {baseDir}/scripts/case_pipeline.py resume-convergence \
+  --case-root "<path>" --evidence "user-decision.md" \
+  --reason "<approved scope/kernel change>"
+
 python3 {baseDir}/scripts/case_pipeline.py validate \
   --case-root "<path>" --final
 ```
@@ -313,11 +369,14 @@ Legacy-блок с `remediation_contract: targeted-v1` и новый блок с
 сохраняет immutable copies предыдущего блока, index и finding evidence, а также
 ограничивает targeted delta перечисленными semantic IDs. Повторный block report
 обязан вернуть `review_scope: targeted-remediation`, точный список
-`verified_findings` и путь `coverage_reused`. При `--full-block` прошлое
-покрытие не переносится. После свежих `semantic_integration`, `author_passes`,
+`verified_findings` и путь `coverage_reused`. При `--full-block` context выдаёт
+`full-block-remediation`: прошлый PASS не переносится, но recheck ограничен
+finding evidence, изменённым block delta и прямыми регрессиями. После свежих `semantic_integration`, `author_passes`,
 consistency, document checks и projection read-back `record-remediation`
 создаёт audit receipts и переносит только действительно существовавшие passed
-whole-case review gates. Изменение любого постороннего semantic artifact
+whole-case review gates до convergence cursor. Пока remediation открыта, gate
+на cursor и все последующие не rebased: их закрывает targeted recheck и
+дальнейший progressive review. Изменение любого постороннего semantic artifact
 блокирует перенос.
 
 `add-block --risk-surface` включает условный ранний контракт. Один

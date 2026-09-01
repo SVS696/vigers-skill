@@ -48,7 +48,9 @@ resolved path, version и pin в immutable context; reviewer adapter отдел�
 переписывается. Evidence сохраняет точный assignment boundary:
 
 - `block` → `covered_gates: [block_review:Bxx]`, только целевой блок, kernel и
-  объявленные dependencies;
+  объявленные dependencies; `vigers-review` допустим только для первого
+  `full-block`, а `vigers-final` — для `targeted-remediation`,
+  `full-block-remediation`, `minor-polish` или `changed-boundary`;
 - `integration` → `[integration_review]`, только межблочные связи;
 - `global` → `[global_review]`, итоговая цель, scope, полнота, проверяемость и
   трассировка;
@@ -63,8 +65,9 @@ resolved path, version и pin в immutable context; reviewer adapter отдел�
 
 Reviewer-driver не выполняет собственный semantic review поверх результата,
 не вызывает прежнего reviewer и не запускает следующий round. Revmux не
-редактирует постановку. Disposition и один общий correction batch остаются у
-координатора и authoring-роли.
+редактирует постановку. Disposition и exact correction batch текущего stage
+остаются у координатора и authoring-роли. Findings разных progressive stages
+не собираются в один общий full-case batch.
 
 Одновременный native model-review и revmux для одного gate запрещены. Исключение
 — заранее помеченный `comparison_measurement`, который не создаёт второй gate и
@@ -121,11 +124,17 @@ scope не копируются, потому что revmux инъецирует
 5. terminal `pass`, `failed` либо `user-decision`. Оставшийся/new
    `critical|major` не запускает второй correction round автоматически.
 
-Если assurance требует несколько независимых reviewer gates, сначала собери
-их initial findings, примени один общий correction batch к frozen subject и
-запусти по одному final confirmation на каждый исходный assignment. Native
-reviewer поверх этих же gates не добавляется. Block review остаётся локальным
-gate своего Bxx и не ждёт финальной сборки остальных блоков.
+Если assurance требует несколько независимых reviewer gates, проходи их
+последовательно по machine frontier: `integration`, затем `global`, затем
+`project-conformance`. Следующий initial assignment запрещён, пока текущий stage
+не получил disposition и `pass`. Finding текущего stage открывает только его
+exact remediation; после `complete-convergence-remediation` запускается один
+`vigers-final` этого stage. Только его pass разрешает следующий более широкий
+initial assignment. Native reviewer поверх этих же gates не добавляется. Block
+review остаётся локальным gate своего Bxx и не ждёт финальной сборки остальных
+блоков. После local PASS блок locked: новый `vigers-review` того же Bxx
+запрещён. Его recheck использует один `vigers-final`; оставшийся/new major
+возвращает `user-decision`, не ещё один block round.
 
 Lenses лежат в `revmux/lenses/`: contradictions, scope boundary, acceptance
 testability, architecture, traceability и reader projection. Project-specific

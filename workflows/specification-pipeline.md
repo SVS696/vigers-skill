@@ -310,12 +310,12 @@ architecture design note с ограничениями для редактора
 4. Если остались только `minor`, выполни не более одного пакетного polish-pass
    на текущий review gate либо зафиксируй их как residual. Затем перейди дальше
    без нового полного reviewer.
-5. Если тот же `blocker/major` остался после двух точечных циклов, верни
-   `user-decision`, а не запускай третий круг.
+5. Если `blocker/major` остался или появился после единственного точечного
+   recheck, верни `user-decision`, а не запускай второй correction round.
 
 Для `review_backend: revmux` пункты 2–5 ограничены одним общим correction batch
-и одним final confirmation по backend-контракту; обычный бюджет двух targeted
-remediation batches к этому bounded cycle не добавляется.
+и одним final confirmation по backend-контракту; дополнительный native budget
+к этому bounded cycle не добавляется.
 
 **Выход:** открытых принятых `blocker/major` нет либо требуется явно
 сформулированное решение; residual minor зафиксированы и не блокируют выдачу.

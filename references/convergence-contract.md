@@ -75,6 +75,40 @@ Targeted research заканчивается по `stop_condition` либо по
 недоступности целевых источников; он не расширяется автоматически на соседние
 темы.
 
+## Progressive scope lock
+
+Whole-case review идёт только вперёд по уровням
+`block → integration → global → project-conformance → terminal`. Каждый уровень
+ищет дефекты только своей новой поверхности:
+
+- block review закрывает локальную семантику одного блока;
+- integration review проверяет только швы, зависимости и межблочные инварианты;
+- global review проверяет полноту и непротиворечивость постановки целиком;
+- project-conformance проверяет только правила и видимую проекцию проекта.
+
+Пройденный уровень становится locked coverage. Более широкий reviewer не
+переоткрывает неизменённую локальную поверхность. Если он обнаружил проблему,
+координатор фиксирует exact finding IDs, `impact`, affected blocks и semantic
+IDs через `record-convergence-review`. Автоматический rewind выбирается по
+самой ранней действительно затронутой стадии: `project`, `global` или
+`integration`; `block-local` сохраняет текущий whole-case frontier и использует
+bounded block remediation. После исправления target → trigger проходят одной
+непрерывной цепочкой targeted recheck: конкретный блок, затронутые швы и delta
+верхнего уровня. Уже пройденные стадии в этой цепочке не получают новый
+`initial/full-stage`, а незатронутые blocks и surfaces вообще не открываются.
+Отсутствие impact никогда не означает полный цикл.
+
+Перед повторным reviewer обязателен `complete-convergence-remediation`: команда
+связывает evidence исправления и проверяет, что exact subject изменился. Recheck
+получает только finding batch, delta и прямые регрессии. Множество открытых
+findings должно уменьшаться. Новый finding допустим только с origin
+`introduced|exposed-at-changed-boundary` и severity `critical|major`; он
+останавливает automatic convergence в `user-decision`. Второй automatic
+correction batch на том же уровне запрещён. Обычная targeted remediation не
+имеет права выполнять `refresh-kernel`. Изменение kernel/scope/архитектуры
+переводит case в `user-decision` и начинает новый episode только по immutable
+evidence явного решения пользователя.
+
 ## Цикл исправлений
 
 1. Координатор фиксирует disposition каждого finding: `accepted`, `rejected`
@@ -97,9 +131,9 @@ Targeted research заканчивается по `stop_condition` либо по
    при явной связи `introduced|exposed-at-changed-boundary` с текущей delta.
    Несвязанное наблюдение в ранее покрытой области не расширяет тот же цикл:
    координатор фиксирует его отдельно и решает приоритет с пользователем.
-6. На один блок и kernel epoch разрешено не более двух remediation batches
-   независимо от количества и текста finding IDs. После исчерпания бюджета
-   третий finding-by-finding цикл запрещён. Если причина архитектурная или
+6. На один блок и kernel epoch разрешён один automatic remediation batch,
+   содержащий все принятые findings текущего gate. После его recheck второй
+   finding-by-finding цикл запрещён. Если причина архитектурная или
    сквозная, агрегируй её в одно root-cause решение, явно обнови kernel с
    `semantic-crosscutting|architecture` impact и заново пройди полный затронутый
    контракт. Такой root-cause reset автоматически разрешён один раз. Следующий
@@ -109,12 +143,18 @@ Targeted research заканчивается по `stop_condition` либо по
 7. Новый цикл после `pass` допустим только при новом evidence, изменении
    смыслового артефакта или доказанном новом `blocker/major`. Новые minor-only
    пожелания не переоткрывают гейт.
+8. Для whole-case уровней действует максимум один correction batch на каждый
+   stage. Это не общий запрет исправлять ошибки разных уровней: integration,
+   global и project могут независимо закрыть по одному exact batch. Но recheck
+   уровня не начинает новый поиск и не открывает второй batch автоматически.
 
-Targeted remediation автоматически повышается до `full-block`, если меняется
+Targeted remediation автоматически повышается до `full-block-remediation`, если меняется
 необъявленный semantic ID либо исправление затрагивает смысл блока целиком.
 Изменение цели, scope, публичного контракта, архитектуры или сквозной логики
 повышает область ещё дальше до соответствующих whole-case gates. Такое повышение
-явное: отсутствие selector не означает полный пересмотр.
+явное: CLI-флаг остаётся `--full-block`, но reviewer проверяет finding batch,
+весь изменённый block delta и прямые регрессии. Отсутствие selector не означает
+полный пересмотр или новый поиск дефектов.
 
 ## Восстановление уже замороженного case
 
@@ -128,7 +168,7 @@ review surfaces и конечный набор gates. Recovery не исправ
 Новый `blocker|major` внутри recovery всегда завершает текущий pass как
 `user-decision`. Координатор останавливает recovery, выполняет обычную bounded
 remediation после решения и при необходимости начинает новый recovery на новом
-subject. Нельзя незаметно превратить recovery в третий remediation batch или
+subject. Нельзя незаметно превратить recovery во второй remediation batch или
 полный review с чистого листа.
 
 ## Итог reviewer и решение координатора
@@ -158,8 +198,8 @@ gate_decision: pass | revise | user-decision
 
 - `pass` — нет открытых принятых `blocker/major`; residual minor допустимы;
 - `revise` — остался хотя бы один открытый принятый `blocker/major`;
-- `user-decision` — нужен выбор владельца или повторился тот же существенный
-  finding после двух точечных циклов.
+- `user-decision` — нужен выбор владельца либо существенный finding остался или
+  появился после единственного bounded recheck.
 
 Координатор не закрывает гейт по одной рекомендации: он сверяет reported counts,
 dispositions, evidence, open counts и residual log. При `pass` pipeline сразу

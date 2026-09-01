@@ -25,11 +25,22 @@ class RevmuxReviewTest(unittest.TestCase):
             with self.assertRaisesRegex(review.EvidenceError, "unsupported revmux build"):
                 review.detect_revmux(str(binary))
 
-    def make_round(self, root: Path, *, profile: str, findings: list[dict] | None = None) -> tuple[Path, Path]:
+    def make_round(
+        self,
+        root: Path,
+        *,
+        profile: str,
+        findings: list[dict] | None = None,
+        verify_prompt: bool = True,
+        verify_stage: dict | None = None,
+    ) -> tuple[Path, Path]:
         (root / "prompts" / "stages").mkdir(parents=True)
         (root / "agents").mkdir()
         (root / "prompts" / "stages" / "synthesis.md").write_text("x", encoding="utf-8")
-        (root / "prompts" / "stages" / "verify-one.md").write_text("x", encoding="utf-8")
+        if verify_prompt:
+            (root / "prompts" / "stages" / "verify-one.md").write_text(
+                "x", encoding="utf-8"
+            )
         scope = {"task": "review-1", "run": root.name, "scope_path": str(root / "input/scope.md")}
         agents = [
             {
@@ -54,7 +65,10 @@ class RevmuxReviewTest(unittest.TestCase):
             "stats": {
                 "duration_ms": 100,
                 "tokens": 50,
-                "stages": [{"name": "synthesis"}, {"name": "verify"}],
+                "stages": [
+                    {"name": "synthesis"},
+                    verify_stage or {"name": "verify"},
+                ],
             },
         }
         manifest = {
@@ -227,6 +241,77 @@ class RevmuxReviewTest(unittest.TestCase):
             self.assertEqual(payload["model_calls"], 4)
             self.assertEqual(payload["decision"], "pass")
             self.assertIn("covered_gates: [global_review]", output.read_text(encoding="utf-8"))
+
+    def test_zero_finding_round_accepts_undispatched_verify_stage(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "02-final"
+            report, manifest = self.make_round(
+                root, profile="vigers-final", verify_prompt=False
+            )
+            output = root / "evidence.md"
+            metrics = root / "metrics.json"
+            args = argparse.Namespace(
+                report=report,
+                manifest=manifest,
+                phase="final",
+                expected_profile="vigers-final",
+                subject_sha256="b" * 64,
+                covered_gate=["block_review:B04"],
+                output=output,
+                metrics_output=metrics,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                result = review.write_round(args)
+            self.assertEqual(result, 0)
+            payload = json.loads(metrics.read_text(encoding="utf-8"))
+            self.assertEqual(payload["revmux_model_calls"], 2)
+            self.assertEqual(payload["model_calls"], 3)
+            self.assertEqual(payload["decision"], "pass")
+
+    def test_finding_round_rejects_missing_verify_prompt(self) -> None:
+        finding = {
+            "id": "f1",
+            "file": "draft.md",
+            "line": 4,
+            "severity": "major",
+            "confidence": 90,
+            "title": "gap",
+            "body": "effect",
+            "fix": "clarify",
+            "sources": ["one"],
+            "lenses": ["a"],
+            "verdict": "confirmed",
+        }
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "02-final"
+            report, manifest = self.make_round(
+                root,
+                profile="vigers-final",
+                findings=[finding],
+                verify_prompt=False,
+            )
+            with self.assertRaisesRegex(review.EvidenceError, "missing verify prompt"):
+                review.validate_round(report, manifest, "vigers-final")
+
+    def test_zero_finding_round_rejects_dispatched_verify_without_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as raw:
+            root = Path(raw) / "02-final"
+            report, manifest = self.make_round(
+                root,
+                profile="vigers-final",
+                verify_prompt=False,
+                verify_stage={
+                    "name": "verify",
+                    "executor": "claude",
+                    "model": "opus",
+                    "effort": "high",
+                },
+            )
+            with self.assertRaisesRegex(
+                review.EvidenceError,
+                "reports a runner without prompt evidence",
+            ):
+                review.validate_round(report, manifest, "vigers-final")
 
     def test_final_gating_finding_fails_without_loop(self) -> None:
         finding = {

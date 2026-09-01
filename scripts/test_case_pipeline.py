@@ -9,6 +9,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import automation_timing
 import case_pipeline
@@ -449,6 +450,25 @@ class CasePipelineTests(unittest.TestCase):
         case_pipeline.refresh_kernel(loaded_root, manifest, ledger, [])
         return root
 
+    def init_timed(self, base: Path, mode: str = "block") -> Path:
+        root = base / "case"
+        self.write_method_context(root)
+        self.write_mode_decision(root, selected_mode=mode)
+        self.write_timed_planning_handoff(root, revision=1)
+        case_pipeline.init_case(
+            root,
+            case_id="demo-1",
+            mode=mode,
+            intent="create",
+            profile_id="generic",
+            route_id="core",
+            project_root=None,
+        )
+        replace_todo(root / "kernel.md", "# Kernel\n\nStable kernel")
+        loaded_root, manifest, ledger = case_pipeline.load_case(root)
+        case_pipeline.refresh_kernel(loaded_root, manifest, ledger, [])
+        return root
+
     def write_recovery_plan(
         self,
         root: Path,
@@ -510,6 +530,10 @@ class CasePipelineTests(unittest.TestCase):
         role: str,
         role_mode: str,
         subject_sha256: str,
+        reported_blocker: int = 0,
+        reported_major: int = 0,
+        reported_minor: int = 0,
+        status: str = "completed",
     ) -> str:
         loaded_root, manifest, ledger = case_pipeline.load_case(root)
         return case_pipeline.record_agent_run(
@@ -525,14 +549,147 @@ class CasePipelineTests(unittest.TestCase):
             output_tokens=10,
             duration_seconds=1.0,
             retries=0,
-            reported_blocker=0,
-            reported_major=0,
-            reported_minor=0,
+            reported_blocker=reported_blocker,
+            reported_major=reported_major,
+            reported_minor=reported_minor,
             cache_status="miss",
+            status=status,
+        )
+
+    def authorize_review_gate(self, root: Path, *gate_names: str) -> None:
+        """Install a focused passing disposition for tests of downstream gate logic."""
+        loaded_root, manifest, ledger = case_pipeline.load_case(root)
+        state = case_pipeline.ensure_convergence_state(loaded_root, manifest)
+        revision = len(state["attempts"]) + 1
+        receipt = root / "convergence" / "history" / f"test-pass-r{revision:03d}.md"
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        receipt.write_text("# Test convergence receipt\n\nPASS\n", encoding="utf-8")
+        state["attempts"].append(
+            {
+                "revision": revision,
+                "at": case_pipeline.now_utc(),
+                "episode": state["episode"],
+                "attempt_phase": "initial",
+                "run_id": f"AR-TEST-{revision:04d}",
+                "role_mode": "final" if len(gate_names) > 1 else "global",
+                "covered_gates": list(gate_names),
+                "subject_sha256": "f" * 64,
+                "subject_by_gate": {
+                    gate_name: case_pipeline.gate_subject_hash(
+                        loaded_root, manifest, ledger, gate_name
+                    )
+                    for gate_name in gate_names
+                },
+                "reported": {"blocker": 0, "major": 0, "minor": 0},
+                "open_blocker": 0,
+                "open_major": 0,
+                "open_minor": 0,
+                "gate_decision": "pass",
+                "effective_decision": "pass",
+                "evidence": receipt.relative_to(root).as_posix(),
+                "evidence_sha256": case_pipeline.sha256(receipt),
+            }
+        )
+        case_pipeline.save_case(loaded_root, manifest, ledger)
+
+    def pass_case_review(self, root: Path, role_mode: str, evidence: str) -> None:
+        """Run one complete machine-bound whole-case review with a PASS disposition."""
+        loaded_root, manifest, ledger = case_pipeline.load_case(root)
+        context = case_pipeline.context_bundle(
+            manifest,
+            ledger,
+            root=loaded_root,
+            block_id=None,
+            role="spec-reviewer",
+            role_mode=role_mode,
+        )
+        run_id = self.record_agent_run(
+            root,
+            role="spec-reviewer",
+            role_mode=role_mode,
+            subject_sha256=context["subject_sha256"],
+        )
+        loaded_root, manifest, ledger = case_pipeline.load_case(root)
+        case_pipeline.record_convergence_review(
+            loaded_root,
+            manifest,
+            ledger,
+            run_id=run_id,
+            gate_decision="pass",
+            open_blocker=0,
+            open_major=0,
+            open_minor=0,
+            evidence=evidence,
+        )
+
+    def prepare_whole_case_review(self, root: Path, block_id: str = "B01") -> None:
+        """Build a real integrated subject with fresh machine prerequisites."""
+        _, _, ledger = case_pipeline.load_case(root)
+        block = case_pipeline.blocks_by_id(ledger)[block_id]
+        if block["status"] != "integrated":
+            self.analyze_and_review(root, block_id, f"SCN-{block_id}-001")
+            replace_todo(root / "draft.md", f"# Draft\n\nIntegrated {block_id}")
+            self.transition(root, block_id, "integrated")
+        replace_todo(root / "evidence.md", "# Evidence\n\nCurrent source set")
+        for name, evidence in (
+            ("evidence", "evidence.md"),
+            ("semantic_integration", "draft.md"),
+        ):
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name=name,
+                status="pass",
+                evidence=evidence,
+                note=None,
+            )
+        loaded_root, manifest, ledger = case_pipeline.load_case(root)
+        self.assertEqual(
+            case_pipeline.run_check(
+                loaded_root,
+                manifest,
+                ledger,
+                final_trace=False,
+            ),
+            [],
+        )
+        loaded_root, manifest, ledger = case_pipeline.load_case(root)
+        case_pipeline.set_gate(
+            loaded_root,
+            manifest,
+            ledger,
+            name="author_passes",
+            status="pass",
+            evidence="draft.md",
+            note=None,
         )
 
     def transition(self, root: Path, block_id: str, status: str, note: str | None = None) -> None:
         loaded_root, manifest, ledger = case_pipeline.load_case(root)
+        if status == "reviewed" and case_pipeline.active_bounded_recovery(manifest) is None:
+            block = case_pipeline.blocks_by_id(ledger)[block_id]
+            local = case_pipeline.ensure_block_review_convergence(block)
+            if (
+                local.get("active_run_id") is None
+                and not local.get("legacy_compatibility")
+            ):
+                context = case_pipeline.context_bundle(
+                    manifest,
+                    ledger,
+                    root=loaded_root,
+                    block_id=block_id,
+                    role="spec-reviewer",
+                    role_mode="block",
+                )
+                self.record_agent_run(
+                    root,
+                    role="spec-reviewer",
+                    role_mode="block",
+                    subject_sha256=context["subject_sha256"],
+                )
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
         case_pipeline.transition_block(
             loaded_root,
             manifest,
@@ -659,6 +816,7 @@ class CasePipelineTests(unittest.TestCase):
             bundle = case_pipeline.context_bundle(
                 manifest,
                 ledger,
+                root=root,
                 block_id="B01",
                 role="spec-reviewer",
                 role_mode="block",
@@ -729,6 +887,246 @@ class CasePipelineTests(unittest.TestCase):
             ):
                 self.transition(root, "B01", "reviewed")
 
+    def test_stable_block_cannot_open_another_full_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.analyze_and_review(root, "B01", "SCN-B01-001")
+            _, manifest, ledger = case_pipeline.load_case(root)
+            block = case_pipeline.blocks_by_id(ledger)["B01"]
+            self.assertEqual(block["review_convergence"]["phase"], "stable")
+            with self.assertRaisesRegex(case_pipeline.CaseError, "continue to integration"):
+                case_pipeline.context_bundle(
+                    manifest,
+                    ledger,
+                    root=root,
+                    block_id="B01",
+                    role="spec-reviewer",
+                    role_mode="block",
+                )
+
+    def test_new_block_cannot_be_reviewed_without_machine_bound_run(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.transition(root, "B01", "ready")
+            self.transition(root, "B01", "in_progress")
+            replace_todo(root / "blocks" / "B01.md", "# B01\n\nRequirement")
+            add_definition(root, "B01", "REQ-B01-001", "requirement")
+            self.transition(root, "B01", "analyzed")
+            replace_todo(root / "reviews" / "B01.md", "# Review B01\n\nPASS")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "machine-bound reviewer"):
+                case_pipeline.transition_block(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    block_id="B01",
+                    new_status="reviewed",
+                    note=None,
+                )
+
+    def test_targeted_recheck_cannot_open_second_automatic_correction(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.transition(root, "B01", "ready")
+            self.transition(root, "B01", "in_progress")
+            replace_todo(root / "blocks" / "B01.md", "# B01\n\nInitial rule")
+            add_definition(root, "B01", "REQ-B01-001", "requirement")
+            self.transition(root, "B01", "analyzed")
+
+            _, manifest, ledger = case_pipeline.load_case(root)
+            initial = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id="B01",
+                role="spec-reviewer",
+                role_mode="block",
+                review_backend="revmux",
+                review_phase="initial",
+            )
+            initial_run = self.record_agent_run(
+                root,
+                role="spec-reviewer",
+                role_mode="block",
+                subject_sha256=initial["subject_sha256"],
+                reported_major=1,
+            )
+            replace_todo(
+                root / "reviews" / "B01.md",
+                f"# Review\n\nreview_agent_run: {initial_run}\nF-B01-001 major\n",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            remediation = case_pipeline.begin_block_remediation(
+                loaded_root,
+                manifest,
+                ledger,
+                block_id="B01",
+                findings=[{"id": "F-B01-001", "severity": "major"}],
+                semantic_ids=["REQ-B01-001"],
+                evidence="reviews/B01.md",
+                reason="Correct the one accepted local finding",
+                batch_complete=True,
+            )
+            replace_todo(root / "blocks" / "B01.md", "# B01\n\nCorrected rule")
+            index_path = root / "blocks" / "B01.index.json"
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+            index["definitions"][0]["summary"] = "Corrected requirement"
+            index_path.write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
+            self.transition(root, "B01", "analyzed")
+
+            _, manifest, ledger = case_pipeline.load_case(root)
+            recheck = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id="B01",
+                role="spec-reviewer",
+                role_mode="block",
+                review_backend="revmux",
+                review_phase="final",
+            )
+            self.assertEqual(recheck["review_scope"], "targeted-remediation")
+            self.assertIn(remediation["finding_evidence"], recheck["case_inputs"])
+            final_run = self.record_agent_run(
+                root,
+                role="spec-reviewer",
+                role_mode="block",
+                subject_sha256=recheck["subject_sha256"],
+                reported_major=1,
+            )
+            replace_todo(
+                root / "reviews" / "B01.md",
+                f"# Recheck\n\nreview_agent_run: {final_run}\nF-B01-002 major\n",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "cannot open another"):
+                case_pipeline.begin_block_remediation(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    block_id="B01",
+                    findings=[{"id": "F-B01-002", "severity": "major"}],
+                    semantic_ids=["REQ-B01-001"],
+                    evidence="reviews/B01.md",
+                    reason="A second automatic local loop is forbidden",
+                    batch_complete=True,
+                )
+            _, _, ledger = case_pipeline.load_case(root)
+            block = case_pipeline.blocks_by_id(ledger)["B01"]
+            self.assertEqual(block["review_convergence"]["phase"], "user-decision")
+
+    def test_kernel_delta_reopens_only_changed_boundary_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            for block_id in ("B01", "B02"):
+                self.add(root, block_id)
+                self.analyze_and_review(root, block_id, f"SCN-{block_id}-001")
+            _, _, ledger = case_pipeline.load_case(root)
+            prior_review = case_pipeline.blocks_by_id(ledger)["B01"]["review_history"][-1][
+                "evidence"
+            ]
+            replace_todo(root / "kernel.md", "# Kernel\n\nB01 boundary changed")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.refresh_kernel(
+                loaded_root,
+                manifest,
+                ledger,
+                ["B01"],
+                change_scope="semantic-local",
+                reason="Only the B01 boundary changed",
+            )
+            _, manifest, ledger = case_pipeline.load_case(root)
+            blocks = case_pipeline.blocks_by_id(ledger)
+            self.assertEqual(blocks["B01"]["review_convergence"]["phase"], "changed-boundary")
+            self.assertEqual(blocks["B02"]["review_convergence"]["phase"], "stable")
+
+            self.transition(root, "B01", "ready")
+            self.transition(root, "B01", "in_progress")
+            replace_todo(root / "blocks" / "B01.md", "# B01\n\nChanged boundary")
+            self.transition(root, "B01", "analyzed")
+            _, manifest, ledger = case_pipeline.load_case(root)
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id="B01",
+                role="spec-reviewer",
+                role_mode="block",
+                review_backend="revmux",
+                review_phase="final",
+            )
+            self.assertEqual(context["review_scope"], "changed-boundary")
+            self.assertIn(prior_review, context["case_inputs"])
+            self.assertEqual(
+                context["new_findings_policy"],
+                "introduced-or-exposed-at-changed-boundary",
+            )
+            with self.assertRaisesRegex(case_pipeline.CaseError, "must match block convergence"):
+                case_pipeline.context_bundle(
+                    manifest,
+                    ledger,
+                    root=root,
+                    block_id="B01",
+                    role="spec-reviewer",
+                    role_mode="block",
+                    review_backend="revmux",
+                    review_phase="initial",
+                )
+
+    def test_kernel_refresh_requires_decision_before_discarding_active_block_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.transition(root, "B01", "ready")
+            self.transition(root, "B01", "in_progress")
+            replace_todo(root / "blocks" / "B01.md", "# B01\n\nInitial rule")
+            add_definition(root, "B01", "REQ-B01-001", "requirement")
+            self.transition(root, "B01", "analyzed")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id="B01",
+                role="spec-reviewer",
+                role_mode="block",
+            )
+            self.record_agent_run(
+                root,
+                role="spec-reviewer",
+                role_mode="block",
+                subject_sha256=context["subject_sha256"],
+                reported_major=1,
+            )
+            replace_todo(root / "kernel.md", "# Kernel\n\nExplicit boundary reset")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "active block review"):
+                case_pipeline.refresh_kernel(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    ["B01"],
+                    change_scope="semantic-local",
+                    reason="Discard the active review assignment",
+                )
+            decision = root / "decisions" / "block-reset.md"
+            decision.parent.mkdir(exist_ok=True)
+            decision.write_text("# User decision\n\nRestart after kernel correction.\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            stale = case_pipeline.refresh_kernel(
+                loaded_root,
+                manifest,
+                ledger,
+                ["B01"],
+                change_scope="semantic-local",
+                reason="User accepted discarding the active review",
+                user_decision_evidence="decisions/block-reset.md",
+            )
+            self.assertEqual(stale, ["B01"])
+
     def test_reviewed_block_cannot_restart_without_remediation_record(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = self.init(Path(temp))
@@ -739,6 +1137,149 @@ class CasePipelineTests(unittest.TestCase):
                 "use begin-remediation",
             ):
                 self.transition(root, "B01", "in_progress")
+
+    def test_active_remediation_can_resume_authoring_after_nonpassing_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.analyze_and_review(root, "B01", "SCN-B01-001")
+            replace_todo(root / "reviews" / "global.md", "# Finding\n\nF-B01-001 major")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.begin_block_remediation(
+                loaded_root,
+                manifest,
+                ledger,
+                block_id="B01",
+                findings=[{"id": "F-B01-001", "severity": "major"}],
+                semantic_ids=["SCN-B01-001"],
+                evidence="reviews/global.md",
+                reason="Keep one active correction batch across a failed review",
+                batch_complete=True,
+            )
+            replace_todo(root / "blocks" / "B01.md", "# B01\n\nFirst correction")
+            self.transition(root, "B01", "analyzed")
+
+            # The existing review artifact is stale, but the same declared remediation
+            # must be able to resume authoring without opening another batch.
+            self.transition(root, "B01", "in_progress")
+            _, _, ledger = case_pipeline.load_case(root)
+            block = case_pipeline.blocks_by_id(ledger)["B01"]
+            self.assertEqual(block["status"], "in_progress")
+            self.assertEqual(block["active_remediation"], "R001")
+
+    def test_analyzed_block_can_start_minor_polish_without_remediation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.transition(root, "B01", "ready")
+            self.transition(root, "B01", "in_progress")
+            replace_todo(root / "blocks" / "B01.md", "# B01\n\nRequirement")
+            add_definition(root, "B01", "REQ-B01-001", "requirement")
+            self.transition(root, "B01", "analyzed")
+
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            block = case_pipeline.blocks_by_id(ledger)["B01"]
+            subject = case_pipeline.block_review_subject_hash(
+                loaded_root,
+                manifest,
+                block,
+            )
+            run_id = case_pipeline.record_agent_run(
+                loaded_root,
+                manifest,
+                ledger,
+                role="spec-reviewer",
+                role_mode="block",
+                model="test-model",
+                subject_sha256=subject,
+                input_bytes=None,
+                input_tokens=None,
+                output_tokens=None,
+                duration_seconds=1,
+                retries=0,
+                reported_blocker=0,
+                reported_major=0,
+                reported_minor=1,
+                cache_status="miss",
+            )
+            replace_todo(
+                root / "reviews" / "B01.md",
+                "# Minor-only review\n\n"
+                f"review_agent_run: {run_id}\n"
+                f"review_subject_sha256: {subject}\n"
+                "decision: pass\n"
+                "gate_recommendation: pass\n"
+                "open_blocker: 0\n"
+                "open_major: 0\n"
+                "open_minor: 1\n",
+            )
+
+            self.transition(root, "B01", "in_progress")
+            _, manifest, ledger = case_pipeline.load_case(root)
+            block = case_pipeline.blocks_by_id(ledger)["B01"]
+            self.assertEqual(block["status"], "in_progress")
+            self.assertIsNone(block["active_remediation"])
+            self.assertEqual(
+                manifest["events"][-2]["kind"],
+                "block_minor_polish_started",
+            )
+
+    def test_minor_polish_does_not_snapshot_before_transition_guards_pass(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.transition(root, "B01", "ready")
+            self.transition(root, "B01", "in_progress")
+            replace_todo(root / "blocks" / "B01.md", "# B01\n\nRequirement")
+            add_definition(root, "B01", "REQ-B01-001", "requirement")
+            self.transition(root, "B01", "analyzed")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            block = case_pipeline.blocks_by_id(ledger)["B01"]
+            subject = case_pipeline.block_review_subject_hash(
+                loaded_root,
+                manifest,
+                block,
+            )
+            run_id = self.record_agent_run(
+                root,
+                role="spec-reviewer",
+                role_mode="block",
+                subject_sha256=subject,
+                reported_minor=1,
+            )
+            replace_todo(
+                root / "reviews" / "B01.md",
+                "# Minor-only review\n\n"
+                f"review_agent_run: {run_id}\n"
+                f"review_subject_sha256: {subject}\n"
+                "decision: pass\n"
+                "gate_recommendation: pass\n"
+                "open_blocker: 0\n"
+                "open_major: 0\n"
+                "open_minor: 1\n",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with mock.patch.object(
+                case_pipeline,
+                "working_projection_errors",
+                return_value=["projection is stale"],
+            ):
+                with self.assertRaisesRegex(case_pipeline.CaseError, "projection is stale"):
+                    case_pipeline.transition_block(
+                        loaded_root,
+                        manifest,
+                        ledger,
+                        block_id="B01",
+                        new_status="in_progress",
+                        note=None,
+                    )
+            _, _, ledger = case_pipeline.load_case(root)
+            self.assertEqual(
+                case_pipeline.blocks_by_id(ledger)["B01"]["review_history"],
+                [],
+            )
+            self.assertFalse((root / "reviews" / "history" / "B01-r001.md").exists())
+            self.transition(root, "B01", "in_progress")
 
     def test_high_risk_block_requires_preflight_and_complete_review_matrix(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1038,50 +1579,43 @@ class CasePipelineTests(unittest.TestCase):
                     reason="A v2 remediation cannot start from a partial disposition set",
                 )
 
-            for index in (1, 2):
-                finding_id = f"F-B01-00{index}"
-                replace_todo(
-                    root / "reviews" / "global.md",
-                    f"# Finding\n\n{finding_id} major",
-                )
-                loaded_root, manifest, ledger = case_pipeline.load_case(root)
-                remediation = case_pipeline.begin_block_remediation(
-                    loaded_root,
-                    manifest,
-                    ledger,
-                    block_id="B01",
-                    findings=[{"id": finding_id, "severity": "major"}],
-                    semantic_ids=["SCN-B01-001"],
-                    evidence="reviews/global.md",
-                    reason=f"Correct batch {index}",
-                    batch_complete=True,
-                )
-                self.assertEqual(remediation["batch_index"], index)
-                replace_todo(
-                    root / "blocks" / "B01.md",
-                    f"# B01\n\nCorrected batch {index}",
-                )
-                index_path = root / "blocks" / "B01.index.json"
-                semantic_index = json.loads(index_path.read_text(encoding="utf-8"))
-                semantic_index["definitions"][0]["summary"] = f"Corrected batch {index}"
-                index_path.write_text(
-                    json.dumps(semantic_index, indent=2) + "\n",
-                    encoding="utf-8",
-                )
-                self.transition(root, "B01", "analyzed")
-                _, _, ledger = case_pipeline.load_case(root)
-                block = case_pipeline.blocks_by_id(ledger)["B01"]
-                prior_review = block["remediations"][-1]["coverage_evidence"]
-                replace_todo(
-                    root / "reviews" / "B01.md",
-                    "# Targeted review\n\n"
-                    "review_scope: targeted-remediation\n"
-                    f"verified_findings: [{finding_id}]\n"
-                    f"coverage_reused: {prior_review}\n\nPASS",
-                )
-                self.transition(root, "B01", "reviewed")
+            finding_id = "F-B01-001"
+            replace_todo(root / "reviews" / "global.md", f"# Finding\n\n{finding_id} major")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            remediation = case_pipeline.begin_block_remediation(
+                loaded_root,
+                manifest,
+                ledger,
+                block_id="B01",
+                findings=[{"id": finding_id, "severity": "major"}],
+                semantic_ids=["SCN-B01-001"],
+                evidence="reviews/global.md",
+                reason="Correct the one bounded batch",
+                batch_complete=True,
+            )
+            self.assertEqual(remediation["batch_index"], 1)
+            replace_todo(root / "blocks" / "B01.md", "# B01\n\nCorrected batch 1")
+            index_path = root / "blocks" / "B01.index.json"
+            semantic_index = json.loads(index_path.read_text(encoding="utf-8"))
+            semantic_index["definitions"][0]["summary"] = "Corrected batch 1"
+            index_path.write_text(
+                json.dumps(semantic_index, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            self.transition(root, "B01", "analyzed")
+            _, _, ledger = case_pipeline.load_case(root)
+            block = case_pipeline.blocks_by_id(ledger)["B01"]
+            prior_review = block["remediations"][-1]["coverage_evidence"]
+            replace_todo(
+                root / "reviews" / "B01.md",
+                "# Targeted review\n\n"
+                "review_scope: targeted-remediation\n"
+                f"verified_findings: [{finding_id}]\n"
+                f"coverage_reused: {prior_review}\n\nPASS",
+            )
+            self.transition(root, "B01", "reviewed")
 
-            replace_todo(root / "reviews" / "global.md", "# Finding\n\nF-B01-003 major")
+            replace_todo(root / "reviews" / "global.md", "# Finding\n\nF-B01-002 major")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             with self.assertRaisesRegex(case_pipeline.CaseError, "remediation budget exhausted"):
                 case_pipeline.begin_block_remediation(
@@ -1089,10 +1623,10 @@ class CasePipelineTests(unittest.TestCase):
                     manifest,
                     ledger,
                     block_id="B01",
-                    findings=[{"id": "F-B01-003", "severity": "major"}],
+                    findings=[{"id": "F-B01-002", "severity": "major"}],
                     semantic_ids=["SCN-B01-001"],
                     evidence="reviews/global.md",
-                    reason="A third unrelated finding must not open another micro-cycle",
+                    reason="A second finding must not open another micro-cycle",
                     batch_complete=True,
                 )
 
@@ -1130,7 +1664,7 @@ class CasePipelineTests(unittest.TestCase):
                 manifest,
                 ledger,
                 block_id="B01",
-                findings=[{"id": "F-B01-003", "severity": "major"}],
+                findings=[{"id": "F-B01-002", "severity": "major"}],
                 semantic_ids=["SCN-B01-001"],
                 evidence="reviews/global.md",
                 reason="First bounded batch after the explicit root-cause reset",
@@ -1179,6 +1713,69 @@ class CasePipelineTests(unittest.TestCase):
             self.assertEqual(
                 reset_events[-1]["user_decision"]["ref"],
                 "decisions/second-reset.md",
+            )
+
+    def test_root_cause_reset_supersedes_active_remediation_from_prior_epoch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.analyze_and_review(root, "B01", "SCN-B01-001")
+
+            replace_todo(root / "reviews" / "global.md", "# Finding\n\nF-B01-001 major")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            remediation = case_pipeline.begin_block_remediation(
+                loaded_root,
+                manifest,
+                ledger,
+                block_id="B01",
+                findings=[{"id": "F-B01-001", "severity": "major"}],
+                semantic_ids=["SCN-B01-001"],
+                evidence="reviews/global.md",
+                reason="Open correction before a root-cause reset",
+                batch_complete=True,
+            )
+            self.assertEqual(remediation["status"], "in_progress")
+
+            replace_todo(root / "kernel.md", "# Kernel\n\nRoot-cause rewrite")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.refresh_kernel(
+                loaded_root,
+                manifest,
+                ledger,
+                [],
+                change_scope="semantic-crosscutting",
+                invalidate_all=True,
+                reason="Supersede the open batch with a new remediation epoch",
+            )
+
+            _, _, ledger = case_pipeline.load_case(root)
+            block = case_pipeline.blocks_by_id(ledger)["B01"]
+            self.assertEqual(block["status"], "stale")
+            self.assertEqual(block["remediation_epoch"], 2)
+            self.assertIsNone(block["active_remediation"])
+            self.assertEqual(block["remediations"][0]["status"], "retry_required")
+            self.assertIn("completed_at", block["remediations"][0])
+
+            # A case persisted by an older adapter can still carry the prior epoch's
+            # active pointer. The next analyzed transition repairs that legacy state.
+            block["active_remediation"] = remediation["id"]
+            block["remediations"][0]["status"] = "in_progress"
+            block["remediations"][0].pop("completed_at", None)
+            case_pipeline.save_case(root, manifest, ledger)
+            self.transition(root, "B01", "ready")
+            self.transition(root, "B01", "in_progress")
+            replace_todo(root / "blocks" / "B01.md", "# B01\n\nLegacy-state repair")
+            self.transition(root, "B01", "analyzed")
+            _, manifest, ledger = case_pipeline.load_case(root)
+            block = case_pipeline.blocks_by_id(ledger)["B01"]
+            self.assertIsNone(block["active_remediation"])
+            self.assertEqual(block["remediations"][0]["status"], "retry_required")
+            self.assertTrue(
+                any(
+                    item.get("kind")
+                    == "block_remediation_superseded_after_root_cause_reset"
+                    for item in manifest["events"]
+                )
             )
 
     def test_review_case_rejects_per_block_projection_churn(self) -> None:
@@ -1277,7 +1874,7 @@ class CasePipelineTests(unittest.TestCase):
             replace_todo(
                 root / "reviews" / "B01.md",
                 "# Full block review\n\n"
-                "review_scope: full-block\n"
+                "review_scope: full-block-remediation\n"
                 "verified_findings: [F-B01-ALL]\n"
                 "coverage_reused: none\n\nPASS",
             )
@@ -1316,6 +1913,7 @@ class CasePipelineTests(unittest.TestCase):
             )
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             self.assertEqual(case_pipeline.run_check(loaded_root, manifest, ledger, final_trace=False), [])
+            self.authorize_review_gate(root, "global_review")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             case_pipeline.set_gate(
                 loaded_root, manifest, ledger,
@@ -1324,6 +1922,8 @@ class CasePipelineTests(unittest.TestCase):
             _, manifest, ledger = case_pipeline.load_case(root)
             previous_global_subject = manifest["gates"]["global_review"]["subject_sha256"]
             previous_block_review = case_pipeline.blocks_by_id(ledger)["B01"]["review_history"][0]["evidence"]
+            manifest["convergence"]["attempts"] = []
+            case_pipeline.save_case(root, manifest, ledger)
 
             replace_todo(root / "reviews" / "global.md", "# Finding\n\nF-B01-001 major")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
@@ -1475,10 +2075,12 @@ class CasePipelineTests(unittest.TestCase):
                 loaded_root, manifest, ledger,
                 block_id="B01", title="Block", kind="scenarios", depends_on=[]
             )
+            self.prepare_whole_case_review(root)
             _, manifest, ledger = case_pipeline.load_case(root)
             bundle = case_pipeline.context_bundle(
                 manifest,
                 ledger,
+                root=root,
                 block_id=None,
                 role="spec-reviewer",
                 role_mode="final",
@@ -1497,6 +2099,7 @@ class CasePipelineTests(unittest.TestCase):
             revmux_bundle = case_pipeline.context_bundle(
                 manifest,
                 ledger,
+                root=root,
                 block_id=None,
                 role="spec-reviewer",
                 role_mode="final",
@@ -1510,16 +2113,17 @@ class CasePipelineTests(unittest.TestCase):
                 "references/revmux-review-backend.md",
                 revmux_bundle["contract_inputs"],
             )
-            revmux_final = case_pipeline.context_bundle(
-                manifest,
-                ledger,
-                block_id=None,
-                role="spec-reviewer",
-                role_mode="final",
-                review_backend="revmux",
-                review_phase="final",
-            )
-            self.assertEqual(revmux_final["revmux_profile"], "vigers-final")
+            with self.assertRaisesRegex(case_pipeline.CaseError, "must match case convergence"):
+                case_pipeline.context_bundle(
+                    manifest,
+                    ledger,
+                    root=root,
+                    block_id=None,
+                    role="spec-reviewer",
+                    role_mode="final",
+                    review_backend="revmux",
+                    review_phase="final",
+                )
 
     def test_revmux_backend_covers_block_and_layered_high_reviewer_modes(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1552,11 +2156,17 @@ class CasePipelineTests(unittest.TestCase):
                 kind="scenarios",
                 depends_on=[],
             )
+            self.transition(root, "B01", "ready")
+            self.transition(root, "B01", "in_progress")
+            replace_todo(root / "blocks" / "B01.md", "# B01\n\nAnalysis")
+            add_definition(root, "B01", "SCN-B01-001", "scenario")
+            self.transition(root, "B01", "analyzed")
             _, manifest, ledger = case_pipeline.load_case(root)
 
             block_bundle = case_pipeline.context_bundle(
                 manifest,
                 ledger,
+                root=root,
                 block_id="B01",
                 role="spec-reviewer",
                 role_mode="block",
@@ -1565,25 +2175,46 @@ class CasePipelineTests(unittest.TestCase):
             )
             self.assertEqual(block_bundle["revmux_profile"], "vigers-review")
             self.assertEqual(block_bundle["covered_gates"], ["block_review:B01"])
+            replace_todo(root / "reviews" / "B01.md", "# Review B01\n\nPASS")
+            self.transition(root, "B01", "reviewed")
+            replace_todo(root / "draft.md", "# Draft\n\nIntegrated B01")
+            self.transition(root, "B01", "integrated")
+            self.prepare_whole_case_review(root)
+            _, manifest, ledger = case_pipeline.load_case(root)
 
             expected_gates = {
-                "integration": ["integration_review"],
-                "global": ["global_review"],
-                "project-conformance": ["project_conformance"],
+                "integration": ("integration_review", "reviews/integration.md"),
+                "global": ("global_review", "reviews/global.md"),
+                "project-conformance": ("project_conformance", "reviews/project.md"),
             }
-            for role_mode, covered_gates in expected_gates.items():
+            for role_mode, (gate_name, evidence) in expected_gates.items():
                 with self.subTest(role_mode=role_mode):
+                    replace_todo(root / evidence, f"# {role_mode}\n\nPASS")
+                    _, manifest, ledger = case_pipeline.load_case(root)
                     bundle = case_pipeline.context_bundle(
                         manifest,
                         ledger,
+                        root=root,
                         block_id=None,
                         role="spec-reviewer",
                         role_mode=role_mode,
                         review_backend="revmux",
-                        review_phase="final",
+                        review_phase="initial",
                     )
-                    self.assertEqual(bundle["revmux_profile"], "vigers-final")
-                    self.assertEqual(bundle["covered_gates"], covered_gates)
+                    self.assertEqual(bundle["revmux_profile"], "vigers-review")
+                    self.assertEqual(bundle["covered_gates"], [gate_name])
+                    if role_mode != "project-conformance":
+                        self.pass_case_review(root, role_mode, evidence)
+                        loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                        case_pipeline.set_gate(
+                            loaded_root,
+                            manifest,
+                            ledger,
+                            name=gate_name,
+                            status="pass",
+                            evidence=evidence,
+                            note=None,
+                        )
 
             with self.assertRaisesRegex(
                 case_pipeline.CaseError,
@@ -1598,6 +2229,962 @@ class CasePipelineTests(unittest.TestCase):
                     review_backend="revmux",
                     review_phase="initial",
                 )
+
+    def test_global_finding_rechecks_only_global_and_preserves_integration_frontier(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.prepare_whole_case_review(root)
+            replace_todo(root / "reviews" / "integration.md", "# Integration\n\nPASS")
+            self.pass_case_review(root, "integration", "reviews/integration.md")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="integration_review",
+                status="pass",
+                evidence="reviews/integration.md",
+                note=None,
+            )
+
+            replace_todo(
+                root / "reviews" / "global.md",
+                "# Global review\n\nF-GLOBAL-001 major: ambiguous wording",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="global",
+            )
+            run_id = case_pipeline.record_agent_run(
+                loaded_root,
+                manifest,
+                ledger,
+                role="spec-reviewer",
+                role_mode="global",
+                model="test-model",
+                subject_sha256=context["subject_sha256"],
+                input_bytes=100,
+                input_tokens=10,
+                output_tokens=10,
+                duration_seconds=1,
+                retries=0,
+                reported_blocker=0,
+                reported_major=1,
+                reported_minor=0,
+                cache_status="miss",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_convergence_review(
+                loaded_root,
+                manifest,
+                ledger,
+                run_id=run_id,
+                gate_decision="revise",
+                open_blocker=0,
+                open_major=1,
+                open_minor=0,
+                evidence="reviews/global.md",
+                findings=[{"id": "F-GLOBAL-001", "severity": "major"}],
+                impact="global",
+            )
+            _, manifest, _ = case_pipeline.load_case(root)
+            self.assertEqual(manifest["convergence"]["cursor"], 1)
+            self.assertEqual(
+                manifest["convergence"]["stage_corrections"],
+                {"integration": 0, "global": 1, "project-conformance": 0},
+            )
+            with self.assertRaisesRegex(case_pipeline.CaseError, "Complete the exact"):
+                case_pipeline.context_bundle(
+                    manifest,
+                    ledger,
+                    root=root,
+                    block_id=None,
+                    role="spec-reviewer",
+                    role_mode="global",
+                )
+
+            replace_todo(root / "draft.md", "# Draft\n\nIntegrated  B01")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(
+                case_pipeline.run_check(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    final_trace=False,
+                ),
+                [],
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.rebase_nonsemantic_change(
+                loaded_root,
+                manifest,
+                ledger,
+                change_scope="editorial",
+                reason="Resolve the exact wording finding without semantic change",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.complete_convergence_remediation(
+                loaded_root,
+                manifest,
+                ledger,
+                evidence="consistency.json",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            recheck = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="global",
+                review_backend="revmux",
+                review_phase="final",
+            )
+            self.assertEqual(recheck["convergence"]["review_scope"], "targeted-remediation")
+            self.assertEqual(recheck["convergence"]["attempt_phase"], "final")
+            self.assertIn(
+                manifest["convergence"]["pending_review"]["evidence"],
+                recheck["case_inputs"],
+            )
+            self.assertEqual(manifest["gates"]["integration_review"]["status"], "pass")
+
+    def test_targeted_recheck_cannot_open_another_automatic_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.prepare_whole_case_review(root)
+            replace_todo(root / "reviews" / "integration.md", "# Integration\n\nF-INT-001 major")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="integration",
+            )
+            run_id = case_pipeline.record_agent_run(
+                loaded_root,
+                manifest,
+                ledger,
+                role="spec-reviewer",
+                role_mode="integration",
+                model="test-model",
+                subject_sha256=context["subject_sha256"],
+                input_bytes=None,
+                input_tokens=None,
+                output_tokens=None,
+                duration_seconds=1,
+                retries=0,
+                reported_blocker=0,
+                reported_major=1,
+                reported_minor=0,
+                cache_status="miss",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_convergence_review(
+                loaded_root,
+                manifest,
+                ledger,
+                run_id=run_id,
+                gate_decision="revise",
+                open_blocker=0,
+                open_major=1,
+                open_minor=0,
+                evidence="reviews/integration.md",
+                findings=[{"id": "F-INT-001", "severity": "major"}],
+                impact="integration",
+            )
+            replace_todo(root / "draft.md", "# Draft\n\nIntegrated B01 corrected")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(
+                case_pipeline.run_check(loaded_root, manifest, ledger, final_trace=False),
+                [],
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="semantic_integration",
+                status="pass",
+                evidence="draft.md",
+                note=None,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.complete_convergence_remediation(
+                loaded_root,
+                manifest,
+                ledger,
+                evidence="consistency.json",
+            )
+            replace_todo(root / "reviews" / "integration.md", "# Targeted recheck\n\nF-INT-001 still major")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            recheck = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="integration",
+            )
+            recheck_run = case_pipeline.record_agent_run(
+                loaded_root,
+                manifest,
+                ledger,
+                role="spec-reviewer",
+                role_mode="integration",
+                model="test-model",
+                subject_sha256=recheck["subject_sha256"],
+                input_bytes=None,
+                input_tokens=None,
+                output_tokens=None,
+                duration_seconds=1,
+                retries=0,
+                reported_blocker=0,
+                reported_major=1,
+                reported_minor=0,
+                cache_status="miss",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            attempt = case_pipeline.record_convergence_review(
+                loaded_root,
+                manifest,
+                ledger,
+                run_id=recheck_run,
+                gate_decision="revise",
+                open_blocker=0,
+                open_major=1,
+                open_minor=0,
+                evidence="reviews/integration.md",
+                findings=[{"id": "F-INT-001", "severity": "major"}],
+                impact="integration",
+            )
+            self.assertEqual(attempt["effective_decision"], "user-decision")
+            _, manifest, _ = case_pipeline.load_case(root)
+            self.assertEqual(manifest["convergence"]["phase"], "user-decision")
+
+    def test_crosscutting_impact_rewinds_to_integration_without_reopening_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.prepare_whole_case_review(root)
+            replace_todo(root / "reviews" / "integration.md", "# Integration\n\nPASS")
+            self.pass_case_review(root, "integration", "reviews/integration.md")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="integration_review",
+                status="pass",
+                evidence="reviews/integration.md",
+                note=None,
+            )
+            replace_todo(root / "reviews" / "global.md", "# Global\n\nF-X-001 major")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="global",
+            )
+            run_id = case_pipeline.record_agent_run(
+                loaded_root,
+                manifest,
+                ledger,
+                role="spec-reviewer",
+                role_mode="global",
+                model="test-model",
+                subject_sha256=context["subject_sha256"],
+                input_bytes=None,
+                input_tokens=None,
+                output_tokens=None,
+                duration_seconds=1,
+                retries=0,
+                reported_blocker=0,
+                reported_major=1,
+                reported_minor=0,
+                cache_status="miss",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_convergence_review(
+                loaded_root,
+                manifest,
+                ledger,
+                run_id=run_id,
+                gate_decision="revise",
+                open_blocker=0,
+                open_major=1,
+                open_minor=0,
+                evidence="reviews/global.md",
+                findings=[{"id": "F-X-001", "severity": "major"}],
+                impact="integration",
+            )
+            _, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(manifest["convergence"]["cursor"], 0)
+            self.assertEqual(
+                manifest["convergence"]["stage_corrections"],
+                {"integration": 0, "global": 1, "project-conformance": 0},
+            )
+            self.assertEqual(
+                case_pipeline.blocks_by_id(ledger)["B01"]["status"],
+                "integrated",
+            )
+            replace_todo(root / "draft.md", "# Draft\n\nIntegrated seam corrected")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(
+                case_pipeline.run_check(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    final_trace=False,
+                ),
+                [],
+            )
+            for gate_name in ("semantic_integration", "author_passes"):
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name=gate_name,
+                    status="pass",
+                    evidence="draft.md",
+                    note=None,
+                )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.complete_convergence_remediation(
+                loaded_root,
+                manifest,
+                ledger,
+                evidence="consistency.json",
+            )
+            replace_todo(root / "reviews" / "integration.md", "# Integration recheck\n\nPASS")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            recheck = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="integration",
+            )
+            self.assertEqual(recheck["convergence"]["attempt_phase"], "final")
+            recheck_run = self.record_agent_run(
+                root,
+                role="spec-reviewer",
+                role_mode="integration",
+                subject_sha256=recheck["subject_sha256"],
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_convergence_review(
+                loaded_root,
+                manifest,
+                ledger,
+                run_id=recheck_run,
+                gate_decision="pass",
+                open_blocker=0,
+                open_major=0,
+                open_minor=0,
+                evidence="reviews/integration.md",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="integration_review",
+                status="pass",
+                evidence="reviews/integration.md",
+                note=None,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            resumed_global = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="global",
+            )
+            self.assertEqual(resumed_global["convergence"]["attempt_phase"], "final")
+            self.assertEqual(
+                resumed_global["convergence"]["review_scope"],
+                "targeted-remediation",
+            )
+            self.assertEqual(
+                resumed_global["convergence"]["new_findings_policy"],
+                "introduced-or-exposed-at-changed-boundary-only",
+            )
+            self.assertEqual(
+                resumed_global["convergence"]["pending_review"]["findings"],
+                [{"id": "F-X-001", "severity": "major"}],
+            )
+            replace_todo(
+                root / "reviews" / "global.md",
+                "# Global targeted recheck\n\nPASS",
+            )
+            final_global_run = self.record_agent_run(
+                root,
+                role="spec-reviewer",
+                role_mode="global",
+                subject_sha256=resumed_global["subject_sha256"],
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            final_attempt = case_pipeline.record_convergence_review(
+                loaded_root,
+                manifest,
+                ledger,
+                run_id=final_global_run,
+                gate_decision="pass",
+                open_blocker=0,
+                open_major=0,
+                open_minor=0,
+                evidence="reviews/global.md",
+            )
+            self.assertEqual(final_attempt["effective_decision"], "pass")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            convergence = manifest["convergence"]
+            self.assertEqual(convergence["phase"], "project")
+            self.assertEqual(convergence["correction_batches"], 1)
+            self.assertEqual(
+                convergence["stage_corrections"],
+                {"integration": 0, "global": 1, "project-conformance": 0},
+            )
+            self.assertIsNone(convergence["pending_review"])
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="global_review",
+                status="pass",
+                evidence="reviews/global.md",
+                note=None,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            project_context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=loaded_root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="project-conformance",
+            )
+            self.assertEqual(
+                project_context["convergence"]["attempt_phase"],
+                "initial",
+            )
+
+    def test_project_impact_rechecks_contiguous_affected_stage_chain(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.prepare_whole_case_review(root)
+            for role_mode, gate_name, evidence in (
+                ("integration", "integration_review", "reviews/integration.md"),
+                ("global", "global_review", "reviews/global.md"),
+            ):
+                replace_todo(root / evidence, f"# {role_mode}\n\nPASS")
+                self.pass_case_review(root, role_mode, evidence)
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name=gate_name,
+                    status="pass",
+                    evidence=evidence,
+                    note=None,
+                )
+
+            replace_todo(
+                root / "reviews" / "project-conformance.md",
+                "# Project review\n\nF-PROJ-001 major",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            project_context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=loaded_root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="project-conformance",
+            )
+            project_run = self.record_agent_run(
+                root,
+                role="spec-reviewer",
+                role_mode="project-conformance",
+                subject_sha256=project_context["subject_sha256"],
+                reported_major=1,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_convergence_review(
+                loaded_root,
+                manifest,
+                ledger,
+                run_id=project_run,
+                gate_decision="revise",
+                open_blocker=0,
+                open_major=1,
+                open_minor=0,
+                evidence="reviews/project-conformance.md",
+                findings=[{"id": "F-PROJ-001", "severity": "major"}],
+                impact="integration",
+            )
+            _, manifest, _ = case_pipeline.load_case(root)
+            pending = manifest["convergence"]["pending_review"]
+            self.assertEqual(
+                pending["recheck_role_modes"],
+                ["integration", "global", "project-conformance"],
+            )
+            self.assertEqual(
+                manifest["convergence"]["stage_corrections"],
+                {"integration": 0, "global": 0, "project-conformance": 1},
+            )
+
+            replace_todo(root / "draft.md", "# Draft\n\nCorrected project seam")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(
+                case_pipeline.run_check(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    final_trace=False,
+                ),
+                [],
+            )
+            for gate_name in ("semantic_integration", "author_passes"):
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name=gate_name,
+                    status="pass",
+                    evidence="draft.md",
+                    note=None,
+                )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.complete_convergence_remediation(
+                loaded_root,
+                manifest,
+                ledger,
+                evidence="consistency.json",
+            )
+
+            chain = (
+                ("integration", "integration_review", "reviews/integration.md"),
+                ("global", "global_review", "reviews/global.md"),
+                (
+                    "project-conformance",
+                    "project_conformance",
+                    "reviews/project-conformance.md",
+                ),
+            )
+            for index, (role_mode, gate_name, evidence) in enumerate(chain):
+                replace_todo(root / evidence, f"# {role_mode} targeted\n\nPASS")
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                context = case_pipeline.context_bundle(
+                    manifest,
+                    ledger,
+                    root=loaded_root,
+                    block_id=None,
+                    role="spec-reviewer",
+                    role_mode=role_mode,
+                )
+                self.assertEqual(context["convergence"]["attempt_phase"], "final")
+                self.assertEqual(
+                    context["convergence"]["review_scope"],
+                    "targeted-remediation",
+                )
+                self.assertEqual(
+                    context["convergence"]["pending_review"]["findings"],
+                    [{"id": "F-PROJ-001", "severity": "major"}],
+                )
+                run_id = self.record_agent_run(
+                    root,
+                    role="spec-reviewer",
+                    role_mode=role_mode,
+                    subject_sha256=context["subject_sha256"],
+                )
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                case_pipeline.record_convergence_review(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    run_id=run_id,
+                    gate_decision="pass",
+                    open_blocker=0,
+                    open_major=0,
+                    open_minor=0,
+                    evidence=evidence,
+                )
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name=gate_name,
+                    status="pass",
+                    evidence=evidence,
+                    note=None,
+                )
+                _, manifest, _ = case_pipeline.load_case(root)
+                convergence = manifest["convergence"]
+                if index < len(chain) - 1:
+                    self.assertEqual(
+                        convergence["pending_review"]["completed_recheck_role_modes"],
+                        [item[0] for item in chain[: index + 1]],
+                    )
+                else:
+                    self.assertEqual(convergence["phase"], "terminal")
+                    self.assertIsNone(convergence["pending_review"])
+
+    def test_global_block_local_impact_locks_unaffected_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.add(root, "B02")
+            self.prepare_whole_case_review(root, "B01")
+            self.prepare_whole_case_review(root, "B02")
+            replace_todo(root / "reviews" / "integration.md", "# Integration\n\nPASS")
+            self.pass_case_review(root, "integration", "reviews/integration.md")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="integration_review",
+                status="pass",
+                evidence="reviews/integration.md",
+                note=None,
+            )
+
+            replace_todo(
+                root / "reviews" / "global.md",
+                "# Global\n\nF-B01-001 major",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=loaded_root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="global",
+            )
+            run_id = self.record_agent_run(
+                root,
+                role="spec-reviewer",
+                role_mode="global",
+                subject_sha256=context["subject_sha256"],
+                reported_major=1,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_convergence_review(
+                loaded_root,
+                manifest,
+                ledger,
+                run_id=run_id,
+                gate_decision="revise",
+                open_blocker=0,
+                open_major=1,
+                open_minor=0,
+                evidence="reviews/global.md",
+                findings=[{"id": "F-B01-001", "severity": "major"}],
+                impact="block-local",
+                affected_blocks=["B01"],
+                semantic_ids=["SCN-B01-001"],
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(
+                case_pipeline.CaseError,
+                "outside convergence affected block scope",
+            ):
+                case_pipeline.begin_block_remediation(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    block_id="B02",
+                    findings=[{"id": "F-B01-001", "severity": "major"}],
+                    semantic_ids=["SCN-B02-001"],
+                    evidence="reviews/global.md",
+                    reason="Must not widen remediation to an unaffected block",
+                    batch_complete=True,
+                )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.begin_block_remediation(
+                loaded_root,
+                manifest,
+                ledger,
+                block_id="B01",
+                findings=[{"id": "F-B01-001", "severity": "major"}],
+                semantic_ids=["SCN-B01-001"],
+                evidence="reviews/global.md",
+                reason="Correct only the affected semantic block",
+                batch_complete=True,
+            )
+            _, _, ledger = case_pipeline.load_case(root)
+            blocks = case_pipeline.blocks_by_id(ledger)
+            self.assertIsNotNone(blocks["B01"]["active_remediation"])
+            self.assertIsNone(blocks["B02"]["active_remediation"])
+            self.assertEqual(blocks["B02"]["status"], "integrated")
+
+    def test_targeted_convergence_remediation_cannot_refresh_kernel(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.prepare_whole_case_review(root)
+            replace_todo(root / "reviews" / "integration.md", "# Integration\n\nF-INT-001 major")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="integration",
+            )
+            run_id = case_pipeline.record_agent_run(
+                loaded_root,
+                manifest,
+                ledger,
+                role="spec-reviewer",
+                role_mode="integration",
+                model="test-model",
+                subject_sha256=context["subject_sha256"],
+                input_bytes=None,
+                input_tokens=None,
+                output_tokens=None,
+                duration_seconds=1,
+                retries=0,
+                reported_blocker=0,
+                reported_major=1,
+                reported_minor=0,
+                cache_status="miss",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_convergence_review(
+                loaded_root,
+                manifest,
+                ledger,
+                run_id=run_id,
+                gate_decision="revise",
+                open_blocker=0,
+                open_major=1,
+                open_minor=0,
+                evidence="reviews/integration.md",
+                findings=[{"id": "F-INT-001", "severity": "major"}],
+                impact="integration",
+            )
+            replace_todo(root / "kernel.md", "# Kernel\n\nChanged during targeted remediation")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "cannot refresh the kernel"):
+                case_pipeline.refresh_kernel(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    [],
+                    change_scope="semantic-crosscutting",
+                    invalidate_all=True,
+                    reason="Attempted automatic full-cycle reset",
+                )
+
+    def test_rejected_convergence_disposition_does_not_orphan_evidence_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.prepare_whole_case_review(root)
+            replace_todo(root / "reviews" / "integration.md", "# Integration\n\nF-INT-001")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="integration",
+            )
+            run_id = self.record_agent_run(
+                root,
+                role="spec-reviewer",
+                role_mode="integration",
+                subject_sha256=context["subject_sha256"],
+                reported_major=1,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "outside reviewer stage"):
+                case_pipeline.record_convergence_review(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    run_id=run_id,
+                    gate_decision="revise",
+                    open_blocker=0,
+                    open_major=1,
+                    open_minor=0,
+                    evidence="reviews/integration.md",
+                    findings=[{"id": "F-INT-001", "severity": "major"}],
+                    impact="global",
+                )
+            self.assertFalse(
+                (root / "convergence" / "history" / "episode-001-review-r001.md").exists()
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            attempt = case_pipeline.record_convergence_review(
+                loaded_root,
+                manifest,
+                ledger,
+                run_id=run_id,
+                gate_decision="revise",
+                open_blocker=0,
+                open_major=1,
+                open_minor=0,
+                evidence="reviews/integration.md",
+                findings=[{"id": "F-INT-001", "severity": "major"}],
+                impact="integration",
+            )
+            self.assertEqual(attempt["effective_decision"], "revise")
+
+    def test_convergence_disposition_rejects_subject_changed_after_review(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.prepare_whole_case_review(root)
+            replace_todo(root / "reviews" / "integration.md", "# Integration\n\nPASS")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="integration",
+            )
+            run_id = self.record_agent_run(
+                root,
+                role="spec-reviewer",
+                role_mode="integration",
+                subject_sha256=context["subject_sha256"],
+            )
+            replace_todo(root / "draft.md", "# Draft\n\nChanged after reviewer completion")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(case_pipeline.CaseError, "subject changed"):
+                case_pipeline.record_convergence_review(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    run_id=run_id,
+                    gate_decision="pass",
+                    open_blocker=0,
+                    open_major=0,
+                    open_minor=0,
+                    evidence="reviews/integration.md",
+                )
+
+    def test_kernel_refresh_can_start_new_episode_between_review_stages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.prepare_whole_case_review(root)
+            replace_todo(root / "reviews" / "integration.md", "# Integration\n\nPASS")
+            self.pass_case_review(root, "integration", "reviews/integration.md")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="integration_review",
+                status="pass",
+                evidence="reviews/integration.md",
+                note=None,
+            )
+            replace_todo(root / "kernel.md", "# Kernel\n\nApproved B01 boundary change")
+            decision = root / "decisions" / "mid-plan-kernel.md"
+            decision.parent.mkdir(exist_ok=True)
+            decision.write_text("# Decision\n\nApprove new kernel episode.\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.refresh_kernel(
+                loaded_root,
+                manifest,
+                ledger,
+                ["B01"],
+                change_scope="semantic-local",
+                reason="Owner approved a kernel correction between stages",
+                user_decision_evidence="decisions/mid-plan-kernel.md",
+            )
+            _, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(manifest["convergence"]["episode"], 2)
+            self.assertEqual(manifest["convergence"]["phase"], "blocks")
+            self.assertEqual(case_pipeline.blocks_by_id(ledger)["B01"]["status"], "stale")
+
+    def test_new_episode_ignores_prior_episode_attempts_for_block_remediation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.prepare_whole_case_review(root)
+            replace_todo(root / "reviews" / "integration.md", "# Integration\n\nDecision")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="integration",
+            )
+            run_id = self.record_agent_run(
+                root,
+                role="spec-reviewer",
+                role_mode="integration",
+                subject_sha256=context["subject_sha256"],
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_convergence_review(
+                loaded_root,
+                manifest,
+                ledger,
+                run_id=run_id,
+                gate_decision="user-decision",
+                open_blocker=0,
+                open_major=0,
+                open_minor=0,
+                evidence="reviews/integration.md",
+            )
+            decision = root / "decisions" / "episode-two.md"
+            decision.parent.mkdir(exist_ok=True)
+            decision.write_text("# Decision\n\nStart episode two.\n", encoding="utf-8")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.resume_convergence(
+                loaded_root,
+                manifest,
+                ledger,
+                evidence="decisions/episode-two.md",
+                reason="Owner starts another bounded episode",
+            )
+            replace_todo(root / "reviews" / "global.md", "# Finding\n\nF-B01-NEW major")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            remediation = case_pipeline.begin_block_remediation(
+                loaded_root,
+                manifest,
+                ledger,
+                block_id="B01",
+                findings=[{"id": "F-B01-NEW", "severity": "major"}],
+                semantic_ids=["SCN-B01-001"],
+                evidence="reviews/global.md",
+                reason="Correct a block finding in the current episode",
+                batch_complete=True,
+            )
+            self.assertEqual(remediation["id"], "R001")
 
     def test_architect_context_is_materialized_from_declared_surfaces(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -1629,8 +3216,8 @@ class CasePipelineTests(unittest.TestCase):
                 loaded_root,
                 manifest,
                 ledger,
-                role="spec-reviewer",
-                role_mode="global",
+                role="test-observer",
+                role_mode="ledger",
                 model="test-model",
                 subject_sha256="a" * 64,
                 input_bytes=1200,
@@ -1695,8 +3282,8 @@ class CasePipelineTests(unittest.TestCase):
                 loaded_root,
                 manifest,
                 ledger,
-                role="spec-reviewer",
-                role_mode="global",
+                role="test-observer",
+                role_mode="ledger",
                 model="test-model",
                 subject_sha256="b" * 64,
                 input_bytes=None,
@@ -1812,6 +3399,7 @@ class CasePipelineTests(unittest.TestCase):
                 report,
                 "# Final review\n\ncovered_gates: [global_review, project_conformance]\n\nPASS",
             )
+            self.authorize_review_gate(root, "global_review")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             with self.assertRaisesRegex(case_pipeline.CaseError, "exact covered_gates"):
                 case_pipeline.set_gate(
@@ -1864,6 +3452,7 @@ class CasePipelineTests(unittest.TestCase):
                 case_pipeline.run_check(loaded_root, manifest, ledger, final_trace=False),
                 [],
             )
+            self.authorize_review_gate(root, "global_review")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             case_pipeline.set_gate(
                 loaded_root,
@@ -1914,6 +3503,7 @@ class CasePipelineTests(unittest.TestCase):
             replace_todo(root / "reviews" / "global.md", "# Global review\n\nPASS")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             self.assertEqual(case_pipeline.run_check(loaded_root, manifest, ledger, final_trace=False), [])
+            self.authorize_review_gate(root, "global_review")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             case_pipeline.set_gate(
                 loaded_root,
@@ -1927,6 +3517,7 @@ class CasePipelineTests(unittest.TestCase):
             replace_todo(root / "draft.md", "# Draft\n\nRule: x > 5")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             self.assertEqual(case_pipeline.run_check(loaded_root, manifest, ledger, final_trace=False), [])
+            self.authorize_review_gate(root, "global_review")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             with self.assertRaisesRegex(case_pipeline.CaseError, "semantic content"):
                 case_pipeline.rebase_nonsemantic_change(
@@ -1942,6 +3533,7 @@ class CasePipelineTests(unittest.TestCase):
             root = self.init(Path(temp), mode="compact")
             replace_todo(root / "draft.md", "# Draft\n\nStatus: OPEN")
             replace_todo(root / "reviews" / "global.md", "# Global review\n\nPASS")
+            self.authorize_review_gate(root, "global_review")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             self.assertEqual(case_pipeline.run_check(loaded_root, manifest, ledger, final_trace=False), [])
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
@@ -2032,6 +3624,7 @@ class CasePipelineTests(unittest.TestCase):
                 [],
             )
             replace_todo(root / "reviews" / "global.md", "# Global review\n\nPASS")
+            self.authorize_review_gate(root, "global_review")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             case_pipeline.set_gate(
                 loaded_root,
@@ -2381,6 +3974,7 @@ class CasePipelineTests(unittest.TestCase):
                 "# Architecture conformance\n\nPASS",
             )
             self.write_solution_boundary(root, "bounded-systemic")
+            self.authorize_review_gate(root, "global_review")
             for name, evidence in (
                 ("author_passes", "draft.md"),
                 ("global_review", "reviews/global.md"),
@@ -3688,10 +5282,16 @@ class CasePipelineTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root = self.init(Path(temp))
             self.add(root, "B01")
+            self.transition(root, "B01", "ready")
+            self.transition(root, "B01", "in_progress")
+            replace_todo(root / "blocks" / "B01.md", "# B01\n\nAnalysis")
+            add_definition(root, "B01", "SCN-B01-001", "scenario")
+            self.transition(root, "B01", "analyzed")
             _, manifest, ledger = case_pipeline.load_case(root)
             bundle = case_pipeline.context_bundle(
                 manifest,
                 ledger,
+                root=root,
                 block_id="B01",
                 role="spec-reviewer",
             )
@@ -3719,6 +5319,27 @@ class CasePipelineTests(unittest.TestCase):
     def test_compact_context_routes_method_only_to_semantic_roles(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = self.init(Path(temp), mode="compact")
+            replace_todo(root / "draft.md", "# Draft\n\nReady subject")
+            replace_todo(root / "evidence.md", "# Evidence\n\nCurrent source")
+            for name, evidence in (
+                ("evidence", "evidence.md"),
+                ("author_passes", "draft.md"),
+            ):
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name=name,
+                    status="pass",
+                    evidence=evidence,
+                    note=None,
+                )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(
+                case_pipeline.run_check(loaded_root, manifest, ledger, final_trace=False),
+                [],
+            )
             _, manifest, ledger = case_pipeline.load_case(root)
             analyst = case_pipeline.context_bundle(
                 manifest, ledger, block_id=None, role="system-analyst"
@@ -3727,7 +5348,7 @@ class CasePipelineTests(unittest.TestCase):
                 manifest, ledger, block_id=None, role="spec-editor"
             )
             reviewer = case_pipeline.context_bundle(
-                manifest, ledger, block_id=None, role="spec-reviewer"
+                manifest, ledger, root=root, block_id=None, role="spec-reviewer"
             )
             self.assertIn(vigers_context.METHOD_CONTEXT_MARKDOWN, analyst["case_inputs"])
             self.assertIn(vigers_context.METHOD_CONTEXT_MARKDOWN, reviewer["case_inputs"])
@@ -3754,6 +5375,7 @@ class CasePipelineTests(unittest.TestCase):
             root = self.init(Path(temp), mode="compact")
             replace_todo(root / "draft.md", "# Draft\n\nVersion one")
             replace_todo(root / "reviews" / "global.md", "# Global review\n\nPASS")
+            self.authorize_review_gate(root, "global_review")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             case_pipeline.set_gate(
                 loaded_root,
@@ -3859,6 +5481,7 @@ Text.
             replace_todo(root / "reviews" / "project.md", "# Project review\n\nPASS")
             os.utime(root / "reviews" / "project.md", ns=(1, 1))
 
+            self.authorize_review_gate(root, "project_conformance")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             with self.assertRaisesRegex(case_pipeline.CaseError, "missing required H2"):
                 case_pipeline.set_gate(
@@ -3888,6 +5511,7 @@ Text.
                 evidence_ref="specification.md",
                 read_back_at="2026-08-10T20:05:00+00:00",
             )
+            self.authorize_review_gate(root, "project_conformance")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             with self.assertRaisesRegex(case_pipeline.CaseError, "older than"):
                 case_pipeline.set_gate(
@@ -3936,6 +5560,7 @@ Text.
             root = self.init(Path(temp), mode="compact")
             review = root / "reviews" / "global.md"
             replace_todo(review, "# Global review\n\nFirst pass")
+            self.authorize_review_gate(root, "global_review")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             case_pipeline.set_gate(
                 loaded_root,
@@ -4224,7 +5849,7 @@ Text.
                     loaded_root,
                     manifest,
                     ledger,
-                    role="spec-reviewer",
+                    role="system-analyst",
                     role_mode="block",
                     model="test-model",
                     subject_sha256="c" * 64,
@@ -4245,7 +5870,7 @@ Text.
                     loaded_root,
                     manifest,
                     ledger,
-                    role="spec-reviewer",
+                    role="system-analyst",
                     role_mode="block",
                     model="test-model",
                     subject_sha256="c" * 64,
@@ -4275,7 +5900,7 @@ Text.
 
     def test_complete_block_case_passes_final_validation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
-            root = self.init(Path(temp))
+            root = self.init_timed(Path(temp))
             self.add(root, "B01")
             self.transition(root, "B01", "ready")
             self.transition(root, "B01", "in_progress")
@@ -4304,17 +5929,11 @@ Text.
 
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
             self.assertEqual(case_pipeline.run_check(loaded_root, manifest, ledger, final_trace=True), [])
-            gate_updates = [
+            for name, status, evidence, note in (
                 ("evidence", "pass", "evidence.md", None),
                 ("architecture_design", "not_required", None, "No architecture impact"),
-                ("author_passes", "pass", "draft.md", None),
                 ("semantic_integration", "pass", "draft.md", None),
-                ("integration_review", "pass", "reviews/integration.md", None),
-                ("global_review", "pass", "reviews/global.md", None),
-                ("project_conformance", "pass", "reviews/project.md", None),
-                ("architecture_conformance", "not_required", None, "No architecture impact"),
-            ]
-            for name, status, evidence, note in gate_updates:
+            ):
                 loaded_root, manifest, ledger = case_pipeline.load_case(root)
                 case_pipeline.set_gate(
                     loaded_root,
@@ -4325,8 +5944,66 @@ Text.
                     evidence=evidence,
                     note=note,
                 )
+            self.pass_case_review(root, "integration", "reviews/integration.md")
             loaded_root, manifest, ledger = case_pipeline.load_case(root)
-            self.assertEqual(case_pipeline.validate_case(loaded_root, manifest, ledger, final=True), [])
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="integration_review",
+                status="pass",
+                evidence="reviews/integration.md",
+                note=None,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="author_passes",
+                status="pass",
+                evidence="draft.md",
+                note=None,
+            )
+            for role_mode, gate_name, evidence in (
+                ("global", "global_review", "reviews/global.md"),
+                ("project-conformance", "project_conformance", "reviews/project.md"),
+            ):
+                self.pass_case_review(root, role_mode, evidence)
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name=gate_name,
+                    status="pass",
+                    evidence=evidence,
+                    note=None,
+                )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.set_gate(
+                loaded_root,
+                manifest,
+                ledger,
+                name="architecture_conformance",
+                status="not_required",
+                evidence=None,
+                note="No architecture impact",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(
+                case_pipeline.validate_case(loaded_root, manifest, ledger, final=True),
+                ["automation timing has unfinished stages: P01"],
+            )
+            handoff_path = Path(temp) / "delivery-handoff.json"
+            payload = case_pipeline.export_delivery_handoff(
+                loaded_root,
+                manifest,
+                ledger,
+                output=handoff_path,
+            )
+            self.assertEqual(payload["case_id"], manifest["case_id"])
+            self.assertTrue(handoff_path.is_file())
 
 
 if __name__ == "__main__":

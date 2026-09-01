@@ -10,7 +10,7 @@
       "связать полную block/surface matrix с current kernel и agent run",
       "потребовать от первого B03 reviewer полный surface sweep и finding_batch_complete",
       "объединить accepted blocker/major одного gate в один remediation batch",
-      "после двух batches запретить третий finding-by-finding цикл"
+      "после одного batch запретить второй finding-by-finding цикл"
     ],
     "forbidden_actions": [
       "добавить risk-preflight для B01 или B02 без объявленной surface",
