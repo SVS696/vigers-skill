@@ -112,9 +112,12 @@ immutable evidence явного решения пользователя, ато�
 remediation и начинает новый episode. Evidence хранится только в case-local
 `decisions/`, `sources/` или `reviews/history/`; mutable kernel/draft/block не
 могут подменить пользовательское решение. Атомарный переход из remediation
-разрешён только для `semantic-crosscutting|architecture` и требует активной
-block-remediation; переход переводит её в `retry_required`, а её budget не
-переносится в новый episode. Без такого evidence переход остаётся запрещённым.
+разрешён только для `semantic-crosscutting|architecture` и требует одного из
+двух exact оснований: активной block-remediation либо уже исчерпанного в текущем
+epoch block budget у блока из `pending_review.affected_blocks`. Активную запись
+переход переводит в `retry_required`; в обоих случаях прежний budget не
+переносится в новый episode. Исчерпанный budget другого блока не разрешает
+переход. Без такого evidence переход остаётся запрещённым.
 
 ## Цикл исправлений
 

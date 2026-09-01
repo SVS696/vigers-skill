@@ -354,6 +354,18 @@ def user_decision_evidence_file(root: Path, relative: str) -> Path:
     return path
 
 
+def current_remediation_batches(block: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return bounded-v2 remediation batches consumed in the current epoch."""
+    if block.get("remediation_contract") != REMEDIATION_CONTRACT_V2:
+        return []
+    epoch = block.get("remediation_epoch", 1)
+    return [
+        remediation
+        for remediation in block.get("remediations", [])
+        if isinstance(remediation, dict) and remediation.get("epoch", 1) == epoch
+    ]
+
+
 def event(kind: str, **details: Any) -> dict[str, Any]:
     """Build one append-only state event."""
     return {"at": now_utc(), "kind": kind, **details}
@@ -3928,14 +3940,33 @@ def refresh_kernel(
         active = active_block_remediation(blocks[block_id])
         if active is not None:
             active_remediations[block_id] = active
+    pending_review = convergence.get("pending_review")
+    pending_blocks = (
+        {
+            str(block_id)
+            for block_id in pending_review.get("affected_blocks", [])
+            if isinstance(block_id, str)
+        }
+        if isinstance(pending_review, dict)
+        else set()
+    )
+    active_pending_blocks = set(active_remediations) & pending_blocks
+    exhausted_pending_blocks = {
+        block_id
+        for block_id in pending_blocks & affected
+        if len(current_remediation_batches(blocks[block_id]))
+        >= MAX_REMEDIATION_BATCHES
+    }
     if (
         convergence.get("phase") == "remediation"
         and resume_convergence_after_validation
-        and not active_remediations
+        and not active_pending_blocks
+        and not exhausted_pending_blocks
     ):
         raise CaseError(
-            "Ending targeted convergence remediation requires an active "
-            "block remediation whose correction exposed the root cause"
+            "Ending targeted convergence remediation requires an active block "
+            "remediation or an exhausted current-epoch remediation budget for "
+            "an exact pending affected block"
         )
 
     awaiting_local_reviews = [
@@ -3962,12 +3993,7 @@ def refresh_kernel(
             block = blocks[block_id]
             if block.get("remediation_contract") == REMEDIATION_CONTRACT_V2:
                 epoch = block.get("remediation_epoch", 1)
-                used = sum(
-                    1
-                    for remediation in block.get("remediations", [])
-                    if isinstance(remediation, dict)
-                    and remediation.get("epoch", 1) == epoch
-                )
+                used = len(current_remediation_batches(block))
                 if used > 0:
                     previous_resets = sum(
                         1
@@ -5165,12 +5191,7 @@ def begin_block_remediation(
             break
     remediation_epoch = block.get("remediation_epoch", 1)
     if remediation_contract == REMEDIATION_CONTRACT_V2:
-        batches_in_epoch = [
-            previous
-            for previous in remediations
-            if isinstance(previous, dict)
-            and previous.get("epoch", 1) == remediation_epoch
-        ]
+        batches_in_epoch = current_remediation_batches(block)
         if len(batches_in_epoch) >= MAX_REMEDIATION_BATCHES:
             raise CaseError(
                 f"{block_id}: remediation budget exhausted after "
