@@ -726,6 +726,52 @@ class CasePipelineTests(unittest.TestCase):
             batch_complete=True,
         )
 
+    def consume_block_remediation_budget(
+        self,
+        root: Path,
+        *,
+        block_id: str,
+        finding_id: str,
+        semantic_id: str,
+    ) -> None:
+        """Consume one real current-epoch block batch outside whole-case remediation."""
+        finding_evidence = f"reviews/{block_id}-prior-finding.md"
+        replace_todo(
+            root / finding_evidence,
+            f"# Prior finding\n\n{finding_id} major",
+        )
+        loaded_root, manifest, ledger = case_pipeline.load_case(root)
+        remediation = case_pipeline.begin_block_remediation(
+            loaded_root,
+            manifest,
+            ledger,
+            block_id=block_id,
+            findings=[{"id": finding_id, "severity": "major"}],
+            semantic_ids=[semantic_id],
+            evidence=finding_evidence,
+            reason="Consume the block budget before the next whole-case stage",
+            batch_complete=True,
+        )
+        replace_todo(
+            root / "blocks" / f"{block_id}.md",
+            f"# {block_id}\n\nCorrected prior-stage rule",
+        )
+        index_path = root / "blocks" / f"{block_id}.index.json"
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        index["definitions"][0]["summary"] = "Corrected prior-stage requirement"
+        index_path.write_text(json.dumps(index, indent=2) + "\n", encoding="utf-8")
+        self.transition(root, block_id, "analyzed")
+        replace_todo(
+            root / "reviews" / f"{block_id}.md",
+            f"# Targeted review {block_id}\n\n"
+            "review_scope: targeted-remediation\n"
+            f"verified_findings: [{finding_id}]\n"
+            f"coverage_reused: {remediation['coverage_evidence']}\n\nPASS",
+        )
+        self.transition(root, block_id, "reviewed")
+        replace_todo(root / "draft.md", f"# Draft\n\nIntegrated corrected {block_id}")
+        self.transition(root, block_id, "integrated")
+
     def transition(self, root: Path, block_id: str, status: str, note: str | None = None) -> None:
         loaded_root, manifest, ledger = case_pipeline.load_case(root)
         if status == "reviewed" and case_pipeline.active_bounded_recovery(manifest) is None:
@@ -3287,6 +3333,97 @@ class CasePipelineTests(unittest.TestCase):
             block = case_pipeline.blocks_by_id(ledger)["B01"]
             self.assertEqual(block["remediation_epoch"], previous_epoch + 1)
             self.assertIsNone(block["active_remediation"])
+
+    def test_unrelated_exhausted_block_budget_cannot_unlock_kernel_reset(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.add(root, "B02")
+            self.prepare_whole_case_review(root, "B01")
+            self.prepare_whole_case_review(root, "B02")
+            self.consume_block_remediation_budget(
+                root,
+                block_id="B02",
+                finding_id="F-B02-PRIOR-001",
+                semantic_id="SCN-B02-001",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(
+                case_pipeline.run_check(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    final_trace=False,
+                ),
+                [],
+            )
+            for gate_name in ("semantic_integration", "author_passes"):
+                loaded_root, manifest, ledger = case_pipeline.load_case(root)
+                case_pipeline.set_gate(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    name=gate_name,
+                    status="pass",
+                    evidence="draft.md",
+                    note=None,
+                )
+
+            replace_todo(root / "reviews" / "integration.md", "# Integration\n\nF-B01-NEW-001 major")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=loaded_root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="integration",
+            )
+            run_id = self.record_agent_run(
+                root,
+                role="spec-reviewer",
+                role_mode="integration",
+                subject_sha256=context["subject_sha256"],
+                reported_major=1,
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_convergence_review(
+                loaded_root,
+                manifest,
+                ledger,
+                run_id=run_id,
+                gate_decision="revise",
+                open_blocker=0,
+                open_major=1,
+                open_minor=0,
+                evidence="reviews/integration.md",
+                findings=[{"id": "F-B01-NEW-001", "severity": "major"}],
+                impact="integration",
+                affected_blocks=["B01"],
+                semantic_ids=["SCN-B01-001"],
+            )
+            decision = root / "decisions" / "unrelated-budget-reset.md"
+            decision.parent.mkdir(exist_ok=True)
+            decision.write_text(
+                "# User decision\n\nDo not let B02 authorize the B01 transition.\n",
+                encoding="utf-8",
+            )
+            replace_todo(root / "kernel.md", "# Kernel\n\nAttempted unrelated reset")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            with self.assertRaisesRegex(
+                case_pipeline.CaseError,
+                "exact pending affected block",
+            ):
+                case_pipeline.refresh_kernel(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    [],
+                    change_scope="semantic-crosscutting",
+                    invalidate_all=True,
+                    reason="An unrelated exhausted block must not unlock this reset",
+                    user_decision_evidence="decisions/unrelated-budget-reset.md",
+                )
 
     def test_targeted_convergence_kernel_reset_closes_legacy_active_remediation(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
