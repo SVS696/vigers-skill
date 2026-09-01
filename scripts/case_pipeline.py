@@ -334,6 +334,26 @@ def artifact_ready(path: Path) -> bool:
     return bool(text.strip()) and TODO_MARKER not in text
 
 
+def user_decision_evidence_file(root: Path, relative: str) -> Path:
+    """Resolve explicit user evidence only from immutable decision/source areas."""
+    path = case_file(root, relative)
+    parts = path.relative_to(root.resolve()).parts
+    allowed = (
+        (parts and parts[0] in {"decisions", "sources"})
+        or parts[:2] == ("reviews", "history")
+    )
+    if not allowed:
+        raise CaseError(
+            "User-decision evidence must be stored under decisions/, sources/, "
+            "or reviews/history/"
+        )
+    if not artifact_ready(path):
+        raise CaseError(
+            f"User-decision evidence is missing or incomplete: {relative}"
+        )
+    return path
+
+
 def event(kind: str, **details: Any) -> dict[str, Any]:
     """Build one append-only state event."""
     return {"at": now_utc(), "kind": kind, **details}
@@ -3831,10 +3851,25 @@ def refresh_kernel(
             "Dispose the active whole-case review before refreshing the kernel"
         )
     if convergence.get("phase") == "remediation":
-        raise CaseError(
-            "Targeted convergence remediation cannot refresh the kernel. A proven "
-            "kernel/scope/architecture change requires user-decision and a new episode"
+        if not isinstance(user_decision_evidence, str) or not user_decision_evidence.strip():
+            raise CaseError(
+                "Targeted convergence remediation cannot refresh the kernel automatically. "
+                "A proven kernel/scope/architecture change requires explicit "
+                "user-decision evidence and a new episode"
+            )
+        if change_scope not in {"semantic-crosscutting", "architecture"}:
+            raise CaseError(
+                "Ending targeted convergence remediation requires a "
+                "semantic-crosscutting or architecture kernel refresh"
+            )
+        decision_path = user_decision_evidence_file(
+            root, user_decision_evidence.strip()
         )
+        if not isinstance(reason, str) or not reason.strip():
+            raise CaseError(
+                "Kernel refresh starting a new convergence episode requires --reason"
+            )
+        resume_convergence_after_validation = True
     elif (
         current_attempts
         or convergence.get("phase") == "user-decision"
@@ -3851,12 +3886,9 @@ def refresh_kernel(
                 "Kernel refresh after whole-case review requires explicit user-decision "
                 "evidence and a new convergence episode"
             )
-        decision_path = case_file(root, user_decision_evidence.strip())
-        if not artifact_ready(decision_path):
-            raise CaseError(
-                "User-decision evidence is missing or incomplete: "
-                f"{user_decision_evidence}"
-            )
+        decision_path = user_decision_evidence_file(
+            root, user_decision_evidence.strip()
+        )
         if not isinstance(reason, str) or not reason.strip():
             raise CaseError(
                 "Kernel refresh starting a new convergence episode requires --reason"
@@ -3904,12 +3936,9 @@ def refresh_kernel(
                 + ", ".join(awaiting_local_reviews)
                 + "; explicit user-decision evidence is required"
             )
-        decision_path = case_file(root, user_decision_evidence.strip())
-        if not artifact_ready(decision_path):
-            raise CaseError(
-                "User-decision evidence is missing or incomplete: "
-                f"{user_decision_evidence}"
-            )
+        decision_path = user_decision_evidence_file(
+            root, user_decision_evidence.strip()
+        )
 
     root_cause_resets: list[str] = []
     reset_decisions: dict[str, dict[str, str] | None] = {}
@@ -3940,12 +3969,9 @@ def refresh_kernel(
                         "user-decision evidence; repeated kernel refresh cannot renew the "
                         "correction budget automatically"
                     )
-                decision_path = case_file(root, user_decision_evidence.strip())
-                if not artifact_ready(decision_path):
-                    raise CaseError(
-                        "User-decision evidence is missing or incomplete: "
-                        f"{user_decision_evidence}"
-                    )
+                decision_path = user_decision_evidence_file(
+                    root, user_decision_evidence.strip()
+                )
                 reset_decisions[block_id] = {
                     "ref": user_decision_evidence.strip(),
                     "sha256": sha256(decision_path),
@@ -6682,6 +6708,7 @@ def resume_convergence(
         raise CaseError(
             "Convergence can be resumed only from user-decision or terminal state"
         )
+    user_decision_evidence_file(root, evidence)
     next_episode = int(state.get("episode", 1)) + 1
     binding = bind_convergence_evidence(
         root,

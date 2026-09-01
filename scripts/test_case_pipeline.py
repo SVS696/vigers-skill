@@ -2998,6 +2998,136 @@ class CasePipelineTests(unittest.TestCase):
                     invalidate_all=True,
                     reason="Attempted automatic full-cycle reset",
                 )
+            with self.assertRaisesRegex(
+                case_pipeline.CaseError,
+                "must be stored under decisions/",
+            ):
+                case_pipeline.refresh_kernel(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    [],
+                    change_scope="semantic-crosscutting",
+                    invalidate_all=True,
+                    reason="Kernel is not user-decision evidence",
+                    user_decision_evidence="kernel.md",
+                )
+            decision = root / "decisions" / "local-reset.md"
+            decision.parent.mkdir(exist_ok=True)
+            decision.write_text("# User decision\n\nStart a new episode.\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                case_pipeline.CaseError,
+                "requires a semantic-crosscutting or architecture kernel refresh",
+            ):
+                case_pipeline.refresh_kernel(
+                    loaded_root,
+                    manifest,
+                    ledger,
+                    ["B01"],
+                    change_scope="semantic-local",
+                    reason="Do not carry an active remediation into a new episode",
+                    user_decision_evidence="decisions/local-reset.md",
+                )
+
+    def test_targeted_convergence_remediation_refreshes_kernel_with_user_decision(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = self.init(Path(temp))
+            self.add(root, "B01")
+            self.prepare_whole_case_review(root)
+            replace_todo(root / "reviews" / "integration.md", "# Integration\n\nF-INT-001 major")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            context = case_pipeline.context_bundle(
+                manifest,
+                ledger,
+                root=root,
+                block_id=None,
+                role="spec-reviewer",
+                role_mode="integration",
+            )
+            run_id = case_pipeline.record_agent_run(
+                loaded_root,
+                manifest,
+                ledger,
+                role="spec-reviewer",
+                role_mode="integration",
+                model="test-model",
+                subject_sha256=context["subject_sha256"],
+                input_bytes=None,
+                input_tokens=None,
+                output_tokens=None,
+                duration_seconds=1,
+                retries=0,
+                reported_blocker=0,
+                reported_major=1,
+                reported_minor=0,
+                cache_status="miss",
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            case_pipeline.record_convergence_review(
+                loaded_root,
+                manifest,
+                ledger,
+                run_id=run_id,
+                gate_decision="revise",
+                open_blocker=0,
+                open_major=1,
+                open_minor=0,
+                evidence="reviews/integration.md",
+                findings=[{"id": "F-INT-001", "severity": "major"}],
+                impact="integration",
+                affected_blocks=["B01"],
+                semantic_ids=["SCN-B01-001"],
+            )
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            remediation = case_pipeline.begin_block_remediation(
+                loaded_root,
+                manifest,
+                ledger,
+                block_id="B01",
+                findings=[{"id": "F-INT-001", "severity": "major"}],
+                semantic_ids=["SCN-B01-001"],
+                evidence="reviews/integration.md",
+                reason="Open the targeted batch before the root cause is proven",
+                batch_complete=True,
+            )
+            decision = root / "decisions" / "kernel-reset.md"
+            decision.parent.mkdir(exist_ok=True)
+            decision.write_text(
+                "# User decision\n\nStart one new root-cause episode.\n",
+                encoding="utf-8",
+            )
+            replace_todo(root / "kernel.md", "# Kernel\n\nApproved root-cause correction")
+            loaded_root, manifest, ledger = case_pipeline.load_case(root)
+            previous_revision = manifest["kernel"]["revision"]
+            previous_episode = manifest["convergence"]["episode"]
+            previous_epoch = case_pipeline.blocks_by_id(ledger)["B01"][
+                "remediation_epoch"
+            ]
+            stale = case_pipeline.refresh_kernel(
+                loaded_root,
+                manifest,
+                ledger,
+                [],
+                change_scope="semantic-crosscutting",
+                invalidate_all=True,
+                reason="Replace the targeted batch with an approved root-cause episode",
+                user_decision_evidence="decisions/kernel-reset.md",
+            )
+
+            _, manifest, ledger = case_pipeline.load_case(root)
+            self.assertEqual(stale, ["B01"])
+            self.assertEqual(manifest["kernel"]["revision"], previous_revision + 1)
+            self.assertEqual(manifest["convergence"]["episode"], previous_episode + 1)
+            self.assertEqual(manifest["convergence"]["phase"], "blocks")
+            self.assertIsNone(manifest["convergence"]["pending_review"])
+            block = case_pipeline.blocks_by_id(ledger)["B01"]
+            self.assertEqual(block["status"], "stale")
+            self.assertIsNone(block["active_remediation"])
+            self.assertEqual(block["remediation_epoch"], previous_epoch + 1)
+            superseded = next(
+                item for item in block["remediations"] if item["id"] == remediation["id"]
+            )
+            self.assertEqual(superseded["status"], "retry_required")
 
     def test_rejected_convergence_disposition_does_not_orphan_evidence_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
